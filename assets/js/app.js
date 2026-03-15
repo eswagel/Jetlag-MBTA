@@ -1,0 +1,2574 @@
+// ══════════════════════════════════════════════════════
+//  GAME LINE DEFINITIONS
+// ══════════════════════════════════════════════════════
+// Red has one route ID ("Red") but two branches distinguished by route patterns.
+// All other lines map 1:1 to a route ID.
+const GAME_LINES = [
+  { id:'Red-Ashmont',   label:'Red · Ashmont',    color:'#DA291C', weight:5, routeId:'Red',     branchKeyword:'Ashmont'   },
+  { id:'Red-Braintree', label:'Red · Braintree',   color:'#DA291C', weight:5, routeId:'Red',     branchKeyword:'Braintree' },
+  { id:'Orange',        label:'Orange Line',        color:'#ED8B00', weight:5, routeId:'Orange'   },
+  { id:'Blue',          label:'Blue Line',          color:'#003DA5', weight:5, routeId:'Blue'     },
+  { id:'Green-B',       label:'Green Line · B',     color:'#00843D', weight:4, routeId:'Green-B'  },
+  { id:'Green-C',       label:'Green Line · C',     color:'#00843D', weight:4, routeId:'Green-C'  },
+  { id:'Green-D',       label:'Green Line · D',     color:'#00843D', weight:4, routeId:'Green-D'  },
+  { id:'Green-E',       label:'Green Line · E',     color:'#00843D', weight:4, routeId:'Green-E'  },
+  { id:'Mattapan',      label:'Mattapan Line',       color:'#DA291C', weight:4, routeId:'Mattapan' },
+];
+
+// stopId → { name, lat, lng, lines: Set<lineId> }
+const stopLineMap = {};
+
+// ══════════════════════════════════════════════════════
+//  CONSTANTS & STATE
+// ══════════════════════════════════════════════════════
+const CENTER = [42.3601,-71.0589];
+const INIT_POLY = turf.polygon([[
+  [-71.70,41.85],[-70.40,41.85],[-70.40,42.80],[-71.70,42.80],[-71.70,41.85]
+]]);
+
+let map, maskLayer, borderLayer, radiusLayer, previewLayer, simulLayer, pickedMarkers=[];
+let townLayer, countyLayer, boundaryHighlightLayer;
+const commuterRailStops = new Set();
+const commuterRailStopsList = [];
+let seekerPinMarkers = []; // seeker location dots — preserved across POI category changes
+let validZone = cloneGeo(INIT_POLY);
+let constraints = [];
+let qtype=null, qparams={}, pickStep=-1, pickStepDefs=[];
+let hideRadiusMi = 0.25;   // set by setup screen
+let mbdataReady  = false;  // true once MBTA API load completes
+let gameMode = 'seeker';   // 'seeker' | 'hider' | 'dev'
+let hiderStation = null;   // {name, lat, lng, lines:[...]} set when hider taps their station
+let _pickingHiderStation = false;
+
+// ══════════════════════════════════════════════════════
+//  GAME MODE
+// ══════════════════════════════════════════════════════
+function selectMode(el){
+  document.querySelectorAll('.mode-card').forEach(c=>c.classList.remove('selected'));
+  el.classList.add('selected');
+  gameMode = el.dataset.mode;
+}
+
+function applyGameMode(){
+  const badge = document.getElementById('mode-badge');
+
+  // Tab visibility config per mode
+  const MODES = {
+    seeker: { tabs: ['build','apply','log'], default: 'build',  badge: '🔭 Seeker',  cls: 'seeker' },
+    hider:  { tabs: ['hider'],               default: 'hider',   badge: '🫣 Hider',   cls: 'hider'  },
+    dev:    { tabs: ['build','hider','apply','log'], default: 'build', badge: '🛠 Dev', cls: 'dev'    },
+  };
+  const cfg = MODES[gameMode] || MODES.dev;
+
+  // Show/hide tab buttons
+  document.querySelectorAll('.tab[data-tab]').forEach(t=>{
+    t.style.display = cfg.tabs.includes(t.dataset.tab) ? '' : 'none';
+  });
+
+  // Show/hide panes
+  document.querySelectorAll('.tab-pane').forEach(p=>{
+    const tabId = p.id.replace('tab-','');
+    p.style.display = cfg.tabs.includes(tabId) ? (tabId === cfg.default ? 'block' : 'none') : 'none';
+  });
+
+  // Sync active tab highlight
+  document.querySelectorAll('.tab').forEach(t=>t.classList.toggle('active', t.dataset.tab===cfg.default));
+
+  // Show mode badge
+  badge.textContent = cfg.badge;
+  badge.className = cfg.cls;
+  badge.style.display = 'inline-block';
+
+  // Hider mode: keep panel open and taller
+  if(gameMode === 'hider'){
+    document.getElementById('panel').classList.remove('collapsed');
+    document.getElementById('tab-hider').classList.add('hider-mode-fullscreen');
+  } else {
+    document.getElementById('tab-hider').classList.remove('hider-mode-fullscreen');
+  }
+}
+const SAVE_KEY = 'jetlag_mbta_save';
+
+function saveGame(){
+  try{
+    const save = {
+      v: 1,
+      ts: Date.now(),
+      gameMode,
+      hideRadiusMi,
+      hiderStation: hiderStation || null,
+      validZone: cloneGeo(validZone),
+      constraints: constraints.map(c => JSON.parse(JSON.stringify(c, (k,v)=>v instanceof Set?[...v]:v)))
+    };
+    localStorage.setItem(SAVE_KEY, JSON.stringify(save));
+  }catch(e){ console.warn('Save failed', e); }
+}
+
+function loadSave(){
+  try{
+    const raw = localStorage.getItem(SAVE_KEY);
+    if(!raw) return null;
+    const save = JSON.parse(raw);
+    if(!save.v || !save.constraints || !save.validZone) return null;
+    return save;
+  }catch(e){ return null; }
+}
+
+function clearSave(){
+  localStorage.removeItem(SAVE_KEY);
+}
+
+function checkForResume(){
+  const save = loadSave();
+  if(!save) return;
+  // Don't prompt if the game hasn't really started (only setup constraint)
+  const realConstraints = save.constraints.filter(c=>!['_setup'].includes(c.type));
+  if(!realConstraints.length) return;
+
+  const km2 = (turf.area(save.validZone)/1e6).toFixed(1);
+  const age = timeSince(save.ts);
+  const lastQ = [...realConstraints].reverse().find(c=>c.type&&!c.type.startsWith('_'));
+  const lastDesc = lastQ ? (QDEFS[lastQ.type]?.label || lastQ.type) : 'Setup';
+
+  document.getElementById('resume-summary').innerHTML =
+    `<b>${realConstraints.length}</b> question${realConstraints.length!==1?'s':''} asked &nbsp;·&nbsp; ` +
+    `<b>${km2} km²</b> remaining<br>` +
+    `Last: <b>${lastDesc}</b><br>` +
+    `<span style="color:var(--dim);font-size:8.5px">Saved ${age}</span>`;
+
+  document.getElementById('resume-overlay').classList.remove('hidden');
+}
+
+function resumeGame(){
+  const save = loadSave();
+  if(!save){ discardAndNew(); return; }
+
+  hideRadiusMi = save.hideRadiusMi || 0.25;
+  gameMode = save.gameMode || 'seeker';
+  hiderStation = save.hiderStation || null;
+  validZone = save.validZone;
+  constraints = save.constraints;
+
+  // Dismiss resume overlay and setup overlay
+  document.getElementById('resume-overlay').classList.add('hidden');
+  const ov = document.getElementById('setup-overlay');
+  ov.classList.add('hidden');
+  setTimeout(()=>{ ov.style.display='none'; }, 420);
+
+  // Wait for MBTA data then restore
+  const restore = () => {
+    applyHideRadiusVisuals();
+    renderZone();
+    renderLog();
+    applyGameMode();
+    // Restore hider station pin if saved
+    if(hiderStation){
+      if(_hiderLocMarker) _hiderLocMarker.remove();
+      _hiderLocMarker = L.marker([hiderStation.lat, hiderStation.lng], {icon:hiderPin(), zIndexOffset:3000}).addTo(map);
+      renderHiderStationBadge();
+    }
+    const km2 = (turf.area(validZone)/1e6).toFixed(1);
+    toast(`Game resumed — ${km2} km² in play`);
+    if(gameMode !== 'hider'){
+      document.getElementById('panel').classList.remove('collapsed');
+      setTimeout(()=>document.getElementById('panel').classList.add('collapsed'), 2000);
+    }
+    switchTab(gameMode === 'hider' ? 'hider' : 'log');
+  };
+  if(mbdataReady) restore();
+  else { const iv = setInterval(()=>{ if(mbdataReady){ clearInterval(iv); restore(); }}, 200); }
+}
+
+function discardAndNew(){
+  clearSave();
+  hiderStation = null;
+  if(_hiderLocMarker){ _hiderLocMarker.remove(); _hiderLocMarker = null; }
+  document.getElementById('resume-overlay').classList.add('hidden');
+}
+
+function timeSince(ts){
+  const s = Math.floor((Date.now()-ts)/1000);
+  if(s < 60) return 'just now';
+  if(s < 3600) return `${Math.floor(s/60)}m ago`;
+  if(s < 86400) return `${Math.floor(s/3600)}h ago`;
+  return `${Math.floor(s/86400)}d ago`;
+}
+
+// Draw radius circles without recomputing validZone (for resume)
+function applyHideRadiusVisuals(){
+  const stops = Object.values(stopLineMap);
+  if(!stops.length) return;
+  radiusLayer.clearLayers();
+  const radiusMeters = hideRadiusMi * 1609.34;
+  stops.forEach(s=>{
+    L.circle([s.lat,s.lng],{
+      radius:radiusMeters, color:'#4ab8d4', weight:2,
+      opacity:0.8, fillColor:'#4ab8d4', fillOpacity:0.15,
+      dashArray:'6 4', interactive:false
+    }).addTo(radiusLayer);
+  });
+}
+
+// ══════════════════════════════════════════════════════
+//  QUESTION DEFINITIONS
+// ══════════════════════════════════════════════════════
+const QDEFS = {
+  radar:{
+    label:'Radar', colorTag:'tag-radar',
+    pickSteps:[{key:'center', label:'Tap map — set your location'}],
+    isReady:p=>p.center&&p.radius_miles,
+    toJSON:p=>({type:'radar',center:p.center,radius_miles:p.radius_miles}),
+    applyToZone:(zone,q)=>q.answer==='yes'?safeIsect(zone,makeCircle(q.center,q.radius_miles,'miles')):safeDiff(zone,makeCircle(q.center,q.radius_miles,'miles')),
+    describe:q=>`<b>${q.answer==='yes'?'WITHIN':'OUTSIDE'}</b> ${q.radius_miles}mi radar`
+  },
+  thermo:{
+    label:'Thermometer', colorTag:'tag-thermo',
+    pickSteps:[{key:'center', label:'Tap map — your current position'}],
+    isReady:p=>p.center&&p.travel_miles,
+    toJSON:p=>({type:'thermo',center:p.center,travel_miles:p.travel_miles}),
+    applyToZone:(zone,q)=>q.answer==='closer'?safeIsect(zone,makeCircle(q.center,q.travel_miles,'miles')):safeDiff(zone,makeCircle(q.center,q.travel_miles,'miles')),
+    describe:q=>`<b>${q.answer==='closer'?'CLOSER':'FURTHER'}</b> than ${q.travel_miles}mi from seeker`
+  },
+  measure:{
+    label:'Measure', colorTag:'tag-measure',
+    pickSteps:[{key:'center', label:'Tap map — your location'}],
+    isReady:p=>p.center&&p.measure_cat&&p.measure_seeker_dist!=null,
+    toJSON:p=>({
+      type:'measure',
+      center:p.center,
+      category:p.measure_cat,
+      category_label:p.measure_cat_label,
+      seeker_nearest:p.measure_seeker_nearest,   // {lat,lng,name} — seeker's nearest instance
+      seeker_dist:p.measure_seeker_dist,          // seeker's distance to their nearest
+      all_instances:p.measure_all_instances||[],  // all known instances for zone geometry
+      question:`Compared to me, are you closer to or further from your nearest ${p.measure_cat_label}? I am ${p.measure_seeker_dist.toFixed(2)} mi from mine.`,
+      answer_opts:['closer','further']
+    }),
+    applyToZone:(zone,q)=>{
+      if(!q.all_instances||!q.all_instances.length) return zone;
+      try{
+        // Zone = union of circles of radius seeker_dist around every instance
+        // "closer" = inside that union; "further" = outside
+        const circles = q.all_instances.map(p=>makeCircle(p, q.seeker_dist, 'miles'));
+        let union = circles[0];
+        for(let i=1;i<circles.length;i++){
+          try{ union = turf.union(union, circles[i]) || union; }catch(e){}
+        }
+        if(q.answer==='closer') return safeDiff(zone, union);
+        else return safeIsect(zone, union);
+      }catch(e){ return zone; }
+    },
+    describe:q=>`<b>${q.answer==='closer'?'CLOSER':'FURTHER'}</b> than seeker (${q.seeker_dist?.toFixed(2)}mi) from nearest ${q.category_label}`
+  },
+  tentacles:{
+    label:'Tentacles', colorTag:'tag-tentacles',
+    pickSteps:[{key:'center', label:'Tap map — your location'}],
+    isReady:p=>p.center&&p.tentacle_options&&p.tentacle_options.length>=2,
+    toJSON:p=>({type:'tentacles',center:p.center,radius_miles:p.radius_miles||1,options:p.tentacle_options}),
+    applyToZone:(zone,q)=>{
+      const circle=makeCircle(q.center,q.radius_miles||1,'miles');
+      if(q.answer==='no') return safeDiff(zone,circle);
+      const inCircle=safeIsect(zone,circle);
+      const optIdx=q.options?q.options.findIndex(o=>o.name===q.answer):-1;
+      if(optIdx>=0&&q.options.length>=2){
+        try{
+          const pts=turf.featureCollection(q.options.map(o=>turf.point([o.lng,o.lat])));
+          const cells=turf.voronoi(pts,{bbox:[-72,41.5,-70,43]});
+          if(cells&&cells.features[optIdx]) return safeIsect(inCircle,cells.features[optIdx]);
+        }catch(e){}
+      }
+      return inCircle;
+    },
+    describe:q=>q.answer==='no'?`<b>NOT WITHIN</b> ${q.radius_miles||1}mi of seeker`:`<b>CLOSEST TO</b> ${q.answer}`
+  },
+  matching:{
+    label:'Matching', colorTag:'tag-matching',
+    pickSteps:[{key:'center', label:'Tap map — your location'}],
+    isReady:p=>p.center&&p.matching_cat&&p.matching_seeker_val,
+    toJSON:p=>({
+      type:'matching',
+      center:p.center,
+      category:p.matching_cat,
+      category_label:p.matching_cat_label,
+      seeker_val:p.matching_seeker_val,
+      boundary_geojson: p._matching_boundary_simplified || p.matching_boundary || null,
+      question:`Are we in the same ${p.matching_cat_label}? Mine is "${p.matching_seeker_val}".`,
+      answer_opts:['Yes','No']
+    }),
+    applyToZone:(zone,q)=>{
+      if(!q.boundary_geojson) return zone;
+      try{
+        // Nominatim polygons are complement-oriented — they cover everything EXCEPT the named region.
+        // So: Yes (same region) → difference removes the complement, leaving only the region.
+        //     No (different region) → intersect keeps only the complement (everything outside).
+        const result = q.answer==='Yes'
+          ? safeDiff(zone, q.boundary_geojson)
+          : safeIsect(zone, q.boundary_geojson);
+        if(result && turf.area(result) > 1000) return result;
+        return zone;
+      } catch(e){ return zone; }
+    },
+    describe:q=>`<b>${q.answer==='Yes'?'SAME':'DIFFERENT'}</b> ${q.category_label} (seeker: ${q.seeker_val})`
+  },
+  nearest:{
+    label:'Nearest', colorTag:'tag-nearest',
+    pickSteps:[{key:'center', label:'Tap map — your location'}],
+    isReady:p=>p.center&&p.nearest_cat&&p.nearest_seeker_poi,
+    toJSON:p=>({
+      type:'nearest',
+      center:p.center,
+      category:p.nearest_cat,
+      category_label:p.nearest_cat_label,
+      seeker_poi:p.nearest_seeker_poi,
+      all_pois:p.nearest_all_pois||[],
+      voronoi_geojson:p.nearest_voronoi||null,
+      question:`Is the nearest ${p.nearest_cat_label} to you the same as mine? Mine is "${p.nearest_seeker_poi.name}".`,
+      answer_opts:['Yes','No']
+    }),
+    applyToZone:(zone,q)=>{
+      if(!q.voronoi_geojson) return zone;
+      try{
+        // Voronoi cell contains the "same nearest" region
+        // Yes = hider shares same nearest → intersect (keep only that cell)
+        // No = different nearest → difference (remove that cell)
+        const result = q.answer==='Yes'
+          ? safeIsect(zone, q.voronoi_geojson)
+          : safeDiff(zone, q.voronoi_geojson);
+        if(result && turf.area(result) > 1000) return result;
+        return zone;
+      }catch(e){ return zone; }
+    },
+    describe:q=>`Nearest ${q.category_label}: <b>${q.answer==='Yes'?'SAME':'DIFFERENT'}</b> (seeker's: ${q.seeker_poi?.name})`
+  },
+  photo:{
+    label:'Photo', colorTag:'tag-photo',
+    pickSteps:[],
+    isReady:p=>p.photo_prompt&&p.photo_prompt.trim(),
+    toJSON:p=>({type:'photo',prompt:p.photo_prompt}),
+    applyToZone:(zone)=>zone,
+    describe:q=>`📸 ${q.prompt}`
+  }
+};
+
+// ══════════════════════════════════════════════════════
+//  GEOMETRY
+// ══════════════════════════════════════════════════════
+function cloneGeo(g){return JSON.parse(JSON.stringify(g));}
+function fmt(p){return`${p.lat.toFixed(3)},${p.lng.toFixed(3)}`;}
+function toPt(p){return turf.point([p.lng,p.lat]);}
+function turfDist(a,b){return turf.distance(toPt(a),toPt(b),{units:'miles'});}
+function makeCircle(c,r,u){return turf.circle([c.lng,c.lat],r,{units:u,steps:72});}
+function safeIsect(z,o){try{const r=turf.intersect(z,o);return r||z;}catch(e){return z;}}
+function safeDiff(z,o){try{const r=turf.difference(z,o);return r||z;}catch(e){return z;}}
+
+function compassHalf(ref,dir){
+  const D=14,la=ref.lat,lo=ref.lng;
+  const h={
+    'N':[[lo-D,la],[lo+D,la],[lo+D,la+D],[lo-D,la+D],[lo-D,la]],
+    'S':[[lo-D,la-D],[lo+D,la-D],[lo+D,la],[lo-D,la],[lo-D,la-D]],
+    'E':[[lo,la-D],[lo+D,la-D],[lo+D,la+D],[lo,la+D],[lo,la-D]],
+    'W':[[lo-D,la-D],[lo,la-D],[lo,la+D],[lo-D,la+D],[lo-D,la-D]],
+    'NE':[[lo,la],[lo+D,la],[lo+D,la+D],[lo,la+D],[lo,la]],
+    'NW':[[lo-D,la],[lo,la],[lo,la+D],[lo-D,la+D],[lo-D,la]],
+    'SE':[[lo,la-D],[lo+D,la-D],[lo+D,la],[lo,la],[lo,la-D]],
+    'SW':[[lo-D,la-D],[lo,la-D],[lo,la],[lo-D,la],[lo-D,la-D]]
+  }[dir];
+  return turf.polygon([h]);
+}
+
+function bisectorHalf(ptA,ptB,side){
+  const pa=toPt(ptA),pb=toPt(ptB),mid=turf.midpoint(pa,pb);
+  const bearAB=turf.bearing(pa,pb);
+  const toward=side==='a'?(bearAB+180)%360:bearAB;
+  const FAR=1500;
+  const bL=turf.destination(mid,FAR,bearAB+90,{units:'kilometers'}).geometry.coordinates;
+  const bR=turf.destination(mid,FAR,bearAB-90,{units:'kilometers'}).geometry.coordinates;
+  const c1=turf.destination(turf.point(bL),FAR,toward,{units:'kilometers'}).geometry.coordinates;
+  const c2=turf.destination(turf.point(bR),FAR,toward,{units:'kilometers'}).geometry.coordinates;
+  return turf.polygon([[bL,c1,c2,bR,bL]]);
+}
+
+function makeBand(a,b,axis){
+  const BIG=40;
+  if(axis==='lat'){const mn=Math.min(a.lat,b.lat),mx=Math.max(a.lat,b.lat);return turf.polygon([[[-BIG*4,mn],[BIG*4,mn],[BIG*4,mx],[-BIG*4,mx],[-BIG*4,mn]]]);}
+  else{const mn=Math.min(a.lng,b.lng),mx=Math.max(a.lng,b.lng);return turf.polygon([[[mn,-BIG],[mx,-BIG],[mx,BIG],[mn,BIG],[mn,-BIG]]]);}
+}
+
+// ══════════════════════════════════════════════════════
+//  MAP INIT
+// ══════════════════════════════════════════════════════
+function initMap(){
+  map=L.map('map',{center:CENTER,zoom:12,zoomControl:false});
+
+  L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png',{
+    attribution:'© OpenStreetMap contributors © CARTO',
+    subdomains:'abcd', maxZoom:19
+  }).addTo(map);
+
+  L.control.zoom({position:'topleft'}).addTo(map);
+
+  // ── Administrative boundary layers (below zone) ──
+  countyLayer = L.geoJSON(null,{interactive:false,style:{
+    color:'#7799bb', weight:3, fill:false, opacity:0.75, dashArray:'8 5'
+  }}).addTo(map);
+  townLayer = L.geoJSON(null,{interactive:false,style:{
+    color:'#9aaabb', weight:1.5, fill:false, opacity:0.55, dashArray:'4 4'
+  }}).addTo(map);
+  // Highlight layer — drawn on top of zone layers when a boundary question is active
+  boundaryHighlightLayer = L.geoJSON(null,{interactive:false,style:{
+    color:'#f0a030', weight:3, fill:false, opacity:0.9
+  }});
+
+  // Zone layers behind T lines
+  maskLayer  =L.geoJSON(null,{interactive:false,style:{color:'transparent',weight:0,fillColor:'#cc1010',fillOpacity:0.42}}).addTo(map);
+  borderLayer=L.geoJSON(null,{interactive:false,style:{color:'#18b050',weight:3,fillColor:'#18b050',fillOpacity:0.10,dashArray:'7 4'}}).addTo(map);
+
+  radiusLayer = L.layerGroup().addTo(map);
+
+  previewLayer=L.geoJSON(null,{interactive:false,style:{color:'#f0a030',weight:1.5,fillColor:'#f0a030',fillOpacity:0.08,dashArray:'4 3'}}).addTo(map);
+  simulLayer=L.geoJSON(null,{interactive:false,style:{color:'#20c8b0',weight:2,fillColor:'#20c8b0',fillOpacity:0.22}}).addTo(map);
+
+  renderZone();
+  map.on('click',onMapClick);
+  loadMBTAData();
+  loadAdminBoundaries(); // async background fetch
+}
+
+// ══════════════════════════════════════════════════════
+//  GOOGLE POLYLINE DECODER
+// ══════════════════════════════════════════════════════
+function decodePolyline(str){
+  let idx=0,lat=0,lng=0,out=[];
+  while(idx<str.length){
+    let b,shift=0,res=0;
+    do{b=str.charCodeAt(idx++)-63;res|=(b&0x1f)<<shift;shift+=5;}while(b>=0x20);
+    lat+=((res&1)?~(res>>1):(res>>1));
+    shift=0;res=0;
+    do{b=str.charCodeAt(idx++)-63;res|=(b&0x1f)<<shift;shift+=5;}while(b>=0x20);
+    lng+=((res&1)?~(res>>1):(res>>1));
+    out.push([lat/1e5,lng/1e5]);
+  }
+  return out;
+}
+
+// ══════════════════════════════════════════════════════
+//  MBTA API — load shapes + stops per game line
+// ══════════════════════════════════════════════════════
+async function loadMBTAData(){
+  const BASE = 'https://api-v3.mbta.com';
+  const legStatus = document.getElementById('leg-status');
+  const allStops = {};
+  let loaded = 0;
+
+  // Fetch commuter rail stop IDs — use parent_station to match subway stop IDs
+  try{
+    const crResp = await fetch(`${BASE}/stops?filter[route_type]=2&fields[stop]=name,latitude,longitude&page[size]=500&include=parent_station`);
+    const crData = await crResp.json();
+    const seen = new Set();
+    (crData.data||[]).forEach(s => {
+      commuterRailStops.add(s.id);
+      const parentId = s.relationships?.parent_station?.data?.id;
+      if(parentId) commuterRailStops.add(parentId);
+      const name = s.attributes?.name;
+      const lat  = s.attributes?.latitude;
+      const lng  = s.attributes?.longitude;
+      if(name && lat && lng && !seen.has(name)){
+        seen.add(name);
+        commuterRailStopsList.push({id: s.id, name, lat, lng});
+      }
+    });
+    console.log(`Loaded ${commuterRailStops.size} CR IDs, ${commuterRailStopsList.length} named CR stops`);
+  }catch(e){ console.warn('CR stops fetch failed:', e); }
+
+  // Known Braintree-only stop IDs (south of JFK, not on Ashmont branch)
+  // Everything else on the Red route is trunk (both) or Ashmont-only.
+  // Ashmont-only: place-shmnl, place-fldcr, place-smmnl, place-asmnl
+  // Braintree-only: place-nqncy, place-wlsta, place-qnctr, place-qamnl, place-brntn
+  const ASHMONT_ONLY = new Set(['place-shmnl','place-fldcr','place-smmnl','place-asmnl']);
+  const BRAINTREE_ONLY = new Set(['place-nqncy','place-wlsta','place-qnctr','place-qamnl','place-brntn']);
+  // All other Red stops are trunk → both branches
+
+  // ── Load all lines in parallel ──
+  await Promise.all(GAME_LINES.map(async line => {
+    try {
+      // ── Shape ──
+      let shapePath = null;
+      const shapeResp = await fetch(`${BASE}/shapes?filter[route]=${line.routeId}&fields[shape]=polyline`);
+      const shapeData = await shapeResp.json();
+
+      if (line.branchKeyword) {
+        const keyword = line.branchKeyword.toLowerCase();
+        const allDecoded = (shapeData.data||[])
+          .map(s => ({ id: s.id, coords: decodePolyline(s.attributes.polyline) }))
+          .filter(s => s.coords.length > 1);
+
+        console.log(`Red shapes for ${line.id}:`, allDecoded.map(s=>s.id));
+
+        // Try 1: shape ID contains branch keyword (e.g. "canonical-Red-Ashmont-0")
+        let match = allDecoded.find(s => s.id.toLowerCase().includes(keyword));
+
+        // Try 2: find by terminal latitude
+        // Ashmont terminus: ~42.284°N   Braintree terminus: ~42.207°N
+        if(!match){
+          const termLat = line.branchKeyword === 'Ashmont' ? 42.284 : 42.207;
+          match = allDecoded.reduce((best, s) => {
+            const endLat = s.coords[s.coords.length-1][0];
+            const score = -Math.abs(endLat - termLat);
+            return (!best || score > best.score) ? {...s, score} : best;
+          }, null);
+          if(match) console.log(`Red ${line.branchKeyword}: using terminal-lat fallback, picked`, match.id);
+        }
+
+        shapePath = match ? match.coords : null;
+      } else {
+        const sorted = (shapeData.data||[])
+          .map(s => decodePolyline(s.attributes.polyline))
+          .filter(c => c.length > 1)
+          .sort((a,b) => b.length - a.length);
+        shapePath = sorted[0] || null;
+      }
+
+      if (shapePath) {
+        L.polyline(shapePath, {color:'#1a1a1a', weight:line.weight+3, opacity:0.4, lineJoin:'round', lineCap:'round'}).addTo(map);
+        L.polyline(shapePath, {
+          color: line.color,
+          weight: line.weight,
+          opacity: 1,
+          dashArray: line.id === 'Mattapan' ? '8 5' : null,
+          lineJoin:'round', lineCap:'round'
+        }).bindTooltip(line.label, {sticky:true}).addTo(map);
+      }
+
+      // ── Stops ──
+      // For both Red branches, fetch all Red stops once and assign by branch membership
+      const stopResp = await fetch(
+        `${BASE}/stops?filter[route]=${line.routeId}&fields[stop]=name,latitude,longitude`
+      );
+      const stopData = await stopResp.json();
+      (stopData.data||[]).forEach(s => {
+        const {name, latitude:lat, longitude:lng} = s.attributes;
+        if (!lat || !lng) return;
+        const sid = s.id;
+
+        // Determine which branch(es) this Red stop belongs to
+        let assignTo = [line.id];
+        if (line.branchKeyword === 'Ashmont') {
+          if (BRAINTREE_ONLY.has(sid)) return; // skip — not on Ashmont branch
+        } else if (line.branchKeyword === 'Braintree') {
+          if (ASHMONT_ONLY.has(sid)) return;   // skip — not on Braintree branch
+        }
+
+        if (!allStops[sid]) allStops[sid] = {name, lat, lng, lines:[], color:line.color};
+        if (!allStops[sid].lines.includes(line.id)) allStops[sid].lines.push(line.id);
+        if (!stopLineMap[sid]) stopLineMap[sid] = {name, lat, lng, lines:new Set()};
+        stopLineMap[sid].lines.add(line.id);
+      });
+
+      loaded++;
+      if (legStatus) legStatus.textContent = `⟳ ${loaded}/${GAME_LINES.length} loaded`;
+    } catch(e) {
+      console.warn('MBTA load error for', line.id, e);
+      loaded++;
+    }
+  }));
+
+  // Build a line-id → {label, color} lookup for popup badges
+  const lineInfo = {};
+  GAME_LINES.forEach(gl => { lineInfo[gl.id] = {label: gl.label, color: gl.color}; });
+
+  // Shorten line label for badge display
+  function badgeLabel(lineId){
+    const label = (lineInfo[lineId]||{}).label || lineId;
+    return label
+      .replace('Line · ','· ')
+      .replace(' Line','')
+      .replace('Red · Ashmont','Red A')
+      .replace('Red · Braintree','Red B');
+  }
+
+  // Draw stops deduplicated
+  Object.entries(allStops).forEach(([sid, {name, lat, lng, lines, color}]) => {
+    // Only show CR double-ring within the T network's reasonable footprint
+    const T_BBOX = {minLat:42.18, maxLat:42.67, minLng:-71.55, maxLng:-70.85};
+    const isCR = commuterRailStops.has(sid) &&
+      lat >= T_BBOX.minLat && lat <= T_BBOX.maxLat &&
+      lng >= T_BBOX.minLng && lng <= T_BBOX.maxLng;
+
+    // Collapse Green branches to a single color entry
+    const GREEN_COLOR = '#00843D';
+    const uniqueColors = [...new Set(lines.map(lid => {
+      const c = (lineInfo[lid]||{}).color || color;
+      // Normalize all Green branch variants to the same green
+      return (lid.startsWith('Green') || lid === 'Mattapan') ? (lid === 'Mattapan' ? '#800000' : GREEN_COLOR) : c;
+    }))];
+
+    const popupHTML = `<div class="stop-popup">
+      <div class="stop-popup-name">${name}</div>
+      <div class="stop-popup-lines">${[...new Set(lines)].map(lid=>{
+        const col=(lineInfo[lid]||{}).color||color;
+        return `<span class="stop-line-badge" style="background:${col}"><span class="stop-line-dot"></span>${badgeLabel(lid)}</span>`;
+      }).join('')}${isCR?`<span class="stop-line-badge" style="background:#7a4f9a"><span class="stop-line-dot"></span>CR</span>`:''}</div>
+    </div>`;
+
+    const icon = makeStopIcon(uniqueColors, isCR);
+    const marker = L.marker([lat, lng], {icon, zIndexOffset: isCR ? 200 : (uniqueColors.length > 1 ? 100 : 0)})
+      .bindPopup(popupHTML, {offset:[0,-2], maxWidth:240})
+      .on('click', function(){
+        if(_pickingHiderStation){
+          setHiderStation({name, lat, lng, lines:[...new Set(lines)]});
+          return;
+        }
+        this.openPopup();
+      })
+      .addTo(map);
+  });
+
+  const stopCount = Object.keys(stopLineMap).length;
+  console.log(`Loaded ${stopCount} stops into stopLineMap`);
+  if (legStatus) {
+    legStatus.textContent = stopCount > 0 ? `✓ ${stopCount} stops` : `⚠ 0 stops — check console`;
+    setTimeout(() => { legStatus.style.display='none'; }, 3500);
+  }
+
+  // Signal setup screen
+  mbdataReady = true;
+  const dot = document.getElementById('setup-dot');
+  const txt = document.getElementById('setup-status-text');
+  const btn = document.getElementById('btn-start');
+  if (dot) dot.classList.add('ready');
+  if (txt) txt.textContent = stopCount > 0
+    ? `${stopCount} stops loaded — ready!`
+    : `⚠ Stops failed to load — check network`;
+  if (btn) btn.disabled = false;
+
+  // Landmass precomputation disabled — will be loaded from static JSON file
+  // precomputeLandmasses().catch(e => console.warn('Landmass precompute failed:', e));
+}
+
+// ══════════════════════════════════════════════════════
+//  SETUP SCREEN
+// ══════════════════════════════════════════════════════
+function selectRadius(el){
+  document.querySelectorAll('.radius-opt').forEach(o=>o.classList.remove('selected'));
+  el.classList.add('selected');
+  hideRadiusMi = parseFloat(el.dataset.mi);
+}
+
+function startGame(){
+  // Build union of all station buffers at chosen radius
+  toast('Computing valid zone…');
+  setTimeout(()=>{
+    applyHideRadius();
+    // Dismiss overlay
+    const ov = document.getElementById('setup-overlay');
+    ov.classList.add('hidden');
+    setTimeout(()=>{ ov.style.display='none'; }, 420);
+    applyGameMode();
+    if(gameMode === 'hider' || gameMode === 'dev'){
+      promptHiderStationPick();
+    } else {
+      document.getElementById('panel').classList.remove('collapsed');
+      setTimeout(()=>document.getElementById('panel').classList.add('collapsed'), 1800);
+    }
+  }, 60);
+}
+
+function promptHiderStationPick(){
+  _pickingHiderStation = true;
+  document.getElementById('panel').classList.add('collapsed');
+  showBanner('🫣 TAP YOUR STATION on the map to set your hiding location');
+}
+
+function applyHideRadius(){
+  const stops = Object.values(stopLineMap);
+  console.log(`applyHideRadius: ${stops.length} stops in stopLineMap`);
+  if(!stops.length){
+    toast('⚠ Stop data not loaded yet — check console');
+    return;
+  }
+
+  // Draw individual radius circles for each stop using L.circle (meters, always crisp)
+  radiusLayer.clearLayers();
+  const radiusMeters = hideRadiusMi * 1609.34;
+  stops.forEach(s => {
+    L.circle([s.lat, s.lng], {
+      radius: radiusMeters,
+      color: '#4ab8d4',
+      weight: 2,
+      opacity: 0.8,
+      fillColor: '#4ab8d4',
+      fillOpacity: 0.15,
+      dashArray: '6 4',
+      interactive: false
+    }).addTo(radiusLayer);
+  });
+
+  // Build union of all circles for zone clipping
+  let union = makeCircle(stops[0], hideRadiusMi, 'miles');
+  for(let i=1; i<stops.length; i++){
+    try{
+      const c = makeCircle(stops[i], hideRadiusMi, 'miles');
+      union = turf.union(union, c) || union;
+    }catch(e){}
+  }
+
+  // Intersect with full bounding area
+  validZone = safeIsect(INIT_POLY, union);
+  constraints = [{
+    type:'_setup',
+    answer:'applied',
+    _label:`Hide radius: ${hideRadiusMi < 1 ? (hideRadiusMi*5280).toFixed(0)+' ft' : hideRadiusMi+' mi'} from any station`
+  }];
+  renderZone();
+  renderLog();
+  const km2 = (turf.area(validZone)/1e6).toFixed(1);
+  toast(`Zone set — ${km2} km² in play`);
+  saveGame();
+}
+
+// ══════════════════════════════════════════════════════
+//  ZONE RENDERING
+// ══════════════════════════════════════════════════════
+function renderZone(){
+  maskLayer.clearLayers();
+  borderLayer.clearLayers();
+  if(!validZone) return;
+  // Red tinted mask = everything OUTSIDE valid zone
+  try{ const mask=turf.difference(INIT_POLY,validZone); if(mask) maskLayer.addData(mask); }catch(e){}
+  // Green outline = valid zone
+  borderLayer.addData(validZone);
+  updateStat();
+}
+
+function updateStat(){
+  const km2=validZone?(turf.area(validZone)/1e6).toFixed(1):'0';
+  document.getElementById('zone-stat').textContent=`${km2} km²`;
+  document.getElementById('zone-area').textContent=`${km2} km² in play`;
+}
+
+function resetZone(){
+  applyHideRadius();
+  clearSave();
+  toast('Zone reset to hide-radius area');
+}
+
+// ══════════════════════════════════════════════════════
+//  MAP CLICK
+// ══════════════════════════════════════════════════════
+function onMapClick(e){
+  if(_hiderPickingLocation){
+    hiderSetLocation(e.latlng.lat, e.latlng.lng, 'map tap');
+    return;
+  }
+  if(pickStep<0||pickStep>=pickStepDefs.length) return;
+  const {lat,lng}=e.latlng;
+  qparams[pickStepDefs[pickStep].key]={lat,lng};
+  const cols=['#e84040','#f0a030','#a060ff','#20c8b0'];
+  const m=L.marker([lat,lng],{icon:seekerPin(cols[pickStep%cols.length]),zIndexOffset:2000}).addTo(map);
+  seekerPinMarkers.push(m);
+  pickStep++;
+  if(pickStep>=pickStepDefs.length){
+    hideBanner();
+    document.getElementById('panel').classList.remove('collapsed');
+    if(QDEFS[qtype].isReady(qparams)) generateJSON();
+  } else {
+    showBanner(pickStepDefs[pickStep].label);
+  }
+  renderBuildBody();
+  updatePreview();
+}
+
+// ══════════════════════════════════════════════════════
+//  BANNER
+// ══════════════════════════════════════════════════════
+function showBanner(msg){document.getElementById('banner-msg').textContent=msg;document.getElementById('pick-banner').classList.add('visible');}
+function hideBanner(){document.getElementById('pick-banner').classList.remove('visible');}
+function dismissBanner(){pickStep=-1;hideBanner();renderBuildBody();}
+
+function useMyLocation(key, stepIndex){
+  if(!navigator.geolocation){ toast('Geolocation not available on this device'); return; }
+  const btn = document.getElementById(`gps-btn-${stepIndex}`);
+  if(btn){ btn.classList.add('locating'); btn.textContent = '⏳ Locating…'; }
+  navigator.geolocation.getCurrentPosition(
+    (pos)=>{
+      const lat = pos.coords.latitude, lng = pos.coords.longitude;
+      const m = L.marker([lat,lng],{icon:seekerPin('#20c8b0'),zIndexOffset:3000}).addTo(map);
+      seekerPinMarkers.push(m);
+      map.setView([lat,lng], Math.max(map.getZoom(), 14));
+      // Set param and advance step — same logic as onMapClick
+      qparams[key] = {lat, lng};
+      pickStep++;
+      if(btn){ btn.classList.remove('locating'); btn.classList.add('located'); btn.textContent = '✓ Located'; }
+      if(pickStep >= pickStepDefs.length){
+        hideBanner();
+        document.getElementById('panel').classList.remove('collapsed');
+        if(QDEFS[qtype].isReady(qparams)) generateJSON();
+      } else {
+        showBanner(pickStepDefs[pickStep].label);
+      }
+      renderBuildBody();
+      updatePreview();
+      toast(`📡 Got your location (±${Math.round(pos.coords.accuracy)}m)`);
+    },
+    (err)=>{
+      if(btn){ btn.classList.remove('locating'); btn.textContent = '📡 Use My Location'; }
+      const msg = err.code === 1 ? 'Location permission denied' : err.code === 2 ? 'Location unavailable' : 'Location request timed out';
+      toast(msg);
+    },
+    { enableHighAccuracy: true, timeout: 10000, maximumAge: 30000 }
+  );
+}
+
+// ══════════════════════════════════════════════════════
+//  BUILD UI
+// ══════════════════════════════════════════════════════
+function selectQType(type){
+  qtype=type;
+  qparams={radius_miles:1, travel_miles:1};
+  pickStep=-1; pickStepDefs=QDEFS[type].pickSteps;
+  clearMarkers(); previewLayer.clearLayers(); simulLayer.clearLayers();
+  document.getElementById('json-out-section').style.display='none';
+  document.getElementById('map-simul-bar').classList.remove('visible');
+  document.querySelectorAll('.qbtn').forEach(b=>b.classList.toggle('on',b.dataset.q===type));
+  document.getElementById('panel').classList.remove('collapsed');
+  if(pickStepDefs.length > 0){
+    pickStep=0; showBanner(pickStepDefs[0].label);
+    document.getElementById('panel').classList.add('collapsed');
+  } else {
+    hideBanner();
+  }
+  renderBuildBody();
+}
+
+// ── Safe onclick dispatch — avoids quote escaping in HTML attributes ──
+const _clicks = [];
+function _c(fn){ _clicks.push(fn); return `_dispatch(${_clicks.length-1})`; }
+function _dispatch(i){ _clicks[i](); }
+function _clearClicks(){ _clicks.length=0; }
+
+// ── Category data ──
+// ── Matching categories — "Are we in the same ___?" ──
+// resolve(latLng) returns { val: string, boundary: GeoJSON polygon | null }
+const MATCHING_CATS = [
+  {
+    icon:'🏛️', label:'County', cat:'county',
+    resolve: async (c) => {
+      const rev = await fetch(`https://nominatim.openstreetmap.org/reverse?lat=${c.lat}&lon=${c.lng}&format=json&addressdetails=1`,{headers:{'Accept-Language':'en-US'}});
+      const d = await rev.json();
+      const val = d.address?.county || d.address?.state_district || null;
+      if(!val) return { val:null, boundary:null };
+      const boundary = await fetchNominatimBoundary(val + ' Massachusetts', 'boundary', 6);
+      return { val, boundary };
+    }
+  },
+  {
+    icon:'🏙️', label:'City / Town', cat:'city',
+    resolve: async (c) => {
+      const rev = await fetch(`https://nominatim.openstreetmap.org/reverse?lat=${c.lat}&lon=${c.lng}&format=json&addressdetails=1`,{headers:{'Accept-Language':'en-US'}});
+      const d = await rev.json();
+      const val = d.address?.city || d.address?.town || d.address?.village || null;
+      if(!val) return { val:null, boundary:null };
+      const boundary = await fetchNominatimBoundary(val + ' Massachusetts', 'boundary', 8);
+      return { val, boundary };
+    }
+  },
+  {
+    icon:'🏘️', label:'Neighborhood', cat:'neighborhood',
+    resolve: async (c) => {
+      const rev = await fetch(`https://nominatim.openstreetmap.org/reverse?lat=${c.lat}&lon=${c.lng}&format=json&addressdetails=1&zoom=15`,{headers:{'Accept-Language':'en-US'}});
+      const d = await rev.json();
+      const val = d.address?.suburb || d.address?.neighbourhood || d.address?.quarter || null;
+      if(!val) return { val:null, boundary:null };
+      const boundary = await fetchNominatimBoundary(val + ' Boston Massachusetts', 'boundary', 10);
+      return { val, boundary };
+    }
+  },
+  {
+    icon:'📮', label:'ZIP Code', cat:'postcode',
+    resolve: async (c) => {
+      const rev = await fetch(`https://nominatim.openstreetmap.org/reverse?lat=${c.lat}&lon=${c.lng}&format=json&addressdetails=1`,{headers:{'Accept-Language':'en-US'}});
+      const d = await rev.json();
+      const val = d.address?.postcode || null;
+      if(!val) return { val:null, boundary:null };
+      const boundary = await fetchNominatimBoundary(val + ' Massachusetts', 'postcode', null);
+      return { val, boundary };
+    }
+  },
+];
+
+// ── Nearest categories — "Is the nearest ___ to me the same as to you?" ──
+const NEAREST_CATS = [
+  { icon:'🌳', label:'Park',             overpass:(c,r)=>`nwr["leisure"="park"]["name"](around:${r},${c.lat},${c.lng});` },
+  { icon:'⛳', label:'Golf Course',       overpass:(c,r)=>`nwr["leisure"="golf_course"](around:${r},${c.lat},${c.lng});` },
+  { icon:'📚', label:'Library',          overpass:(c,r)=>`nwr["amenity"="library"](around:${r},${c.lat},${c.lng});` },
+  { icon:'🏥', label:'Hospital',         overpass:(c,r)=>`nwr["amenity"="hospital"](around:${r},${c.lat},${c.lng});` },
+  { icon:'🏛️', label:'Museum',           overpass:(c,r)=>`nwr["tourism"="museum"](around:${r},${c.lat},${c.lng});` },
+  { icon:'🎬', label:'Movie Theater',    overpass:(c,r)=>`nwr["amenity"="cinema"](around:${r},${c.lat},${c.lng});` },
+  { icon:'🦒', label:'Zoo / Aquarium',   overpass:(c,r)=>`nwr["tourism"~"^(zoo|aquarium)$"](around:${r},${c.lat},${c.lng});` },
+  { icon:'🏳️', label:'Foreign Consulate',overpass:(c,r)=>`nwr["office"~"diplomatic|consulate"](around:${r},${c.lat},${c.lng});nwr["amenity"="embassy"](around:${r},${c.lat},${c.lng});` },
+];
+// osm_class: 'boundary', 'postcode', or null (any)
+// admin_level: OSM admin level (6=county, 8=municipality, 10=neighborhood) or null
+async function fetchNominatimBoundary(query, featureClass, adminLevel){
+  try{
+    let url = `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(query)}&format=json&limit=5&polygon_geojson=1&countrycodes=us`;
+    const res = await fetch(url, {headers:{'Accept-Language':'en-US'}});
+    const items = await res.json();
+    if(!items.length) return null;
+    // Find best match: prefer items with a polygon and matching class/admin_level
+    const scored = items.map(item=>{
+      let score = 0;
+      if(item.geojson && (item.geojson.type==='Polygon'||item.geojson.type==='MultiPolygon')) score += 10;
+      if(item.class === featureClass || item.type === featureClass) score += 5;
+      if(adminLevel && item.extratags?.admin_level == adminLevel) score += 3;
+      return {item, score};
+    }).sort((a,b)=>b.score-a.score);
+    const best = scored[0].item;
+    if(!best.geojson || (best.geojson.type!=='Polygon' && best.geojson.type!=='MultiPolygon')) return null;
+    // Wrap in a GeoJSON Feature
+    return {type:'Feature', properties:{name:best.display_name}, geometry:best.geojson};
+  } catch(e){
+    console.warn('Boundary fetch failed:', e);
+    return null;
+  }
+}
+
+// ── Landmass precomputation ──
+// One Overpass query at startup → land pieces → each stop gets a landmass index
+const _landmassCache = {
+  ready: false,
+  pieces: [],           // array of Turf polygon Features
+  stopIndex: {},        // stopId → piece index
+};
+
+async function precomputeLandmasses(){
+  // Bounding box covers the whole MBTA network area
+  const S=41.85, N=42.80, W=-71.70, E=-70.40;
+
+  const overpassQ = `[out:json][timeout:30];(
+    way["natural"~"^(water|bay|coastline)$"](${S},${W},${N},${E});
+    way["waterway"="riverbank"](${S},${W},${N},${E});
+    relation["natural"~"^(water|bay)$"](${S},${W},${N},${E});
+    relation["waterway"="riverbank"](${S},${W},${N},${E});
+  );out geom;`;
+
+  const endpoints=[
+    'https://overpass-api.de/api/interpreter',
+    'https://overpass.kumi.systems/api/interpreter'
+  ];
+  let data;
+  for(const url of endpoints){
+    try{
+      const res=await fetch(url,{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'data='+encodeURIComponent(overpassQ)});
+      if(res.ok){data=await res.json();break;}
+    }catch(e){}
+  }
+  if(!data||!data.elements?.length){ console.warn('Landmass precompute: no water data'); return; }
+
+  // Build water polygons
+  const waterPolys=[];
+  const tryAdd=(geom)=>{
+    if(!geom||geom.length<4) return;
+    try{
+      let c=geom.map(p=>[p.lon,p.lat]);
+      const f=c[0],l=c[c.length-1];
+      if(f[0]!==l[0]||f[1]!==l[1]) c.push(f);
+      if(c.length>=4) waterPolys.push(turf.polygon([c]));
+    }catch(e){}
+  };
+  data.elements.forEach(el=>{
+    if(el.type==='way') tryAdd(el.geometry);
+    if(el.type==='relation'&&el.members)
+      el.members.forEach(m=>{ if(m.type==='way') tryAdd(m.geometry); });
+  });
+
+  if(!waterPolys.length){ console.warn('Landmass precompute: no valid water polys'); return; }
+
+  // Build land = bbox minus water
+  let land=turf.bboxPolygon([W,S,E,N]);
+  for(const w of waterPolys){
+    try{ land=turf.difference(land,w)||land; }catch(e){}
+  }
+
+  // Extract pieces
+  const geom=land.geometry||land;
+  if(geom.type==='Polygon') _landmassCache.pieces=[turf.polygon(geom.coordinates)];
+  else if(geom.type==='MultiPolygon') _landmassCache.pieces=geom.coordinates.map(c=>turf.polygon(c));
+  else if(land.geometry?.type==='Polygon') _landmassCache.pieces=[turf.polygon(land.geometry.coordinates)];
+  else if(land.geometry?.type==='MultiPolygon') _landmassCache.pieces=land.geometry.coordinates.map(c=>turf.polygon(c));
+
+  // Assign each stop to a piece
+  const stops=Object.entries(stopLineMap);
+  for(const [sid,s] of stops){
+    const pt=turf.point([s.lng,s.lat]);
+    const idx=_landmassCache.pieces.findIndex(p=>{
+      try{return turf.booleanPointInPolygon(pt,p);}catch(e){return false;}
+    });
+    if(idx>=0) _landmassCache.stopIndex[sid]=idx;
+  }
+
+  _landmassCache.ready=true;
+  const uniquePieces=new Set(Object.values(_landmassCache.stopIndex)).size;
+  console.log(`Landmass: ${_landmassCache.pieces.length} pieces, ${stops.length} stops assigned, ${uniquePieces} distinct landmasses`);
+}
+
+// Return the landmass polygon for a given lat/lng (finds nearest stop, uses its cached piece)
+function landmassForPoint(latLng){
+  if(!_landmassCache.ready) return null;
+  // Find nearest stop
+  const stops=Object.entries(stopLineMap);
+  if(!stops.length) return null;
+  let nearestSid=null, nearestDist=Infinity;
+  for(const [sid,s] of stops){
+    const d=turfDist(latLng,s);
+    if(d<nearestDist){nearestDist=d;nearestSid=sid;}
+  }
+  if(!nearestSid) return null;
+  const idx=_landmassCache.stopIndex[nearestSid];
+  if(idx===undefined) return null;
+  const piece=_landmassCache.pieces[idx];
+  return {type:'Feature',properties:{name:'landmass'},geometry:piece.geometry};
+}
+
+// Old per-question async resolver — now just a fast lookup
+async function resolveSeekersLandmass(center){
+  return landmassForPoint(center);
+}
+
+const PHOTO_PROMPTS = [
+  {icon:'🤳', text:'A selfie of yourself'},
+  {icon:'🌤️', text:'The sky directly above you'},
+  {icon:'🛤️', text:'The widest street you can see'},
+  {icon:'🚉', text:'Your train platform or stop'},
+  {icon:'🏙️', text:'The tallest building in view'},
+  {icon:'🏪', text:'The nearest shop sign'},
+  {icon:'🌳', text:'A tree near your location'},
+  {icon:'🌉', text:'The nearest bridge or overpass'},
+  {icon:'🗺️', text:'A street sign showing your location'},
+  {icon:'🚪', text:'A door to a nearby building'},
+];
+
+function renderBuildBody(){
+  _clearClicks();
+  const el = document.getElementById('build-body');
+  if(!qtype){ el.innerHTML='<p class="empty" style="margin-top:8px">Choose a question type above to get started.</p>'; return; }
+  let h = '';
+
+  // Pick steps
+  if(pickStepDefs.length > 0){
+    h += '<div class="sec" style="margin-top:8px">Steps</div><div class="steps">';
+    pickStepDefs.forEach((s,i)=>{
+      const val=qparams[s.key], isDone=!!val, isCur=i===pickStep;
+      h += `<div class="step-item ${isDone?'done-row':isCur?'active-row':''}">
+        <div class="step-dot ${isDone?'done':isCur?'next':''}"></div>
+        <div style="flex:1;min-width:0">
+          <div>${isDone?'✓ '+s.key.replace(/_/g,' ').toUpperCase():s.label}</div>
+          ${isDone?`<div class="step-val">📍 ${val.lat.toFixed(4)}, ${val.lng.toFixed(4)}</div>`:''}
+          ${isCur?`<div id="gps-btn-${i}" class="step-gps-btn" onclick="useMyLocation('${s.key}',${i})">📡 Use My Location</div>`:''}
+        </div></div>`;
+    });
+    h += '</div>';
+    if(pickStep >= pickStepDefs.length)
+      h += `<button class="btn btn-ghost" style="margin-bottom:8px;margin-top:4px" onclick="restartPick()">↺ Re-pick Points</button>`;
+  }
+
+  // Type-specific params
+  if(qtype==='radar')      h += renderRadarParams();
+  else if(qtype==='thermo')h += renderThermoParams();
+  else if(qtype==='measure')h += renderMeasureParams();
+  else if(qtype==='tentacles')h += renderTentaclesParams();
+  else if(qtype==='matching')h += renderMatchingParams();
+  else if(qtype==='photo') h += renderPhotoParams();
+
+  el.innerHTML = h;
+}
+
+function renderRadarParams(){
+  const presets=[{r:0.25,l:'¼ mi'},{r:0.5,l:'½ mi'},{r:2,l:'2 mi'},{r:3,l:'3 mi'},{r:5,l:'5 mi'}];
+  const isCustom = qparams.radius_miles && !presets.find(p=>p.r===qparams.radius_miles);
+  let h='<div class="sec">Radar Radius</div><div class="axrow" style="flex-wrap:wrap;gap:5px">';
+  presets.forEach(p=>{
+    h+=`<div class="axbtn ${qparams.radius_miles===p.r?'on':''}" onclick="${_c(()=>{setParam('radius_miles',p.r);setParam('_customR',false);updatePreview();tryGenerate();renderBuildBody();})}">${p.l}</div>`;
+  });
+  h+=`<div class="axbtn ${isCustom||qparams._customR?'on':''}" onclick="${_c(()=>{setParam('_customR',true);renderBuildBody();})}">Custom</div></div>`;
+  if(isCustom||qparams._customR)
+    h+=`<div class="param"><div class="plabel">Miles <span class="pval" id="rv">${qparams.radius_miles||0.5}</span></div>
+    <input type="range" min="0.1" max="10" step="0.1" value="${qparams.radius_miles||0.5}"
+    oninput="setParam('radius_miles',+this.value);document.getElementById('rv').textContent=this.value;updatePreview();tryGenerate()"></div>`;
+  return h;
+}
+
+function renderThermoParams(){
+  const presets=[{r:0.5,l:'½ mi'},{r:1,l:'1 mi'},{r:2,l:'2 mi'},{r:3,l:'3 mi'},{r:5,l:'5 mi'}];
+  const isCustom = qparams.travel_miles && !presets.find(p=>p.r===qparams.travel_miles);
+  let h='<div class="sec">Travel Distance</div><div class="axrow" style="flex-wrap:wrap;gap:5px">';
+  presets.forEach(p=>{
+    h+=`<div class="axbtn ${qparams.travel_miles===p.r?'on':''}" onclick="${_c(()=>{setParam('travel_miles',p.r);setParam('_customT',false);updatePreview();tryGenerate();renderBuildBody();})}">${p.l}</div>`;
+  });
+  h+=`<div class="axbtn ${isCustom||qparams._customT?'on':''}" onclick="${_c(()=>{setParam('_customT',true);renderBuildBody();})}">Custom</div></div>`;
+  if(isCustom||qparams._customT)
+    h+=`<div class="param"><div class="plabel">Miles <span class="pval" id="tv">${qparams.travel_miles||1}</span></div>
+    <input type="range" min="0.1" max="10" step="0.1" value="${qparams.travel_miles||1}"
+    oninput="setParam('travel_miles',+this.value);document.getElementById('tv').textContent=this.value;updatePreview();tryGenerate()"></div>`;
+  return h;
+}
+
+function renderMeasureParams(){
+  if(!qparams.center) return '<p class="empty" style="margin-top:6px;font-size:9px">Set your location above first.</p>';
+  let h = '<div class="sec">What to Measure From</div>';
+
+  // Group by category
+  const groups = {};
+  MEASURE_CATS.forEach(c=>{
+    if(!groups[c.group]) groups[c.group]=[];
+    groups[c.group].push(c);
+  });
+  Object.entries(groups).forEach(([grp, cats])=>{
+    h += `<div style="font-size:7.5px;letter-spacing:0.1em;text-transform:uppercase;color:var(--dim);margin:8px 0 5px">${grp}</div>`;
+    h += '<div class="poi-presets">';
+    cats.forEach(c=>{
+      h+=`<div class="poi-chip ${qparams._mcat===c.label?'on':''}" onclick="${_c(()=>selectMeasureCat(c))}">${c.icon} ${c.label}</div>`;
+    });
+    h += '</div>';
+  });
+
+  if(qparams._msearching) h+='<div style="font-size:9px;color:var(--dim);margin-top:8px">⏳ Finding nearest…</div>';
+  else if(qparams.measure_seeker_nearest)
+    h+=`<div class="found-result" style="margin-top:8px">
+      📍 <b>${qparams.measure_seeker_nearest.name}</b><br>
+      <span style="color:var(--dim)">${qparams.measure_seeker_dist.toFixed(2)} mi from you</span><br>
+      <span style="font-size:8px;color:var(--dim)">${qparams.measure_all_instances?.length||1} instances found for zone</span>
+    </div>`;
+  return h;
+}
+
+function renderTentaclesParams(){
+  if(!qparams.center) return '<p class="empty" style="margin-top:6px;font-size:9px">Set your location above first.</p>';
+  let h='<div class="sec">Tentacle Type</div><div class="poi-presets">';
+  TENTACLES_CATS.forEach(c=>{
+    h+=`<div class="poi-chip ${qparams._tcat===c.label?'on':''}" onclick="${_c(()=>selectTentacleCat(c))}">${c.icon} ${c.label}</div>`;
+  });
+  h+='</div>';
+  const radPresets=[{r:0.5,l:'½ mi'},{r:1,l:'1 mi'},{r:2,l:'2 mi'}];
+  h+='<div class="sec">Reach Radius</div><div class="axrow">';
+  radPresets.forEach(p=>{
+    h+=`<div class="axbtn ${qparams.radius_miles===p.r?'on':''}" onclick="${_c(()=>{setParam('radius_miles',p.r);updatePreview();if(qparams.tentacle_options)tryGenerate();renderBuildBody();})}">${p.l}</div>`;
+  });
+  h+='</div>';
+  if(qparams._tsearching) h+='<div style="font-size:9px;color:var(--dim);margin-top:6px">⏳ Searching…</div>';
+  else if(qparams.tentacle_options&&qparams.tentacle_options.length){
+    h+=`<div class="found-result" style="margin-top:8px">🐙 Found <b>${qparams.tentacle_options.length} options</b> nearby:</div>`;
+    h+='<div class="tent-opt-list">';
+    qparams.tentacle_options.forEach((o,i)=>{
+      h+=`<div class="tent-opt"><div class="tent-opt-num" style="background:var(--teal);color:#000">${i+1}</div>${o.name}</div>`;
+    });
+    h+='</div>';
+  }
+  return h;
+}
+
+function renderMatchingParams(){
+  if(!qparams.center) return '<p class="empty" style="margin-top:6px;font-size:9px">Set your location above first.</p>';
+
+  // ── Section 1: Are we in the same… ──
+  let h = '<div class="sec" style="margin-top:4px">Are we in the same…</div>';
+  h += '<div style="display:flex;flex-direction:column;gap:5px;margin-top:6px">';
+  MATCHING_CATS.forEach(c=>{
+    const sel = qparams.matching_cat === c.cat;
+    h += `<div class="sitem${sel?' active-row':''}" style="${sel?'border-color:var(--purple);background:rgba(160,96,255,0.08)':''}"
+      onclick="${_c(()=>selectMatchingCat(c))}">
+      <span style="font-size:16px;margin-right:10px;vertical-align:middle">${c.icon}</span>
+      <span style="vertical-align:middle">${c.label}?</span>
+      ${c.cat==='landmass' && !_landmassCache.ready ? '<span style="float:right;font-size:8px;color:var(--gold)">⏳ precomputing…</span>' : ''}
+      ${sel?'<span style="float:right;color:var(--purple);font-size:9px">✓</span>':''}
+    </div>`;
+  });
+  h += '</div>';
+  if(qparams._matching_searching)
+    h += '<div style="font-size:9px;color:var(--dim);margin-top:8px">⏳ Looking up your location and boundary…</div>';
+  else if(qparams.matching_seeker_val){
+    const hasBoundary = !!qparams.matching_boundary;
+    h += `<div class="found-result" style="margin-top:8px">
+      <b>${qparams.matching_cat_label}:</b> ${qparams.matching_seeker_val}
+      <div style="font-size:8px;color:${hasBoundary?'var(--green)':'var(--gold)'};margin-top:4px">
+        ${hasBoundary ? '✓ Boundary loaded — zone will update on answer' : '⚠ No boundary — informational only'}
+      </div>
+    </div>`;
+  }
+
+  // ── Section 2: Is the nearest ___ the same… ──
+  h += '<div class="sec" style="margin-top:14px;padding-top:14px;border-top:1px solid var(--border)">Is the nearest ___ to me the same as to you?</div>';
+  h += '<div style="display:flex;flex-direction:column;gap:5px;margin-top:6px">';
+  NEAREST_CATS.forEach(c=>{
+    const sel = qparams.nearest_cat === c.label;
+    h += `<div class="sitem${sel?' active-row':''}" style="${sel?'border-color:var(--teal);background:rgba(32,200,176,0.08)':''}"
+      onclick="${_c(()=>selectNearestCat(c))}">
+      <span style="font-size:16px;margin-right:10px;vertical-align:middle">${c.icon}</span>
+      <span style="vertical-align:middle">${c.label}</span>
+      ${sel?'<span style="float:right;color:var(--teal);font-size:9px">✓</span>':''}
+    </div>`;
+  });
+  h += '</div>';
+  if(qparams._nearest_searching)
+    h += '<div style="font-size:9px;color:var(--dim);margin-top:8px">⏳ Searching for nearby options…</div>';
+  else if(qparams.nearest_seeker_poi){
+    const hasPoly = !!qparams.nearest_voronoi;
+    h += `<div class="found-result" style="margin-top:8px">
+      <b>Your nearest ${qparams.nearest_cat_label}:</b> ${qparams.nearest_seeker_poi.name}<br>
+      <span style="color:var(--dim);font-size:8px">${qparams.nearest_all_pois?.length||0} total options found</span>
+      <div style="font-size:8px;color:${hasPoly?'var(--green)':'var(--gold)'};margin-top:3px">
+        ${hasPoly?'✓ Voronoi zone computed':'⚠ Not enough options for zone — informational only'}
+      </div>
+    </div>`;
+  }
+
+  return h;
+}
+
+async function selectMatchingCat(catObj){
+  if(!qparams.center){ toast('Set your location first'); return; }
+  if(catObj.cat === 'landmass' && !_landmassCache.ready){
+    toast('⏳ Still precomputing landmasses — try again in a moment'); return;
+  }
+  qparams.matching_cat = catObj.cat;
+  qparams.matching_cat_label = catObj.label;
+  qparams.matching_seeker_val = null;
+  qparams.matching_boundary = null;
+  qparams._matching_searching = true;
+  highlightBoundary(catObj.cat);
+  renderBuildBody();
+  try{
+    const result = await catObj.resolve(qparams.center);
+    qparams._matching_searching = false;
+    if(!result.val){ toast('Could not determine your '+catObj.label+' — try a different location'); renderBuildBody(); return; }
+    qparams.matching_seeker_val = result.val;
+    // Normalize: ensure seeker's point is INSIDE the polygon, flip if not
+    let boundary = result.boundary || null;
+    if(boundary){
+      try{
+        const pt = turf.point([qparams.center.lng, qparams.center.lat]);
+        if(!turf.booleanPointInPolygon(pt, boundary)){
+          const BBOX = turf.bboxPolygon([-72.5, 41.5, -70.0, 43.0]);
+          const flipped = turf.difference(BBOX, boundary);
+          if(flipped && turf.booleanPointInPolygon(pt, flipped)){
+            boundary = flipped;
+            console.log('Boundary flipped for', result.val);
+          }
+        }
+        // Simplify to avoid freezing on mobile
+        boundary = turf.simplify(boundary, {tolerance:0.0005, highQuality:false});
+      }catch(e){ console.warn('Boundary normalize/simplify failed:', e); }
+    }
+    qparams.matching_boundary = boundary;
+    qparams._matching_boundary_simplified = boundary; // already simplified
+    if(result.boundary){
+      toast(`✓ Got boundary for ${result.val}`);
+    } else {
+      toast(`⚠ No boundary found for ${result.val} — question will be informational only`);
+    }
+    renderBuildBody();
+    tryGenerate();
+  } catch(e){
+    qparams._matching_searching = false;
+    toast('Lookup failed: '+e.message);
+    renderBuildBody();
+  }
+}
+
+async function selectNearestCat(catObj){
+  if(!qparams.center){ toast('Set your location first'); return; }
+  qparams.nearest_cat = catObj.label;
+  qparams.nearest_cat_label = catObj.label;
+  qparams.nearest_seeker_poi = null;
+  qparams.nearest_all_pois = null;
+  qparams.nearest_voronoi = null;
+  qparams._nearest_searching = true;
+  renderBuildBody();
+  try{
+    const radiusM = 35000;
+    const items = await overpassSearch(catObj.overpass(qparams.center, radiusM), qparams.center, radiusM);
+    qparams._nearest_searching = false;
+    if(!items.length){ toast('No '+catObj.label+' found nearby'); renderBuildBody(); return; }
+
+    const pois = items.map(it=>({name:it.name, lat:it.lat, lng:it.lng}));
+    pois.sort((a,b)=>turfDist(qparams.center,a)-turfDist(qparams.center,b));
+    qparams.nearest_seeker_poi = pois[0];
+    qparams.nearest_all_pois = pois.slice(0,20);
+
+    if(pois.length >= 2){
+      try{
+        const fc = turf.featureCollection(pois.map(p=>turf.point([p.lng,p.lat])));
+        const cells = turf.voronoi(fc, {bbox:[-72,41.5,-70,43]});
+        if(cells && cells.features.length){
+          // Find cell containing the nearest POI point
+          const nearestPt = turf.point([pois[0].lng, pois[0].lat]);
+          const seekerPt  = turf.point([qparams.center.lng, qparams.center.lat]);
+          const correctCell = cells.features.find(cell=>{
+            try{ return turf.booleanPointInPolygon(nearestPt, cell); }catch(e){ return false; }
+          });
+          if(correctCell){
+            // Verify seeker is also inside this cell (they should be, since it's their nearest POI)
+            const seekerInside = (()=>{ try{ return turf.booleanPointInPolygon(seekerPt, correctCell); }catch(e){ return false; }})();
+            qparams.nearest_voronoi = seekerInside ? correctCell : null;
+            if(!seekerInside) console.warn('Nearest: seeker not in correct Voronoi cell — no zone update');
+          }
+          // Drop teardrop pins — gold #1 for nearest, blue for rest
+          clearPoiMarkers();
+          pois.slice(0,100).forEach((p,i)=>{
+            const col = i===0 ? '#f0a030' : '#4a7090';
+            const m = L.marker([p.lat,p.lng],{icon:tentaclePin(i+1,col),zIndexOffset:1500+i})
+              .bindPopup(`<div class="stop-popup"><div class="stop-popup-name">${p.name}</div>${i===0?'<div style="font-size:9px;color:#f0a030;margin-top:2px">★ Your nearest</div>':''}</div>`,{offset:[0,-28],maxWidth:220})
+              .addTo(map);
+            pickedMarkers.push(m);
+          });
+          map.fitBounds(L.latLngBounds([[pois[0].lat,pois[0].lng],[qparams.center.lat,qparams.center.lng]]).pad(0.3));
+        }
+      }catch(e){ console.warn('Voronoi failed:',e); }
+    }
+    renderBuildBody(); tryGenerate();
+  }catch(e){ qparams._nearest_searching=false; toast('Search failed: '+e.message); renderBuildBody(); }
+}
+
+function renderPhotoParams(){
+  let h='<div class="photo-grid">';
+  PHOTO_PROMPTS.forEach(p=>{
+    const sel=qparams.photo_prompt===p.text;
+    h+=`<div class="photo-opt ${sel?'on':''}" onclick="${_c(()=>{qparams.photo_prompt=p.text;tryGenerate();renderBuildBody();})}">
+      <span class="po-icon">${p.icon}</span><span class="po-text">${p.text}</span></div>`;
+  });
+  h+='</div>';
+  h+=`<div class="sec">Or Custom Prompt</div>
+  <textarea class="jarea" rows="2" placeholder="Describe what to photograph…"
+    oninput="qparams.photo_prompt=this.value;tryGenerate()">${qparams.photo_prompt&&!PHOTO_PROMPTS.find(p=>p.text===qparams.photo_prompt)?qparams.photo_prompt:''}</textarea>`;
+  return h;
+}
+
+// Helpers for param rendering
+function setParam(k,v){ qparams[k]=v; }
+function tryGenerate(){ if(qtype&&QDEFS[qtype]&&QDEFS[qtype].isReady(qparams)) generateJSON(); }
+
+// ── Category data — Overpass tags ──
+// Each entry has: icon, label, and an overpass() fn that returns the Overpass query body
+// for a given {lat,lng,radiusM}
+// ── Measure categories ──
+// Each has: icon, label, group, and either overpass() or resolve() (async, returns {lat,lng,name})
+// ── Measure helpers ──
+
+// ── Administrative boundary loader ──
+// Stores fetched relation geometries keyed by OSM id for later highlight lookup
+const _adminBoundaries = { counties: [], towns: [] };
+
+async function loadAdminBoundaries(){
+  const S=41.85, N=42.80, W=-71.70, E=-70.40;
+  try{
+    // Fetch counties (admin_level=6) and towns/cities (admin_level=8) in one query
+    const q=`[out:json][timeout:30];(
+      relation["admin_level"="6"]["boundary"="administrative"](${S},${W},${N},${E});
+      relation["admin_level"="8"]["boundary"="administrative"](${S},${W},${N},${E});
+    );out geom 2000;`;
+    const data = await overpassRaw(q);
+
+    (data.elements||[]).forEach(rel=>{
+      if(rel.type!=='relation') return;
+      const level = rel.tags?.admin_level;
+      const name  = rel.tags?.name || '';
+      // Convert member ways to GeoJSON LineStrings for display
+      (rel.members||[]).forEach(m=>{
+        if(m.type!=='way'||!m.geometry||m.geometry.length<2) return;
+        const coords = m.geometry.map(p=>[p.lon,p.lat]);
+        const feat = {type:'Feature',properties:{name,admin_level:level,rel_id:rel.id},geometry:{type:'LineString',coordinates:coords}};
+        if(level==='6') _adminBoundaries.counties.push(feat);
+        else if(level==='8') _adminBoundaries.towns.push(feat);
+      });
+    });
+
+    // Add to map layers
+    if(countyLayer) countyLayer.addData({type:'FeatureCollection',features:_adminBoundaries.counties});
+    if(townLayer)   townLayer.addData({type:'FeatureCollection',features:_adminBoundaries.towns});
+    console.log(`Admin boundaries: ${_adminBoundaries.counties.length} county segments, ${_adminBoundaries.towns.length} town segments`);
+  }catch(e){ console.warn('Admin boundary load failed:', e); }
+}
+
+// Highlight boundaries relevant to the active question category
+function highlightBoundary(cat){
+  if(!boundaryHighlightLayer) return;
+  boundaryHighlightLayer.clearLayers();
+  boundaryHighlightLayer.remove();
+
+  let features = [];
+  if(cat === 'county' || cat === 'A County Border'){
+    features = _adminBoundaries.counties;
+  } else if(cat === 'city' || cat === 'A City Border'){
+    features = _adminBoundaries.towns;
+  }
+  if(!features.length) return;
+
+  boundaryHighlightLayer.clearLayers();
+  boundaryHighlightLayer.addData({type:'FeatureCollection',features});
+  boundaryHighlightLayer.addTo(map);
+}
+
+function clearBoundaryHighlight(){
+  if(!boundaryHighlightLayer) return;
+  boundaryHighlightLayer.clearLayers();
+  boundaryHighlightLayer.remove();
+}
+
+// Raw Overpass fetch returning parsed JSON
+async function overpassRaw(query){
+  const endpoints=['https://overpass-api.de/api/interpreter','https://overpass.kumi.systems/api/interpreter'];
+  for(const url of endpoints){
+    try{
+      const res=await fetch(url,{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'data='+encodeURIComponent(query)});
+      if(res.ok) return await res.json();
+    }catch(e){}
+  }
+  return {elements:[]};
+}
+
+// Convert Overpass way geometries to a list of evenly-spaced points (every `stepMiles`)
+function densifyWaysToPoints(data, stepMiles=0.25){
+  const pts=[];
+  const seen=new Set();
+  (data.elements||[]).forEach(el=>{
+    if(el.type!=='way'||!el.geometry) return;
+    const coords=el.geometry.map(p=>[p.lon,p.lat]);
+    if(coords.length<2) return;
+    const line=turf.lineString(coords);
+    const len=turf.length(line,{units:'miles'});
+    const steps=Math.max(1,Math.round(len/stepMiles));
+    for(let i=0;i<=steps;i++){
+      try{
+        const pt=turf.along(line,(i/steps)*len,{units:'miles'});
+        const [lng,lat]=pt.geometry.coordinates;
+        const key=`${lat.toFixed(4)},${lng.toFixed(4)}`;
+        if(!seen.has(key)){seen.add(key);pts.push({lat,lng,name:el.tags?.name||'Track'});}
+      }catch(e){}
+    }
+  });
+  return pts;
+}
+
+// Fetch border polygon and return densified points along the nearest edge
+async function nearestBorderPoints(center, type, adminLevel){
+  const name = type==='county' ? 'Massachusetts counties' : 'Massachusetts municipalities';
+  // Fetch all admin boundaries of the given level in the area
+  const pad=0.3;
+  const s=center.lat-pad,n=center.lat+pad,w=center.lng-pad,e=center.lng+pad;
+  const q=`[out:json][timeout:25];relation["admin_level"="${adminLevel}"]["boundary"="administrative"](${s},${w},${n},${e});out geom 500;`;
+  const data=await overpassRaw(q);
+  // Collect all way geometry points from all matching relations
+  const pts=[];
+  const seen=new Set();
+  (data.elements||[]).forEach(el=>{
+    if(el.type!=='relation'||!el.members) return;
+    el.members.forEach(m=>{
+      if(m.type!=='way'||!m.geometry) return;
+      m.geometry.forEach(p=>{
+        const key=`${p.lat.toFixed(4)},${p.lon.toFixed(4)}`;
+        if(!seen.has(key)){seen.add(key);pts.push({lat:p.lat,lng:p.lon,name:'Border'});}
+      });
+    });
+  });
+  return pts;
+}
+
+const MEASURE_CATS = [
+  // TRANSIT
+  { group:'Transit', icon:'🚆', label:'An Amtrak Line',
+    instances: async (c) => {
+      // Fetch NEC and Downeaster route relations by name across the full MBTA bounding box
+      // Using relation-based query to get entire track, not just nearby sections
+      const S=41.0, N=43.5, W=-72.0, E=-70.0; // broad bbox covering NEC Boston-Providence + Downeaster to Portland
+      const q = `[out:json][timeout:30];(
+        relation["route"="train"]["operator"~"Amtrak",i](${S},${W},${N},${E});
+        relation["route"="train"]["name"~"Downeaster|Northeast Corridor|NEC|Acela|Regional",i](${S},${W},${N},${E});
+      );out geom 500;`;
+      const data = await overpassRaw(q);
+      // Relations return members with geometry
+      const pts = [];
+      const seen = new Set();
+      (data.elements||[]).forEach(el=>{
+        if(el.type!=='relation') return;
+        (el.members||[]).forEach(m=>{
+          if(m.type!=='way'||!m.geometry) return;
+          m.geometry.forEach(p=>{
+            const key=`${p.lat.toFixed(3)},${p.lon.toFixed(3)}`;
+            if(!seen.has(key)){ seen.add(key); pts.push({lat:p.lat, lng:p.lon, name:'Amtrak track'}); }
+          });
+        });
+      });
+      if(pts.length) return pts;
+      // Fallback: way-based query if relations returned nothing
+      const q2=`[out:json][timeout:30];way["railway"="rail"]["usage"="main"](${S},${W},${N},${E});out geom 300;`;
+      const data2=await overpassRaw(q2);
+      return densifyWaysToPoints(data2, 0.3);
+    }},
+  { group:'Transit', icon:'🚉', label:'A Commuter Rail Station',
+    instances: async (c) => {
+      const list = commuterRailStopsList.length ? commuterRailStopsList : [];
+      // Filter to stops within the T network's playable footprint
+      const T_BBOX = {minLat:42.18, maxLat:42.67, minLng:-71.55, maxLng:-70.85};
+      return list.filter(s =>
+        s.lat >= T_BBOX.minLat && s.lat <= T_BBOX.maxLat &&
+        s.lng >= T_BBOX.minLng && s.lng <= T_BBOX.maxLng
+      );
+    }},
+
+  // BORDERS
+  { group:'Borders', icon:'🏛️', label:'A County Border',
+    instances: async (c) => nearestBorderPoints(c, 'county', 6) },
+  { group:'Borders', icon:'🏙️', label:'A City Border',
+    instances: async (c) => nearestBorderPoints(c, 'city', 8) },
+
+  // NATURAL
+  { group:'Natural', icon:'🌊', label:'Sea Level',
+    instances: async (c) => {
+      // Harbor shoreline: fetch coastline ways and densify
+      const r = 50000;
+      const q = `[out:json][timeout:25];way["natural"="coastline"](around:${r},${c.lat},${c.lng});out geom 300;`;
+      const data = await overpassRaw(q);
+      const pts = densifyWaysToPoints(data, 0.2);
+      return pts.length ? pts : [{lat:42.3551, lng:-71.0497, name:'Boston Harbor shore'}];
+    }},
+  { group:'Natural', icon:'💧', label:'A Body of Water',
+    instances: async (c) => {
+      const r = 35000;
+      const q = `[out:json][timeout:25];(way["natural"~"^(water|bay)$"]["name"](around:${r},${c.lat},${c.lng});relation["natural"~"^(water|bay)$"]["name"](around:${r},${c.lat},${c.lng});way["waterway"="river"]["name"](around:${r},${c.lat},${c.lng}););out center 50;`;
+      const data = await overpassRaw(q);
+      return (data.elements||[]).filter(e=>e.center||e.lat).map(e=>({lat:e.center?.lat||e.lat,lng:e.center?.lon||e.lon,name:e.tags?.name||'Water'}));
+    }},
+  { group:'Natural', icon:'🏖️', label:'A Coastline',
+    instances: async (c) => {
+      const r = 50000;
+      const q = `[out:json][timeout:25];way["natural"="coastline"](around:${r},${c.lat},${c.lng});out geom 300;`;
+      const data = await overpassRaw(q);
+      const pts = densifyWaysToPoints(data, 0.2);
+      return pts.length ? pts : [{lat:42.3551, lng:-71.0497, name:'Boston coastline'}];
+    }},
+  { group:'Natural', icon:'🌳', label:'A Park',
+    overpass:(c,r)=>`nwr["leisure"="park"]["name"](around:${r},${c.lat},${c.lng});` },
+
+  // PLACES OF INTEREST
+  { group:'Places of Interest', icon:'🎢', label:'An Amusement Park',
+    overpass:(c,r)=>`nwr["tourism"="theme_park"](around:${r},${c.lat},${c.lng});nwr["leisure"="amusement_arcade"](around:${r},${c.lat},${c.lng});` },
+  { group:'Places of Interest', icon:'🦒', label:'A Zoo / Aquarium',
+    overpass:(c,r)=>`nwr["tourism"~"^(zoo|aquarium)$"](around:${r},${c.lat},${c.lng});` },
+  { group:'Places of Interest', icon:'⛳', label:'A Golf Course',
+    overpass:(c,r)=>`nwr["leisure"="golf_course"](around:${r},${c.lat},${c.lng});` },
+  { group:'Places of Interest', icon:'🏛️', label:'A Museum',
+    overpass:(c,r)=>`nwr["tourism"="museum"](around:${r},${c.lat},${c.lng});` },
+  { group:'Places of Interest', icon:'🎬', label:'A Movie Theater',
+    overpass:(c,r)=>`nwr["amenity"="cinema"](around:${r},${c.lat},${c.lng});` },
+
+  // PUBLIC UTILITIES
+  { group:'Public Utilities', icon:'🏥', label:'A Hospital',
+    overpass:(c,r)=>`nwr["amenity"="hospital"](around:${r},${c.lat},${c.lng});` },
+  { group:'Public Utilities', icon:'📚', label:'A Library',
+    overpass:(c,r)=>`nwr["amenity"="library"](around:${r},${c.lat},${c.lng});` },
+  { group:'Public Utilities', icon:'🏳️', label:'A Foreign Consulate',
+    overpass:(c,r)=>`nwr["office"~"diplomatic|consulate"](around:${r},${c.lat},${c.lng});nwr["amenity"="embassy"](around:${r},${c.lat},${c.lng});` },
+];
+
+const TENTACLES_CATS = [
+  {icon:'🍩', label:"Dunkin'",      overpass:(c,r)=>`nwr["name"~"Dunkin",i](around:${r},${c.lat},${c.lng});`},
+  {icon:'☕', label:'Starbucks',    overpass:(c,r)=>`nwr["name"~"Starbucks",i](around:${r},${c.lat},${c.lng});`},
+  {icon:'💊', label:'CVS',          overpass:(c,r)=>`nwr["name"~"CVS",i](around:${r},${c.lat},${c.lng});`},
+  {icon:'🍟', label:"McDonald's",   overpass:(c,r)=>`nwr["name"~"McDonald",i](around:${r},${c.lat},${c.lng});`},
+  {icon:'🏥', label:'Hospitals',    overpass:(c,r)=>`nwr["amenity"~"hospital|clinic"](around:${r},${c.lat},${c.lng});`},
+  {icon:'📚', label:'Libraries',    overpass:(c,r)=>`nwr["amenity"="library"](around:${r},${c.lat},${c.lng});`},
+  {icon:'🌳', label:'Parks',        overpass:(c,r)=>`nwr["leisure"="park"]["name"](around:${r},${c.lat},${c.lng});`},
+  {icon:'⛽', label:'Gas station',  overpass:(c,r)=>`nwr["amenity"="fuel"](around:${r},${c.lat},${c.lng});`},
+];
+
+// ── Overpass API search ──
+async function overpassSearch(overpassBody, near, radiusM=5000){
+  const query = `[out:json][timeout:25];(${overpassBody});out center 100;`;
+  // Try primary, fall back to mirror
+  const endpoints = [
+    'https://overpass-api.de/api/interpreter',
+    'https://overpass.kumi.systems/api/interpreter'
+  ];
+  let data;
+  for(const url of endpoints){
+    try{
+      const res = await fetch(url, {
+        method:'POST',
+        headers:{'Content-Type':'application/x-www-form-urlencoded'},
+        body:'data='+encodeURIComponent(query)
+      });
+      if(!res.ok) continue;
+      data = await res.json();
+      break;
+    }catch(e){ continue; }
+  }
+  if(!data){ throw new Error('Overpass API unavailable'); }
+  const elements = (data.elements||[]).filter(e=>e.tags&&e.tags.name);
+  const pts = elements.map(e=>({
+    name: e.tags.name,
+    lat:  e.lat  ?? e.center?.lat,
+    lng:  e.lon  ?? e.center?.lon,
+    id:   e.id
+  })).filter(p=>p.lat&&p.lng);
+  pts.sort((a,b)=>turfDist({lat:a.lat,lng:a.lng},near)-turfDist({lat:b.lat,lng:b.lng},near));
+  return pts;
+}
+
+// Build a short street-aware label for a place using reverse geocode
+async function shortLabel(name, lat, lng){
+  try{
+    const r = await fetch(`https://nominatim.openstreetmap.org/reverse?lat=${lat}&lon=${lng}&format=json&addressdetails=1`,{headers:{'Accept-Language':'en-US'}});
+    const d = await r.json();
+    const addr = d.address||{};
+    const road = addr.road||addr.pedestrian||addr.footway||addr.path||'';
+    const hood = addr.suburb||addr.neighbourhood||addr.quarter||'';
+    const loc  = road || hood;
+    return loc ? `${name} — ${loc}` : name;
+  }catch(e){ return name; }
+}
+
+// ══════════════════════════════════════════════════════
+//  MARKER ICONS
+// ══════════════════════════════════════════════════════
+
+// Seeker "you are here" — bold red crosshair pin with pulsing ring
+function makeStopIcon(colors, isCR){
+  const n = colors.length;
+
+  // Sizing: CR stops get larger to accommodate the outer ring
+  const rInner = n > 1 ? 6 : 5;       // inner filled circle
+  const gap    = 2;                     // white gap between rings
+  const rOuter = rInner + gap + 2;     // outer ring (only for CR)
+  const r      = isCR ? rOuter : rInner;
+
+  const pad  = 2;
+  const size = (r + pad) * 2;
+  const cx   = size / 2, cy = size / 2;
+
+  // ── Inner circle / pie ──
+  let innerSVG = '';
+  if(n === 1){
+    innerSVG = `<circle cx="${cx}" cy="${cy}" r="${rInner}" fill="${colors[0]}" stroke="white" stroke-width="1.5"/>`;
+  } else {
+    const TAU = 2 * Math.PI;
+    const startAngle = -Math.PI / 2;
+    let paths = '';
+    colors.forEach((col, i) => {
+      const a0 = startAngle + (i / n) * TAU;
+      const a1 = startAngle + ((i + 1) / n) * TAU;
+      const x0 = cx + rInner * Math.cos(a0), y0 = cy + rInner * Math.sin(a0);
+      const x1 = cx + rInner * Math.cos(a1), y1 = cy + rInner * Math.sin(a1);
+      const large = (a1 - a0) > Math.PI ? 1 : 0;
+      paths += `<path d="M${cx},${cy} L${x0.toFixed(2)},${y0.toFixed(2)} A${rInner},${rInner} 0 ${large},1 ${x1.toFixed(2)},${y1.toFixed(2)} Z" fill="${col}"/>`;
+    });
+    innerSVG = paths + `<circle cx="${cx}" cy="${cy}" r="${rInner}" fill="none" stroke="white" stroke-width="1.5"/>`;
+  }
+
+  // ── Drop shadow ──
+  const shadowR = isCR ? rOuter : rInner;
+  const shadow = `<circle cx="${cx+1}" cy="${cy+1}" r="${shadowR+1}" fill="rgba(0,0,0,0.3)"/>`;
+
+  // ── CR concentric rings ──
+  // White gap ring, then outer colored ring — matches MBTA printed map style
+  let crRings = '';
+  if(isCR){
+    // White gap ring fills the space between inner circle and outer ring
+    const rMid = rInner + gap / 2;
+    crRings =
+      // White donut filling the gap
+      `<circle cx="${cx}" cy="${cy}" r="${rInner + gap}" fill="white"/>` +
+      // Outer ring: stroke in line color(s)
+      // For single-color: one ring in that color
+      // For multi-color: stroke in the first color (most prominent line)
+      `<circle cx="${cx}" cy="${cy}" r="${rOuter}" fill="white" stroke="${colors[0]}" stroke-width="2"/>`;
+
+    // If multi-line, split the outer ring with a dashed second color
+    if(n === 2){
+      crRings +=
+        `<circle cx="${cx}" cy="${cy}" r="${rOuter}" fill="none" stroke="${colors[1]}" stroke-width="2" stroke-dasharray="${Math.PI*rOuter/2} ${Math.PI*rOuter/2}" stroke-dashoffset="${Math.PI*rOuter/4}"/>`;
+    }
+  }
+
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${size}" height="${size}" viewBox="0 0 ${size} ${size}">
+    ${shadow}${crRings}${innerSVG}
+  </svg>`;
+
+  return L.divIcon({
+    className: '',
+    iconSize: [size, size],
+    iconAnchor: [cx, cy],
+    popupAnchor: [0, -cy - 2],
+    html: svg
+  });
+}
+
+function seekerPin(col='#e84040'){
+  return L.divIcon({className:'', iconSize:[0,0], html:`
+    <div style="position:relative;width:32px;height:32px;transform:translate(-16px,-16px)">
+      <div style="position:absolute;inset:0;border-radius:50%;border:2px solid ${col};opacity:0.35;animation:pulse 1.5s ease-in-out infinite"></div>
+      <div style="position:absolute;inset:7px;border-radius:50%;background:${col};border:2.5px solid white;box-shadow:0 2px 12px rgba(0,0,0,0.5)"></div>
+      <div style="position:absolute;top:50%;left:0;right:0;height:1.5px;background:${col};opacity:0.7;transform:translateY(-50%)"></div>
+      <div style="position:absolute;left:50%;top:0;bottom:0;width:1.5px;background:${col};opacity:0.7;transform:translateX(-50%)"></div>
+    </div>`});
+}
+
+// Tentacle option — teardrop pin with number badge
+function tentaclePin(num, col){
+  return L.divIcon({className:'', iconSize:[0,0], html:`
+    <div style="position:relative;transform:translate(-12px,-30px)">
+      <svg width="24" height="32" viewBox="0 0 24 32" style="filter:drop-shadow(0 2px 4px rgba(0,0,0,0.5))">
+        <path d="M12 0 C5.4 0 0 5.4 0 12 C0 20 12 32 12 32 C12 32 24 20 24 12 C24 5.4 18.6 0 12 0Z" fill="${col}"/>
+        <circle cx="12" cy="11" r="8" fill="rgba(0,0,0,0.2)"/>
+      </svg>
+      <div style="position:absolute;top:4px;left:0;right:0;text-align:center;font-size:10px;font-weight:900;color:white;font-family:'Space Mono',monospace;line-height:14px;text-shadow:0 1px 2px rgba(0,0,0,0.4)">${num}</div>
+    </div>`});
+}
+
+// Measure nearest result — teal diamond pin
+function measurePin(){
+  return L.divIcon({className:'', iconSize:[0,0], html:`
+    <div style="transform:translate(-10px,-10px);width:20px;height:20px">
+      <div style="width:14px;height:14px;background:#20c8b0;border:2.5px solid white;border-radius:3px;transform:rotate(45deg) translate(3px,3px);box-shadow:0 2px 8px rgba(0,0,0,0.5)"></div>
+    </div>`});
+}
+
+// Hider location — glowing purple "eye" pin
+function hiderPin(){
+  return L.divIcon({className:'', iconSize:[0,0], html:`
+    <div style="position:relative;width:36px;height:36px;transform:translate(-18px,-18px)">
+      <div style="position:absolute;inset:0;border-radius:50%;background:rgba(160,96,255,0.2);animation:pulse 1.2s ease-in-out infinite"></div>
+      <div style="position:absolute;inset:4px;border-radius:50%;border:2px solid rgba(160,96,255,0.5);animation:pulse 1.2s ease-in-out infinite 0.3s"></div>
+      <div style="position:absolute;inset:9px;border-radius:50%;background:#a060ff;border:2.5px solid white;box-shadow:0 0 14px rgba(160,96,255,0.8)"></div>
+    </div>`});
+}
+
+async function selectMeasureCat(catObj){
+  if(!qparams.center){toast('Set your location first');return;}
+  qparams._mcat=catObj.label; qparams._mcatlabel=catObj.label; qparams._msearching=true;
+  qparams.measure_cat=catObj.label; qparams.measure_cat_label=catObj.label;
+  qparams.measure_seeker_nearest=null; qparams.measure_seeker_dist=null; qparams.measure_all_instances=null;
+  if(catObj.label==='A County Border') highlightBoundary('county');
+  else if(catObj.label==='A City Border') highlightBoundary('city');
+  else clearBoundaryHighlight();
+  renderBuildBody();
+  try{
+    let instances=[];
+    if(catObj.instances){
+      instances = await catObj.instances(qparams.center);
+    } else {
+      // overpass-based: fetch all within 15km
+      const radiusM=35000;
+      const items=await overpassSearch(catObj.overpass(qparams.center,radiusM),qparams.center,radiusM);
+      instances=items.map(it=>({lat:it.lat,lng:it.lon||it.lng,name:it.name||catObj.label}));
+    }
+    if(!instances.length){toast('No '+catObj.label+' found nearby');qparams._msearching=false;renderBuildBody();return;}
+
+    // Find seeker's nearest
+    instances.sort((a,b)=>turfDist(qparams.center,a)-turfDist(qparams.center,b));
+    const nearest=instances[0];
+    const dist=turfDist(qparams.center,nearest);
+
+    qparams._msearching=false;
+    qparams.measure_seeker_nearest={lat:nearest.lat,lng:nearest.lng,name:nearest.name};
+    qparams.measure_seeker_dist=dist;
+    qparams.measure_all_instances=instances.slice(0,200); // cap for zone geometry
+
+    // Drop teardrop pins — gold #1 for nearest, teal for rest
+    clearPoiMarkers();
+    const POI_CATS_LINEAR = new Set(['An Amtrak Line','A County Border','A City Border','Sea Level','A Coastline']);
+    const isLinear = POI_CATS_LINEAR.has(catObj.label);
+    if(isLinear){
+      // For linear/edge categories, just show a single teal diamond at the nearest point
+      const m=L.marker([nearest.lat,nearest.lng],{icon:measurePin(),zIndexOffset:1500}).addTo(map);
+      pickedMarkers.push(m);
+    } else {
+      // For POI categories, show numbered teardrop pins
+      instances.slice(0,100).forEach((p,i)=>{
+        if(!p.lat||!p.lng) return;
+        const col = i===0 ? '#f0a030' : '#4a7090';
+        const m = L.marker([p.lat,p.lng],{icon:tentaclePin(i+1,col),zIndexOffset:1500+i})
+          .bindPopup(`<div class="stop-popup"><div class="stop-popup-name">${p.name}</div>${i===0?'<div style="font-size:9px;color:#f0a030;margin-top:2px">★ Your nearest</div>':''}</div>`,{offset:[0,-28],maxWidth:220})
+          .addTo(map);
+        pickedMarkers.push(m);
+      });
+    }
+    // Fit map to show nearest + seeker location
+    if(nearest.lat && nearest.lng){
+      const bounds = L.latLngBounds([[nearest.lat,nearest.lng],[qparams.center.lat,qparams.center.lng]]).pad(0.3);
+      map.fitBounds(bounds);
+    }
+    renderBuildBody(); updatePreview(); tryGenerate();
+  }catch(e){qparams._msearching=false;toast('Search failed: '+e.message);renderBuildBody();}
+}
+
+async function selectTentacleCat(catObj){
+  if(!qparams.center){toast('Set your location first');return;}
+  qparams._tcat=catObj.label; qparams._tcatlabel=catObj.label; qparams._tsearching=true;
+  qparams.tentacle_options=null;
+  renderBuildBody();
+  try{
+    const rad = qparams.radius_miles||1;
+    const radiusM = Math.round(rad * 1609.34 * 1.5); // search 1.5x reach radius
+    const items = await overpassSearch(catObj.overpass(qparams.center, radiusM), qparams.center, radiusM);
+    if(items.length < 2){
+      toast(`Found ${items.length} ${catObj.label} nearby — try a larger radius`);
+      qparams._tsearching=false; renderBuildBody(); return;
+    }
+    // Label each with its street address (batch reverse geocode, up to 6)
+    const top = items.slice(0,8);
+    const labeled = await Promise.all(top.map(it=>shortLabel(it.name,it.lat,it.lng)));
+    const opts = top.map((it,i)=>({name:labeled[i], lat:it.lat, lng:it.lng}));
+    qparams._tsearching=false;
+    qparams.tentacle_options=opts;
+    const TENT_COL = '#f0a030';
+    opts.forEach((o,i)=>{
+      const m=L.marker([o.lat,o.lng],{icon:tentaclePin(i+1,TENT_COL),zIndexOffset:1500})
+        .bindPopup(`<div class="stop-popup"><div class="stop-popup-name">${o.name}</div></div>`,{offset:[0,-28],maxWidth:220})
+        .addTo(map);
+      pickedMarkers.push(m);
+    });
+    // Fit map to show all results
+    if(opts.length){
+      const bounds=L.latLngBounds(opts.map(o=>[o.lat,o.lng])).pad(0.3);
+      map.fitBounds(bounds);
+    }
+    renderBuildBody(); updatePreview(); tryGenerate();
+  }catch(e){qparams._tsearching=false;toast('Search failed: '+e.message);renderBuildBody();}
+}
+
+function restartPick(){
+  QDEFS[qtype].pickSteps.forEach(s=>delete qparams[s.key]);
+  clearMarkers();previewLayer.clearLayers();pickStep=0;
+  document.getElementById('json-out-section').style.display='none';
+  showBanner(pickStepDefs[0].label);
+  document.getElementById('panel').classList.add('collapsed');
+  renderBuildBody();
+}
+
+function updatePreview(){
+  previewLayer.clearLayers();if(!qtype)return;
+  try{
+    if(qtype==='radar'&&qparams.center&&qparams.radius_miles) previewLayer.addData(makeCircle(qparams.center,qparams.radius_miles,'miles'));
+    if(qtype==='thermo'&&qparams.center&&qparams.travel_miles) previewLayer.addData(makeCircle(qparams.center,qparams.travel_miles,'miles'));
+    if(qtype==='measure'&&qparams.measure_seeker_nearest&&qparams.measure_seeker_dist) previewLayer.addData(makeCircle(qparams.measure_seeker_nearest,qparams.measure_seeker_dist,'miles'));
+    if(qtype==='tentacles'&&qparams.center&&qparams.radius_miles) previewLayer.addData(makeCircle(qparams.center,qparams.radius_miles,'miles'));
+  }catch(e){}
+}
+
+function generateJSON(){
+  const def=QDEFS[qtype];
+  const json=def.toJSON(qparams);
+  json.id='q'+Date.now().toString(36);
+  // Yield to UI thread before heavy stringify (prevents freeze on mobile)
+  setTimeout(()=>{
+    document.getElementById('json-out').value=JSON.stringify(json,null,2);
+    document.getElementById('json-out-section').style.display='block';
+    updatePreview();
+    renderSimulBtns(json);
+  },0);
+}
+
+// ── per-type answer option definitions ──
+const SIMUL_OPTS = {
+  radar:    [{val:'yes',    icon:'✅', label:'Within',    color:'#18b050'}, {val:'no',      icon:'❌', label:'Outside',  color:'#e84040'}],
+  thermo:   [{val:'closer', icon:'🔥', label:'Closer',    color:'#f0a030'}, {val:'further', icon:'❄️', label:'Further',  color:'#3a8eff'}],
+  measure:  [{val:'closer', icon:'🔥', label:'Closer',    color:'#f0a030'}, {val:'further', icon:'❄️', label:'Further',  color:'#3a8eff'}],
+  matching: [{val:'Yes', icon:'✅', label:'Yes — same', color:'#18b050'}, {val:'No', icon:'❌', label:'No — different', color:'#e84040'}],
+  nearest:  [{val:'Yes', icon:'✅', label:'Yes — same', color:'#18b050'}, {val:'No', icon:'❌', label:'No — different', color:'#e84040'}],
+  tentacles:[{val:'no',     icon:'❌', label:'Not nearby',color:'#e84040'}],
+};
+
+let _simulActive = null; // currently previewed answer val
+
+function renderSimulBtns(json){
+  _simulActive = null;
+  simulLayer.clearLayers();
+  const opts = SIMUL_OPTS[json.type];
+  const container = document.getElementById('simul-btns');
+  const hint      = document.getElementById('simul-hint');
+  const bar       = document.getElementById('map-simul-bar');
+  const msbBtns   = document.getElementById('msb-btns');
+  hint.className  = 'simul-result-hint';
+  if(!opts){
+    container.innerHTML='';
+    msbBtns.innerHTML='';
+    bar.classList.remove('visible');
+    return;
+  }
+  // Panel buttons
+  container.innerHTML = opts.map(o =>
+    `<button class="simul-btn" id="sb-${o.val}"
+       style="--simul-col:${o.color}"
+       onclick="previewAnswer('${o.val}')">
+       <span class="s-icon">${o.icon}</span>${o.label}
+     </button>`
+  ).join('');
+  // Map bar buttons
+  msbBtns.innerHTML = opts.map(o =>
+    `<button class="msb-btn" id="msb-${o.val}"
+       style="--msb-col:${o.color}"
+       onclick="previewAnswer('${o.val}')">
+       ${o.icon} ${o.label}
+     </button>`
+  ).join('');
+  bar.classList.add('visible');
+  document.getElementById('msb-area').innerHTML = 'tap to preview';
+}
+
+function previewAnswer(val){
+  const def = QDEFS[qtype];
+  const opts = SIMUL_OPTS[qtype];
+  const hint = document.getElementById('simul-hint');
+
+  // Toggle off if same button pressed twice
+  if(_simulActive === val){
+    _simulActive = null;
+    simulLayer.clearLayers();
+    document.querySelectorAll('.simul-btn,.msb-btn').forEach(b=>b.classList.remove('active'));
+    hint.className = 'simul-result-hint';
+    document.getElementById('msb-area').innerHTML = 'tap to preview';
+    return;
+  }
+
+  _simulActive = val;
+  document.querySelectorAll('.simul-btn,.msb-btn').forEach(b=>b.classList.remove('active'));
+  const btn  = document.getElementById(`sb-${val}`);
+  const mbtn = document.getElementById(`msb-${val}`);
+  if(btn)  btn.classList.add('active');
+  if(mbtn) mbtn.classList.add('active');
+
+  const opt = opts.find(o=>o.val===val);
+  const col = opt ? opt.color : '#20c8b0';
+
+  try {
+    const q = {...JSON.parse(document.getElementById('json-out').value), answer: val};
+    const result = def.applyToZone(validZone, q);
+    if(!result){ toast('Nothing left in zone for this answer'); return; }
+
+    simulLayer.clearLayers();
+    simulLayer.options.style = {
+      color: col, weight: 2, fillColor: col, fillOpacity: 0.28, interactive: false
+    };
+    simulLayer.addData(result);
+
+    try{ map.fitBounds(L.geoJSON(result).getBounds().pad(0.12)); }catch(e){}
+
+    const area = (turf.area(result)/1e6).toFixed(1);
+    const pctRemain = validZone ? Math.round(turf.area(result)/turf.area(validZone)*100) : '?';
+    const pctElim   = typeof pctRemain === 'number' ? 100 - pctRemain : '?';
+    const hintHTML = `<b>${opt ? opt.icon+' '+opt.label : val}:</b> ${area} km² remain <span style="color:${col}">(${pctElim}% eliminated)</span>`;
+    hint.innerHTML = hintHTML;
+    hint.className = 'simul-result-hint visible';
+    document.getElementById('msb-area').innerHTML = `<b style="color:${col}">${pctElim}%</b> eliminated`;
+  } catch(e) {
+    toast('Preview error: '+e.message);
+  }
+}
+
+function copyQ(){
+  navigator.clipboard.writeText(document.getElementById('json-out').value).then(()=>{
+    const fl=document.getElementById('cf');fl.classList.add('on');setTimeout(()=>fl.classList.remove('on'),2200);
+    toast('Copied! Send to your friend.');
+  }).catch(()=>toast('Tap the text area and copy manually'));
+}
+
+function resetBuild(){
+  qtype=null;qparams={};pickStep=-1;pickStepDefs=[];
+  clearMarkers();previewLayer.clearLayers();simulLayer.clearLayers();hideBanner();
+  clearBoundaryHighlight();
+  _simulActive=null;
+  document.querySelectorAll('.qbtn').forEach(b=>b.classList.remove('on'));
+  document.getElementById('json-out-section').style.display='none';
+  document.getElementById('map-simul-bar').classList.remove('visible');
+  renderBuildBody();
+}
+
+// ══════════════════════════════════════════════════════
+//  HIDER ANSWER FLOW
+// ══════════════════════════════════════════════════════
+let _hiderQ = null;       // parsed question JSON currently being answered
+let _pendingCard = null;  // 'veto' | 'randomize'
+let _pendingRandomizeType = null; // set when seekers receive a randomize_card
+
+// Answer options per question type (hider modal)
+const ANS_OPTS = {
+  radar:    [{val:'yes',    label:'Yes — within range', icon:'✅', cls:'yes'}, {val:'no',      label:'No — outside',  icon:'❌', cls:'no'}],
+  thermo:   [{val:'closer', label:'Closer 🔥',          icon:'🔥', cls:'opt'}, {val:'further', label:'Further ❄️',   icon:'❄️', cls:'no'}],
+  measure:  [{val:'closer', label:'Closer 🔥',          icon:'🔥', cls:'opt'}, {val:'further', label:'Further ❄️',   icon:'❄️', cls:'no'}],
+  matching: [{val:'Yes', label:'Yes — same place', icon:'✅', cls:'yes'}, {val:'No', label:'No — different', icon:'❌', cls:'no'}],
+  nearest:  [{val:'Yes', label:'Yes — same one',   icon:'✅', cls:'yes'}, {val:'No', label:'No — different', icon:'❌', cls:'no'}],
+  photo:    [{val:'sent',   label:'Photo sent! 📸',      icon:'📸', cls:'yes'}],
+  // tentacles: built dynamically in openAnswerModal
+};
+
+function hiderLoadQuestion(){
+  const raw = document.getElementById('hider-json-in').value.trim();
+  if(!raw){ toast('Paste a question JSON first'); return; }
+  let q; try{ q=JSON.parse(raw); }catch(e){ toast('Invalid JSON'); return; }
+  const def = QDEFS[q.type];
+  if(!def){ toast(`Unknown question type: "${q.type}"`); return; }
+  _hiderQ = q;
+
+  // Show the locate state
+  document.getElementById('hider-input-state').style.display  = 'none';
+  document.getElementById('hider-locate-state').style.display = 'block';
+  document.getElementById('hider-result-state').style.display = 'none';
+
+  // Summary card
+  document.getElementById('hider-q-summary').innerHTML =
+    `<span style="font-size:11px;margin-right:6px">${QICONS[q.type]||'❓'}</span><b style="color:var(--text)">${def.label}</b><br>${describeQuestion(q, def)}`;
+
+  const isGeo = ['radar','thermo','measure','tentacles'].includes(q.type);
+
+  document.getElementById('hider-loc-section').style.display    = isGeo ? 'block' : 'none';
+  document.getElementById('hider-manual-section').style.display = isGeo ? 'none'  : 'block';
+  document.getElementById('hider-loc-set').style.display = 'none';
+
+  if(!isGeo){
+    if(q.type === 'matching'){
+      document.getElementById('hider-manual-btns').innerHTML = `
+        <p style="font-size:9px;color:var(--dim);margin-bottom:10px;font-family:'IBM Plex Mono',monospace">
+          Are you in the same <b>${q.category_label}</b> as the seeker (${q.seeker_val})?
+          Use your GPS to auto-answer, or answer manually.
+        </p>
+        <button class="btn btn-red" style="margin-bottom:8px" onclick="hiderAutoMatchLookup()">📡 Auto-answer with GPS</button>
+        <div style="display:flex;gap:8px">
+          <button class="ans-btn yes" style="flex:1" onclick="_amDispatch('Yes')"><span class="ans-ico">✅</span>Yes — same</button>
+          <button class="ans-btn no"  style="flex:1" onclick="_amDispatch('No')"><span class="ans-ico">❌</span>No — different</button>
+        </div>`;
+    } else if(q.type === 'nearest'){
+      document.getElementById('hider-manual-btns').innerHTML = `
+        <p style="font-size:9px;color:var(--dim);margin-bottom:10px;font-family:'IBM Plex Mono',monospace">
+          Is the nearest <b>${q.category_label}</b> to you also <b>${q.seeker_poi?.name}</b>?
+          Use your GPS to auto-answer, or answer manually.
+        </p>
+        <button class="btn btn-red" style="margin-bottom:8px" onclick="hiderAutoNearestLookup()">📡 Auto-answer with GPS</button>
+        <div style="display:flex;gap:8px">
+          <button class="ans-btn yes" style="flex:1" onclick="_amDispatch('Yes')"><span class="ans-ico">✅</span>Yes — same</button>
+          <button class="ans-btn no"  style="flex:1" onclick="_amDispatch('No')"><span class="ans-ico">❌</span>No — different</button>
+        </div>`;
+    } else {
+      const opts = ANS_OPTS[q.type] || [{val:'yes',label:'Yes',icon:'✅',cls:'yes'},{val:'no',label:'No',icon:'❌',cls:'no'}];
+      document.getElementById('hider-manual-btns').innerHTML = opts.map(o=>{
+        const v=o.val;
+        return `<button class="ans-btn ${o.cls}" onclick="_amDispatch(${JSON.stringify(v)})">
+          <span class="ans-ico">${o.icon}</span><span>${o.label}</span></button>`;
+      }).join('');
+    }
+  }
+}
+
+// Geo types: GPS button
+function setHiderStation(stop){
+  _pickingHiderStation = false;
+  hideBanner();
+
+  hiderStation = stop;
+
+  // Place a distinctive hider pin on the station
+  if(_hiderLocMarker) _hiderLocMarker.remove();
+  _hiderLocMarker = L.marker([stop.lat, stop.lng], {icon:hiderPin(), zIndexOffset:3000}).addTo(map);
+  map.setView([stop.lat, stop.lng], 14);
+
+  // Update the hider tab station indicator
+  renderHiderStationBadge();
+
+  // Save the station
+  saveGame();
+  toast(`📍 Station set: ${stop.name}`);
+
+  // Open panel to Answer tab
+  document.getElementById('panel').classList.remove('collapsed');
+  switchTab('hider');
+}
+
+function renderHiderStationBadge(){
+  const el = document.getElementById('hider-station-badge');
+  if(!el) return;
+  if(!hiderStation){
+    el.style.display = 'none';
+    return;
+  }
+  const lines = hiderStation.lines || [];
+  const dots = lines.map(lid=>{
+    const gl = GAME_LINES.find(g=>g.id===lid);
+    return gl ? `<span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:${gl.color};margin-right:3px;vertical-align:middle"></span>` : '';
+  }).join('');
+  el.innerHTML = `<span style="font-size:9px;color:var(--purple)">🚇 Your station:</span> ${dots}<b style="font-size:10px">${hiderStation.name}</b>
+    <span style="display:block;font-size:8px;color:var(--dim);margin-top:2px">Used for station identity questions. Geo questions will ask for your exact location.</span>
+    <span style="font-size:8px;color:var(--dim);cursor:pointer;text-decoration:underline" onclick="promptHiderStationPick()">Change station</span>`;
+  el.style.display = 'block';
+}
+
+async function hiderAutoMatchLookup(){
+  const q = _hiderQ;
+  if(!q || q.type !== 'matching') return;
+  const cat = MATCHING_CATS.find(c=>c.cat === q.category);
+  if(!cat){ toast('Unknown category'); return; }
+
+  const btns = document.getElementById('hider-manual-btns');
+  if(btns) btns.innerHTML = '<div style="font-size:9px;color:var(--dim);margin-top:6px">📡 Getting your location…</div>';
+
+  if(!navigator.geolocation){ toast('Geolocation not available'); return; }
+  navigator.geolocation.getCurrentPosition(
+    async (pos) => {
+      try{
+        const hiderVal = await cat.resolve({lat:pos.coords.latitude, lng:pos.coords.longitude});
+        if(!hiderVal){ toast('Could not determine your '+q.category_label); return; }
+        const match = hiderVal.toLowerCase().trim() === q.seeker_val.toLowerCase().trim();
+        const answer = match ? 'Yes' : 'No';
+        const expl = `Your ${q.category_label}: <b>${hiderVal}</b> / Seeker's: <b>${q.seeker_val}</b> → <b>${answer.toUpperCase()}</b>`;
+        hiderPickAnswer(answer, expl);
+      } catch(e){ toast('Lookup failed: '+e.message); }
+    },
+    (err) => toast(err.code===1?'Location permission denied':'Location unavailable'),
+    {enableHighAccuracy:true, timeout:10000, maximumAge:30000}
+  );
+}
+
+async function hiderAutoNearestLookup(){
+  const q = _hiderQ;
+  if(!q || q.type !== 'nearest') return;
+  const cat = NEAREST_CATS.find(c=>c.label === q.category);
+  if(!cat){ toast('Unknown category'); return; }
+
+  const btns = document.getElementById('hider-manual-btns');
+  if(btns) btns.innerHTML = '<div style="font-size:9px;color:var(--dim);margin-top:6px">📡 Getting your location…</div>';
+
+  if(!navigator.geolocation){ toast('Geolocation not available'); return; }
+  navigator.geolocation.getCurrentPosition(
+    async (pos) => {
+      try{
+        const loc = {lat:pos.coords.latitude, lng:pos.coords.longitude};
+        if(btns) btns.innerHTML = '<div style="font-size:9px;color:var(--dim);margin-top:6px">🔍 Searching for nearest '+q.category_label+'…</div>';
+        const radiusM = 35000;
+        const items = await overpassSearch(cat.overpass(loc, radiusM), loc, radiusM);
+        if(!items.length){ toast('No '+q.category_label+' found near your location'); return; }
+        const nearest = items.sort((a,b)=>turfDist(loc,a)-turfDist(loc,b))[0];
+        const match = nearest.name.toLowerCase().trim() === q.seeker_poi.name.toLowerCase().trim();
+        const answer = match ? 'Yes' : 'No';
+        const expl = `Your nearest ${q.category_label}: <b>${nearest.name}</b> / Seeker's: <b>${q.seeker_poi.name}</b> → <b>${answer.toUpperCase()}</b>`;
+        hiderPickAnswer(answer, expl);
+      }catch(e){ toast('Lookup failed: '+e.message); }
+    },
+    (err) => toast(err.code===1?'Location permission denied':'Location unavailable'),
+    {enableHighAccuracy:true, timeout:10000, maximumAge:30000}
+  );
+}
+
+function hiderGPS(){
+  if(!navigator.geolocation){ toast('Geolocation not available'); return; }
+  const btn = document.getElementById('hider-gps-btn');
+  btn.textContent = '⏳ Locating…'; btn.disabled = true;
+  navigator.geolocation.getCurrentPosition(
+    pos => {
+      btn.textContent = '📡 Use My GPS Location'; btn.disabled = false;
+      hiderSetLocation(pos.coords.latitude, pos.coords.longitude,
+        `GPS (±${Math.round(pos.coords.accuracy)}m)`);
+    },
+    err => {
+      btn.textContent = '📡 Use My GPS Location'; btn.disabled = false;
+      toast(err.code===1?'Location permission denied':'Location unavailable');
+    },
+    {enableHighAccuracy:true, timeout:10000, maximumAge:30000}
+  );
+}
+
+// Geo types: tap-map button
+let _hiderPickingLocation = false;
+function hiderTapMap(){
+  _hiderPickingLocation = true;
+  showBanner('TAP THE MAP — set your hiding location');
+  document.getElementById('panel').classList.add('collapsed');
+}
+
+// Called from onMapClick when _hiderPickingLocation is true
+function hiderSetLocation(lat, lng, label){
+  _hiderPickingLocation = false;
+  hideBanner();
+
+  // Drop a purple marker
+  if(_hiderLocMarker) _hiderLocMarker.remove();
+  _hiderLocMarker = L.marker([lat,lng],{icon:hiderPin(),zIndexOffset:3000}).addTo(map);
+  map.setView([lat,lng], Math.max(map.getZoom(),14));
+
+  const locEl = document.getElementById('hider-loc-set');
+  locEl.innerHTML = `📍 Location set: ${lat.toFixed(4)}, ${lng.toFixed(4)}${label?` — ${label}`:''}`;
+  locEl.style.display = 'block';
+
+  document.getElementById('panel').classList.remove('collapsed');
+  switchTab('hider');
+
+  // Auto-compute answer
+  hiderComputeAnswer({lat,lng});
+}
+
+let _hiderLocMarker = null;
+
+async function hiderComputeAnswer(hiderLoc){
+  const q = _hiderQ;
+  let answer, explanation;
+
+  if(q.type === 'radar'){
+    const d = turfDist(hiderLoc, q.center);
+    answer = d <= q.radius_miles ? 'yes' : 'no';
+    explanation = `You are ${d.toFixed(2)}mi from the radar center (radius: ${q.radius_miles}mi) → <b>${answer.toUpperCase()}</b>`;
+
+  } else if(q.type === 'thermo'){
+    const d = turfDist(hiderLoc, q.center);
+    answer = d <= q.travel_miles ? 'closer' : 'further';
+    explanation = `You are ${d.toFixed(2)}mi from the seeker (threshold: ${q.travel_miles}mi) → <b>${answer.toUpperCase()}</b>`;
+
+  } else if(q.type === 'measure'){
+    // Find hider's nearest instance from all_instances
+    const instances = q.all_instances||[];
+    if(!instances.length){ toast('No instances in question data'); return; }
+    const nearest = instances.slice().sort((a,b)=>turfDist(hiderLoc,a)-turfDist(hiderLoc,b))[0];
+    const hiderDist = turfDist(hiderLoc, nearest);
+    const seekerDist = q.seeker_dist;
+    answer = hiderDist < seekerDist ? 'closer' : 'further';
+    explanation = `Your nearest ${q.category_label}: <b>${nearest.name}</b> (${hiderDist.toFixed(2)}mi) / Seeker's: ${seekerDist.toFixed(2)}mi → <b>${answer.toUpperCase()}</b>`;
+
+  } else if(q.type === 'tentacles'){
+    const distToSeeker = turfDist(hiderLoc, q.center);
+    if(distToSeeker > (q.radius_miles||1)){
+      answer = 'no';
+      explanation = `You are ${distToSeeker.toFixed(2)}mi from the seeker (radius: ${q.radius_miles||1}mi) → <b>NOT WITHIN RANGE</b>`;
+    } else {
+      // Find which option you're closest to
+      let minDist = Infinity, closest = null;
+      (q.options||[]).forEach(o => {
+        const d = turfDist(hiderLoc, o);
+        if(d < minDist){ minDist = d; closest = o.name; }
+      });
+      answer = closest;
+      explanation = `You are within range (${distToSeeker.toFixed(2)}mi). Closest option: <b>${closest}</b> (${minDist.toFixed(2)}mi away)`;
+    }
+  }
+
+  hiderPickAnswer(answer, explanation);
+}
+
+function _amDispatch(val){ hiderPickAnswer(val, null); }
+
+function hiderPickAnswer(val, explanation){
+  if(!_hiderQ) return;
+  const answered = {..._hiderQ, answer: val};
+
+  // Show result state
+  document.getElementById('hider-locate-state').style.display = 'none';
+
+  const def = QDEFS[_hiderQ.type];
+  const banner = document.getElementById('hider-result-banner');
+  document.getElementById('hrb-icon').textContent = '✅';
+  document.getElementById('hrb-title').textContent = `Answer: ${String(val).toUpperCase()}`;
+  document.getElementById('hrb-title').style.color = 'var(--green)';
+  if(explanation){
+    document.getElementById('hrb-sub').innerHTML = explanation;
+  } else {
+    document.getElementById('hrb-sub').textContent = `${def.label} answered`;
+  }
+  banner.style.borderColor = 'rgba(24,176,80,0.5)';
+  banner.style.background  = 'rgba(24,176,80,0.08)';
+
+  showHiderResult(JSON.stringify(answered, null, 2), null, null);
+}
+
+function openAnswerModal(q, def, isRandom=false){
+  document.getElementById('am-eyebrow').textContent = isRandom ? 'Hider · Randomized Question' : 'Hider · Answer This Question';
+  document.getElementById('am-title').textContent   = (isRandom ? '🎲 ' : '') + def.label;
+  document.getElementById('am-body').innerHTML      = describeQuestion(q, def);
+  document.querySelector('#answer-modal .card-btns').style.display = isRandom ? 'none' : 'flex';
+
+  let opts = ANS_OPTS[q.type];
+  if(q.type === 'tentacles'){
+    opts = [{val:'no', label:'Not within range', icon:'❌', cls:'no'}];
+    (q.options||[]).forEach(o => opts.push({val:o.name, label:o.name, icon:'📍', cls:'opt'}));
+  }
+  if(q.type === 'matching'){
+    const clss=['yes','opt','no','opt'];
+    opts = (q.answer_opts||['Yes','No']).map((v,i)=>({val:v, label:v, icon:i===0?'✅':'❌', cls:clss[i]||'opt'}));
+  }
+  opts = opts || [{val:'yes',label:'Yes',icon:'✅',cls:'yes'},{val:'no',label:'No',icon:'❌',cls:'no'}];
+
+  document.getElementById('am-answers').innerHTML = opts.map(o => {
+    const val = o.val;
+    return `<button class="ans-btn ${o.cls}" onclick="_amDispatch(${JSON.stringify(val)})">
+       <span class="ans-ico">${o.icon}</span><span>${o.label}</span>
+     </button>`;
+  }).join('');
+  document.getElementById('answer-modal').classList.remove('hidden');
+}
+
+function describeQuestion(q, def){
+  const m = {
+    radar:     ()=>`Is the hider within <b>${q.radius_miles} mile${q.radius_miles!==1?'s':''}</b> of the seeker's location?`,
+    thermo:    ()=>`After traveling <b>${q.travel_miles} mile${q.travel_miles!==1?'s':''}</b>, is the hider closer or further from the seeker's start point?`,
+    measure:   ()=>`Are you closer or further from your nearest <b>${q.category_label}</b> than the seeker? (Seeker is <b>${q.seeker_dist?.toFixed(2)}mi</b> from theirs)`,
+    tentacles: ()=>`Are you within <b>${q.radius_miles||1} mile</b> of the seeker? If yes — which of these are you closest to?<br><br>${(q.options||[]).map((o,i)=>`<b>${i+1}.</b> ${o.name}`).join('<br>')}`,
+    matching:   ()=>`Are you in the same <b>${q.category_label}</b> as the seeker? (Seeker's: <b>${q.seeker_val}</b>)`,
+    nearest:    ()=>`Is the nearest <b>${q.category_label}</b> to you the same as mine?<br>Mine is <b>${q.seeker_poi?.name}</b>.`,
+    photo:     ()=>`📸 Please send a photo of: <b>${q.prompt}</b>`,
+  };
+  return (m[q.type]&&m[q.type]()) || def.label;
+}
+
+const QICONS = { radar:'📡', thermo:'🌡️', measure:'📏', tentacles:'🐙', matching:'🎱', nearest:'📌', photo:'📸' };
+const QDESC  = {
+  radar:     'Set your location and pick a radius — is the hider within that circle?',
+  thermo:    'Set your position and a travel distance — is the hider closer or further than that distance from you?',
+  measure:   'Pick a landmark type — the app finds the nearest one to you. Is the hider closer or further from it?',
+  tentacles: 'Set your location — is the hider nearby? If yes, which of the found options are they closest to?',
+  matching:  "Are you in the same county/city/neighborhood/ZIP as the seeker?",
+  nearest:   'Is the nearest park/library/hospital/etc to you the same one as to the seeker?',
+  photo:     'Pick a photo prompt. Ask the hider to send you a specific photo.',
+};
+
+function showHiderResult(json, cardType, randomQType){
+  document.getElementById('hider-json-out').value = json;
+
+  // Set the result banner
+  const banner = document.getElementById('hider-result-banner');
+  const icon   = document.getElementById('hrb-icon');
+  const title  = document.getElementById('hrb-title');
+  const sub    = document.getElementById('hrb-sub');
+
+  if(cardType === 'veto'){
+    banner.style.borderColor = 'rgba(232,64,64,0.5)';
+    banner.style.background  = 'rgba(232,64,64,0.08)';
+    icon.textContent  = '🚫';
+    title.textContent = 'Veto Card Played';
+    title.style.color = 'var(--accent)';
+    sub.textContent   = 'This question is nullified. Send the JSON to seekers.';
+  } else if(cardType === 'randomize'){
+    const def = QDEFS[randomQType];
+    banner.style.borderColor = 'rgba(160,96,255,0.5)';
+    banner.style.background  = 'rgba(160,96,255,0.08)';
+    icon.textContent  = '🎲';
+    title.textContent = `Randomize Card — New type: ${def ? def.label : randomQType}`;
+    title.style.color = 'var(--purple)';
+    sub.textContent   = 'Send this to the seekers. They\'ll build the new question and send it back.';
+  } else if(!cardType && icon.textContent !== '✅'){
+    // Default — only set if hiderPickAnswer didn't already set it
+    banner.style.borderColor = 'var(--border)';
+    banner.style.background  = 'var(--panel2)';
+    icon.textContent  = '✅';
+    title.textContent = 'Answer Ready';
+    title.style.color = 'var(--green)';
+    sub.textContent   = 'Send this JSON back to the seekers.';
+  }
+
+  document.getElementById('hider-input-state').style.display  = 'none';
+  document.getElementById('hider-locate-state').style.display = 'none';
+  document.getElementById('hider-result-state').style.display = 'block';
+  document.getElementById('panel').classList.remove('collapsed');
+  switchTab('hider');
+  toast(cardType === 'veto' ? 'Veto ready — copy and send!' : cardType === 'randomize' ? 'Randomize card ready — send to seekers!' : 'Answer ready — copy and send!');
+}
+
+function hiderReset(){
+  document.getElementById('hider-json-in').value = '';
+  document.getElementById('hider-input-state').style.display  = 'block';
+  document.getElementById('hider-locate-state').style.display = 'none';
+  document.getElementById('hider-result-state').style.display = 'none';
+  document.getElementById('hider-loc-set').style.display = 'none';
+  _hiderQ = null; _hiderPickingLocation = false;
+  // Keep station — hider stays at same station between questions
+  renderHiderStationBadge();
+}
+
+function copyHiderAnswer(){
+  const json = document.getElementById('hider-json-out').value;
+  navigator.clipboard.writeText(json)
+    .then(()=>{ const fl=document.getElementById('hcf'); fl.classList.add('on'); setTimeout(()=>fl.classList.remove('on'),2200); toast('Copied! Send to the seekers.'); })
+    .catch(()=>toast('Tap the text area and copy manually'));
+}
+
+function applyAnswerInline(){
+  // Mirror applyAnswer but reads from the inline textarea and clears it on success
+  const raw = document.getElementById('json-in-inline').value.trim();
+  if(!raw){ toast('Paste the hider\'s answer JSON first'); return; }
+  applyAnswerFromRaw(raw, ()=>{ document.getElementById('json-in-inline').value=''; resetBuild(); });
+}
+
+function closeAnswerModal(){
+  document.getElementById('answer-modal').classList.add('hidden');
+}
+
+// ── Card prompts ──
+function promptCard(type){
+  _pendingCard = type;
+  const isVeto = type === 'veto';
+  document.getElementById('ci-icon').textContent  = isVeto ? '🚫' : '🎲';
+  document.getElementById('ci-title').textContent = isVeto ? 'Use Veto Card?' : 'Use Randomize Card?';
+  document.getElementById('ci-body').innerHTML    = isVeto
+    ? 'This will <b>nullify the question</b>. The seekers get no information. You must have a Veto card in hand to use this.'
+    : 'This will <b>replace the question</b> with a randomly generated one that you must answer. You must have a Randomize card in hand.';
+  const btn = document.getElementById('ci-confirm-btn');
+  btn.textContent = isVeto ? '🚫 Use Veto' : '🎲 Use Randomize';
+  btn.className = `card-btn ${isVeto ? 'veto' : 'random'}`;
+  document.getElementById('confirm-overlay').classList.remove('hidden');
+}
+
+function closeConfirm(){
+  document.getElementById('confirm-overlay').classList.add('hidden');
+  _pendingCard = null;
+}
+
+function confirmCard(){
+  const card = _pendingCard; // save BEFORE closeConfirm nulls it
+  closeConfirm();
+  closeAnswerModal();
+  if(card === 'veto'){
+    const payload = { type:'veto', original_id: _hiderQ?.id || null };
+    showHiderResult(JSON.stringify(payload, null, 2), 'veto');
+  } else if(card === 'randomize'){
+    doRandomize();
+  }
+}
+
+function doRandomize(){
+  const types = ['radar','thermo','measure','tentacles','matching','photo'];
+  const type  = types[Math.floor(Math.random() * types.length)];
+  const payload = { type:'randomize_card', question_type: type, id:'rand'+Date.now().toString(36) };
+  showHiderResult(JSON.stringify(payload, null, 2), 'randomize', type);
+}
+
+// ══════════════════════════════════════════════════════
+//  SEEKER: APPLY ANSWER
+// ══════════════════════════════════════════════════════
+function applyAnswer(){
+  const raw = document.getElementById('json-in').value.trim();
+  if(!raw){ toast('Paste an answered JSON first'); return; }
+  applyAnswerFromRaw(raw, ()=>{ document.getElementById('json-in').value=''; switchTab('log'); });
+}
+
+function applyAnswerFromRaw(raw, onSuccess){
+  let q; try{ q=JSON.parse(raw); }catch(e){ toast('Invalid JSON — check format'); return; }
+
+  // Veto
+  if(q.type === 'veto'){
+    constraints.push({type:'_veto', _label:'Veto card played — question nullified'});
+    renderLog(); saveGame(); onSuccess();
+    showResult('🚫','Question Vetoed!',
+      'The hider played their Veto card. This question is nullified — no zone change.',
+      null, null);
+    return;
+  }
+
+  // Randomize card — seekers must now build the specified question type and send to hider
+  if(q.type === 'randomize_card'){
+    const def = QDEFS[q.question_type];
+    if(!def){ toast(`Unknown question type: "${q.question_type}"`); return; }
+    constraints.push({type:'_randomize_card', _qtype: q.question_type, _label:`Randomize card — new question: ${def.label}`});
+    renderLog(); saveGame(); onSuccess();
+    _pendingRandomizeType = q.question_type;
+    showResult(
+      '🎲',
+      'Randomize Card!',
+      'The hider played their Randomize card. Build the question type shown below on the map and send it to the hider to answer.',
+      null,
+      q.question_type
+    );
+    return;
+  }
+
+  // Normal answered question
+  if(!q.answer){ toast('Missing "answer" field'); return; }
+  const def = QDEFS[q.type];
+  if(!def){ toast(`Unknown type: "${q.type}"`); return; }
+  try{
+    const nz = def.applyToZone(validZone, q);
+    if(!nz){ toast('Zone empty — contradiction?'); return; }
+    validZone = nz; constraints.push(q);
+    renderZone(); renderLog();
+    saveGame();
+    onSuccess(); toast('Zone updated ✓');
+  }catch(e){ toast('Error: '+e.message); }
+}
+
+function showResult(emoji, title, sub, qboxHTML, autoSelectType=null){
+  document.getElementById('ro-emoji').textContent = emoji;
+  document.getElementById('ro-title').textContent = title;
+  document.getElementById('ro-sub').textContent   = sub;
+
+  // qbox (used for extra text)
+  const qb = document.getElementById('ro-qbox');
+  if(qboxHTML){ qb.innerHTML = qboxHTML; qb.style.display='block'; }
+  else { qb.style.display='none'; }
+
+  // Question type pill (randomize only)
+  const pill = document.getElementById('ro-qtype-pill');
+  if(autoSelectType){
+    const def = QDEFS[autoSelectType];
+    document.getElementById('ro-qtype-icon').textContent = QICONS[autoSelectType] || '❓';
+    document.getElementById('ro-qtype-name').textContent = def ? def.label : autoSelectType;
+    document.getElementById('ro-qtype-desc').textContent = QDESC[autoSelectType] || '';
+    pill.style.display = 'block';
+  } else {
+    pill.style.display = 'none';
+  }
+
+  // CTA button
+  document.getElementById('ro-cta-btn').textContent = autoSelectType ? 'Build This Question →' : 'Got it →';
+  document.getElementById('result-overlay').classList.remove('hidden');
+}
+
+function closeResult(){
+  document.getElementById('result-overlay').classList.add('hidden');
+  if(_pendingRandomizeType){
+    const t = _pendingRandomizeType; _pendingRandomizeType = null;
+    switchTab('build');
+    selectQType(t);
+  } else {
+    switchTab('log');
+  }
+}
+
+function renderLog(){
+  const el = document.getElementById('log-list');
+  if(!constraints.length){ el.innerHTML='<p class="empty">No constraints applied yet.</p>'; return; }
+  el.innerHTML = constraints.map(q => {
+    if(q.type==='_setup')
+      return `<div class="citem"><span class="ctag" style="background:rgba(240,160,48,0.2);color:var(--gold)">SETUP</span><div class="cdesc"><b>${q._label}</b></div></div>`;
+    if(q.type==='_veto')
+      return `<div class="citem"><span class="ctag" style="background:rgba(232,64,64,0.15);color:var(--accent)">VETO</span><div class="cdesc"><b>Question vetoed — no info gained</b></div></div>`;
+    if(q.type==='_randomize_card'){
+      const def=QDEFS[q._qtype];
+      return `<div class="citem"><span class="ctag" style="background:rgba(160,96,255,0.2);color:var(--purple)">RANDOM</span><div class="cdesc"><b>Randomize card played</b> — new question type: <b>${def?def.label:q._qtype}</b></div></div>`;
+    }
+    const def=QDEFS[q.type];
+    return `<div class="citem"><span class="ctag ${def?def.colorTag:'tag-radar'}">${def?def.label:q.type}</span><div class="cdesc">${def?def.describe(q):JSON.stringify(q)}</div></div>`;
+  }).join('');
+}
+
+// ══════════════════════════════════════════════════════
+//  TABS + WIRING
+// ══════════════════════════════════════════════════════
+function switchTab(name){
+  // Don't switch to a tab that's hidden in current mode
+  const tabEl = document.querySelector(`.tab[data-tab="${name}"]`);
+  if(tabEl && tabEl.style.display === 'none') return;
+  document.querySelectorAll('.tab').forEach(t=>t.classList.toggle('active',t.dataset.tab===name));
+  document.querySelectorAll('.tab-pane').forEach(p=>p.style.display='none');
+  const pane = document.getElementById('tab-'+name);
+  if(pane) pane.style.display='block';
+}
+document.querySelectorAll('.tab').forEach(t=>t.addEventListener('click',()=>switchTab(t.dataset.tab)));
+document.querySelectorAll('.qbtn').forEach(b=>b.addEventListener('click',()=>selectQType(b.dataset.q)));
+document.getElementById('handle-row').addEventListener('click',()=>{if(window.innerWidth<640)document.getElementById('panel').classList.toggle('collapsed');});
+
+let toastTimer;
+function toast(msg,ms=2400){const el=document.getElementById('toast');el.textContent=msg;el.classList.add('on');clearTimeout(toastTimer);toastTimer=setTimeout(()=>el.classList.remove('on'),ms);}
+function clearMarkers(){
+  pickedMarkers.forEach(m=>m.remove()); pickedMarkers=[];
+  seekerPinMarkers.forEach(m=>m.remove()); seekerPinMarkers=[];
+}
+function clearPoiMarkers(){
+  // Only clear POI teardrops, not the seeker location dot
+  pickedMarkers.forEach(m=>m.remove()); pickedMarkers=[];
+}
+
+initMap();
+renderBuildBody();
+checkForResume();
