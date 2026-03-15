@@ -22,6 +22,14 @@ const stopLineMap = {};
 //  CONSTANTS & STATE
 // ══════════════════════════════════════════════════════
 const CENTER = [42.3601,-71.0589];
+const S = 41.85, N = 42.80, W = -71.70, E = -70.40;
+const T_BBOX = {minLat:42.18, maxLat:42.67, minLng:-71.55, maxLng:-70.85};
+const DATA_FILES = {
+  mbta: 'data/mbta-data.json',
+  pois: 'data/pois.json',
+  boundaries: 'data/boundaries.json',
+  landmasses: 'data/landmasses.json',
+};
 const INIT_POLY = turf.polygon([[
   [-71.70,41.85],[-70.40,41.85],[-70.40,42.80],[-71.70,42.80],[-71.70,41.85]
 ]]);
@@ -39,6 +47,12 @@ let mbdataReady  = false;  // true once MBTA API load completes
 let gameMode = 'seeker';   // 'seeker' | 'hider' | 'dev'
 let hiderStation = null;   // {name, lat, lng, lines:[...]} set when hider taps their station
 let _pickingHiderStation = false;
+const preloadedData = {
+  mbta: null,
+  pois: null,
+  boundaries: null,
+  landmasses: null,
+};
 
 // ══════════════════════════════════════════════════════
 //  GAME MODE
@@ -116,6 +130,189 @@ function loadSave(){
 
 function clearSave(){
   localStorage.removeItem(SAVE_KEY);
+}
+
+async function fetchOptionalJSON(path, label){
+  try{
+    const res = await fetch(path, {cache:'no-store'});
+    if(!res.ok) return null;
+    const data = await res.json();
+    console.log(`Loaded ${label} from ${path}`);
+    return data;
+  }catch(e){
+    console.warn(`Optional ${label} load failed:`, e);
+    return null;
+  }
+}
+
+async function loadPoiData(){
+  if(preloadedData.pois) return preloadedData.pois;
+  preloadedData.pois = await fetchOptionalJSON(DATA_FILES.pois, 'POIs');
+  return preloadedData.pois;
+}
+
+async function loadBoundaryData(){
+  if(preloadedData.boundaries) return preloadedData.boundaries;
+  preloadedData.boundaries = await fetchOptionalJSON(DATA_FILES.boundaries, 'boundaries');
+  return preloadedData.boundaries;
+}
+
+function normKey(value){
+  return String(value || '')
+    .toLowerCase()
+    .replace(/\bcounty\b/g, '')
+    .replace(/\b(city|town)\b/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function deepClone(value){
+  return value == null ? value : JSON.parse(JSON.stringify(value));
+}
+
+function coerceFeature(item, name){
+  if(!item) return null;
+  if(item.type === 'Feature' && item.geometry) return deepClone(item);
+  if(item.geometry && item.geometry.type){
+    return {
+      type:'Feature',
+      properties:{name: item.name || name || item.properties?.name || ''},
+      geometry: deepClone(item.geometry),
+    };
+  }
+  return null;
+}
+
+function findFirstArray(obj, keys){
+  if(!obj) return null;
+  return keys.map(k => obj[k]).find(v => Array.isArray(v)) || null;
+}
+
+function normalizePlaces(items, fallbackName='Place'){
+  return (items || []).map(item => ({
+    name: item.name || fallbackName,
+    lat: Number(item.lat),
+    lng: Number(item.lng ?? item.lon),
+  })).filter(item => Number.isFinite(item.lat) && Number.isFinite(item.lng));
+}
+
+function pointsFromFeatureGeometry(feature, name='Border'){
+  const out = [];
+  const seen = new Set();
+  const add = (coords) => {
+    coords.forEach(([lng, lat]) => {
+      const key = `${lat.toFixed(4)},${lng.toFixed(4)}`;
+      if(!seen.has(key)){
+        seen.add(key);
+        out.push({lat, lng, name});
+      }
+    });
+  };
+  const geom = feature?.geometry;
+  if(!geom) return out;
+  if(geom.type === 'Polygon'){
+    geom.coordinates.forEach(add);
+  } else if(geom.type === 'MultiPolygon'){
+    geom.coordinates.forEach(poly => poly.forEach(add));
+  } else if(geom.type === 'LineString'){
+    add(geom.coordinates);
+  } else if(geom.type === 'MultiLineString'){
+    geom.coordinates.forEach(add);
+  }
+  return out;
+}
+
+function featureToDisplayLines(feature){
+  if(!feature?.geometry) return [];
+  if(feature.geometry.type === 'LineString' || feature.geometry.type === 'MultiLineString'){
+    return [feature];
+  }
+  try{
+    const lines = turf.polygonToLine(feature);
+    if(lines?.type === 'FeatureCollection') return lines.features;
+    if(lines?.type === 'Feature') return [lines];
+  }catch(e){}
+  return [];
+}
+
+function getBoundaryDataset(cat){
+  const data = preloadedData.boundaries || {};
+  if(cat === 'county') return findFirstArray(data, ['counties']);
+  if(cat === 'city') return findFirstArray(data, ['cities', 'towns', 'municipalities']);
+  if(cat === 'neighborhood') return findFirstArray(data, ['neighborhoods']);
+  if(cat === 'postcode') return findFirstArray(data, ['postcodes', 'zipCodes', 'zip_codes']);
+  return null;
+}
+
+function resolveBoundaryFromPreloaded(cat, center){
+  const items = getBoundaryDataset(cat);
+  if(!items?.length) return null;
+  const pt = turf.point([center.lng, center.lat]);
+  for(const item of items){
+    const feature = coerceFeature(item, item.name);
+    if(!feature) continue;
+    try{
+      if(turf.booleanPointInPolygon(pt, feature)){
+        const val = item.name || feature.properties?.name || null;
+        return val ? { val, boundary: feature } : null;
+      }
+    }catch(e){}
+  }
+  return null;
+}
+
+function lookupPoiCollection(keys){
+  const items = findFirstArray(preloadedData.pois, keys);
+  return normalizePlaces(items);
+}
+
+function getNamedPoiCollection(label){
+  const keyMap = {
+    'Park': ['parks'],
+    'A Park': ['parks'],
+    'Golf Course': ['golfCourses', 'golf_courses'],
+    'A Golf Course': ['golfCourses', 'golf_courses'],
+    'Library': ['libraries'],
+    'A Library': ['libraries'],
+    'Hospital': ['hospitals'],
+    'A Hospital': ['hospitals'],
+    'Museum': ['museums'],
+    'A Museum': ['museums'],
+    'Movie Theater': ['movieTheaters', 'movie_theaters', 'cinemas'],
+    'A Movie Theater': ['movieTheaters', 'movie_theaters', 'cinemas'],
+    'Zoo / Aquarium': ['zooAquariums', 'zoo_aquariums'],
+    'A Zoo / Aquarium': ['zooAquariums', 'zoo_aquariums'],
+    'Foreign Consulate': ['foreignConsulates', 'foreign_consulates', 'consulates'],
+    'A Foreign Consulate': ['foreignConsulates', 'foreign_consulates', 'consulates'],
+    'An Amusement Park': ['amusementParks', 'amusement_parks'],
+    'A Body of Water': ['bodiesOfWater', 'bodies_of_water', 'waterBodies'],
+    'Sea Level': ['seaLevel', 'sea_level', 'coastline'],
+    'A Coastline': ['coastline', 'seaLevel', 'sea_level'],
+  };
+  const keys = keyMap[label];
+  return keys ? lookupPoiCollection(keys) : [];
+}
+
+function getPreloadedBorderPoints(type){
+  const items = getBoundaryDataset(type);
+  if(!items?.length) return [];
+  return items.flatMap(item => pointsFromFeatureGeometry(coerceFeature(item, item.name), item.name || 'Border'));
+}
+
+async function getCategoryInstances(catObj, center, radiusM){
+  if(catObj.instances){
+    try{
+      const items = normalizePlaces(await catObj.instances(center, radiusM), catObj.label);
+      if(items.length) return items;
+    }catch(e){
+      console.warn(`Instance lookup failed for ${catObj.label}:`, e);
+    }
+  }
+  if(catObj.overpass){
+    const items = await overpassSearch(catObj.overpass(center, radiusM), center, radiusM);
+    return items.map(it=>({name:it.name || catObj.label, lat:it.lat, lng:it.lon || it.lng}));
+  }
+  return [];
 }
 
 function checkForResume(){
@@ -254,8 +451,8 @@ const QDEFS = {
         for(let i=1;i<circles.length;i++){
           try{ union = turf.union(union, circles[i]) || union; }catch(e){}
         }
-        if(q.answer==='closer') return safeDiff(zone, union);
-        else return safeIsect(zone, union);
+        if(q.answer==='closer') return safeIsect(zone, union);
+        return safeDiff(zone, union);
       }catch(e){ return zone; }
     },
     describe:q=>`<b>${q.answer==='closer'?'CLOSER':'FURTHER'}</b> than seeker (${q.seeker_dist?.toFixed(2)}mi) from nearest ${q.category_label}`
@@ -298,12 +495,11 @@ const QDEFS = {
     applyToZone:(zone,q)=>{
       if(!q.boundary_geojson) return zone;
       try{
-        // Nominatim polygons are complement-oriented — they cover everything EXCEPT the named region.
-        // So: Yes (same region) → difference removes the complement, leaving only the region.
-        //     No (different region) → intersect keeps only the complement (everything outside).
+        // `matching_boundary` is normalized to the actual containing region polygon.
+        // Yes = keep only that region; No = eliminate that region.
         const result = q.answer==='Yes'
-          ? safeDiff(zone, q.boundary_geojson)
-          : safeIsect(zone, q.boundary_geojson);
+          ? safeIsect(zone, q.boundary_geojson)
+          : safeDiff(zone, q.boundary_geojson);
         if(result && turf.area(result) > 1000) return result;
         return zone;
       } catch(e){ return zone; }
@@ -460,6 +656,14 @@ async function loadMBTAData(){
   const allStops = {};
   let loaded = 0;
 
+  const staticData = preloadedData.mbta || await fetchOptionalJSON(DATA_FILES.mbta, 'MBTA snapshot');
+  if(staticData?.lines?.length){
+    preloadedData.mbta = staticData;
+    hydrateMBTAFromStatic(staticData, legStatus);
+    await loadLandmassData();
+    return;
+  }
+
   // Fetch commuter rail stop IDs — use parent_station to match subway stop IDs
   try{
     const crResp = await fetch(`${BASE}/stops?filter[route_type]=2&fields[stop]=name,latitude,longitude&page[size]=500&include=parent_station`);
@@ -571,12 +775,65 @@ async function loadMBTAData(){
       loaded++;
     }
   }));
+  drawStopMarkers(allStops);
+  finalizeMBTALoad(legStatus);
+  await loadLandmassData();
+}
 
-  // Build a line-id → {label, color} lookup for popup badges
+function hydrateMBTAFromStatic(data, legStatus){
+  Object.keys(stopLineMap).forEach(k => delete stopLineMap[k]);
+  commuterRailStops.clear();
+  commuterRailStopsList.length = 0;
+
+  const lines = data.lines || [];
+  const allStops = {};
+  lines.forEach(line => {
+    const shapePath = line.shapePath || line.path || [];
+    const meta = GAME_LINES.find(gl => gl.id === line.id) || {
+      id: line.id,
+      label: line.label || line.id,
+      color: line.color || '#888',
+      weight: line.weight || 4,
+    };
+    if(shapePath.length > 1){
+      L.polyline(shapePath, {color:'#1a1a1a', weight:meta.weight+3, opacity:0.4, lineJoin:'round', lineCap:'round'}).addTo(map);
+      L.polyline(shapePath, {
+        color: meta.color,
+        weight: meta.weight,
+        opacity: 1,
+        dashArray: meta.id === 'Mattapan' ? '8 5' : null,
+        lineJoin:'round',
+        lineCap:'round',
+      }).bindTooltip(meta.label, {sticky:true}).addTo(map);
+    }
+    (line.stops || []).forEach(stop => {
+      if(!Number.isFinite(stop.lat) || !Number.isFinite(stop.lng)) return;
+      const sid = stop.id;
+      if(!allStops[sid]) allStops[sid] = {name:stop.name, lat:stop.lat, lng:stop.lng, lines:[], color:meta.color};
+      if(!allStops[sid].lines.includes(meta.id)) allStops[sid].lines.push(meta.id);
+      if(!stopLineMap[sid]) stopLineMap[sid] = {name:stop.name, lat:stop.lat, lng:stop.lng, lines:new Set()};
+      stopLineMap[sid].lines.add(meta.id);
+    });
+  });
+
+  const seenCR = new Set();
+  (data.commuterRail || []).forEach(stop => {
+    commuterRailStops.add(stop.id);
+    if(stop.parentId) commuterRailStops.add(stop.parentId);
+    if(stop.name && Number.isFinite(stop.lat) && Number.isFinite(stop.lng) && !seenCR.has(stop.name)){
+      seenCR.add(stop.name);
+      commuterRailStopsList.push({id: stop.id, name: stop.name, lat: stop.lat, lng: stop.lng});
+    }
+  });
+
+  drawStopMarkers(allStops);
+  finalizeMBTALoad(legStatus);
+}
+
+function drawStopMarkers(allStops){
   const lineInfo = {};
   GAME_LINES.forEach(gl => { lineInfo[gl.id] = {label: gl.label, color: gl.color}; });
 
-  // Shorten line label for badge display
   function badgeLabel(lineId){
     const label = (lineInfo[lineId]||{}).label || lineId;
     return label
@@ -586,19 +843,14 @@ async function loadMBTAData(){
       .replace('Red · Braintree','Red B');
   }
 
-  // Draw stops deduplicated
   Object.entries(allStops).forEach(([sid, {name, lat, lng, lines, color}]) => {
-    // Only show CR double-ring within the T network's reasonable footprint
-    const T_BBOX = {minLat:42.18, maxLat:42.67, minLng:-71.55, maxLng:-70.85};
     const isCR = commuterRailStops.has(sid) &&
       lat >= T_BBOX.minLat && lat <= T_BBOX.maxLat &&
       lng >= T_BBOX.minLng && lng <= T_BBOX.maxLng;
 
-    // Collapse Green branches to a single color entry
     const GREEN_COLOR = '#00843D';
     const uniqueColors = [...new Set(lines.map(lid => {
       const c = (lineInfo[lid]||{}).color || color;
-      // Normalize all Green branch variants to the same green
       return (lid.startsWith('Green') || lid === 'Mattapan') ? (lid === 'Mattapan' ? '#800000' : GREEN_COLOR) : c;
     }))];
 
@@ -611,7 +863,7 @@ async function loadMBTAData(){
     </div>`;
 
     const icon = makeStopIcon(uniqueColors, isCR);
-    const marker = L.marker([lat, lng], {icon, zIndexOffset: isCR ? 200 : (uniqueColors.length > 1 ? 100 : 0)})
+    L.marker([lat, lng], {icon, zIndexOffset: isCR ? 200 : (uniqueColors.length > 1 ? 100 : 0)})
       .bindPopup(popupHTML, {offset:[0,-2], maxWidth:240})
       .on('click', function(){
         if(_pickingHiderStation){
@@ -622,7 +874,9 @@ async function loadMBTAData(){
       })
       .addTo(map);
   });
+}
 
+function finalizeMBTALoad(legStatus){
   const stopCount = Object.keys(stopLineMap).length;
   console.log(`Loaded ${stopCount} stops into stopLineMap`);
   if (legStatus) {
@@ -630,7 +884,6 @@ async function loadMBTAData(){
     setTimeout(() => { legStatus.style.display='none'; }, 3500);
   }
 
-  // Signal setup screen
   mbdataReady = true;
   const dot = document.getElementById('setup-dot');
   const txt = document.getElementById('setup-status-text');
@@ -640,9 +893,20 @@ async function loadMBTAData(){
     ? `${stopCount} stops loaded — ready!`
     : `⚠ Stops failed to load — check network`;
   if (btn) btn.disabled = false;
+}
 
-  // Landmass precomputation disabled — will be loaded from static JSON file
-  // precomputeLandmasses().catch(e => console.warn('Landmass precompute failed:', e));
+async function loadLandmassData(){
+  if(_landmassCache.ready) return;
+  const data = preloadedData.landmasses || await fetchOptionalJSON(DATA_FILES.landmasses, 'landmasses');
+  if(!data) return;
+  preloadedData.landmasses = data;
+  _landmassCache.pieces = (data.pieces || []).map(piece => ({
+    type:'Feature',
+    properties:{id: piece.id, name: piece.name},
+    geometry: deepClone(piece.geometry),
+  })).filter(piece => piece.geometry?.type === 'Polygon' || piece.geometry?.type === 'MultiPolygon');
+  _landmassCache.stopIndex = {...(data.stops || {})};
+  _landmassCache.ready = _landmassCache.pieces.length > 0;
 }
 
 // ══════════════════════════════════════════════════════
@@ -853,6 +1117,9 @@ const MATCHING_CATS = [
   {
     icon:'🏛️', label:'County', cat:'county',
     resolve: async (c) => {
+      await loadBoundaryData();
+      const local = resolveBoundaryFromPreloaded('county', c);
+      if(local) return local;
       const rev = await fetch(`https://nominatim.openstreetmap.org/reverse?lat=${c.lat}&lon=${c.lng}&format=json&addressdetails=1`,{headers:{'Accept-Language':'en-US'}});
       const d = await rev.json();
       const val = d.address?.county || d.address?.state_district || null;
@@ -864,6 +1131,9 @@ const MATCHING_CATS = [
   {
     icon:'🏙️', label:'City / Town', cat:'city',
     resolve: async (c) => {
+      await loadBoundaryData();
+      const local = resolveBoundaryFromPreloaded('city', c);
+      if(local) return local;
       const rev = await fetch(`https://nominatim.openstreetmap.org/reverse?lat=${c.lat}&lon=${c.lng}&format=json&addressdetails=1`,{headers:{'Accept-Language':'en-US'}});
       const d = await rev.json();
       const val = d.address?.city || d.address?.town || d.address?.village || null;
@@ -875,6 +1145,9 @@ const MATCHING_CATS = [
   {
     icon:'🏘️', label:'Neighborhood', cat:'neighborhood',
     resolve: async (c) => {
+      await loadBoundaryData();
+      const local = resolveBoundaryFromPreloaded('neighborhood', c);
+      if(local) return local;
       const rev = await fetch(`https://nominatim.openstreetmap.org/reverse?lat=${c.lat}&lon=${c.lng}&format=json&addressdetails=1&zoom=15`,{headers:{'Accept-Language':'en-US'}});
       const d = await rev.json();
       const val = d.address?.suburb || d.address?.neighbourhood || d.address?.quarter || null;
@@ -886,6 +1159,9 @@ const MATCHING_CATS = [
   {
     icon:'📮', label:'ZIP Code', cat:'postcode',
     resolve: async (c) => {
+      await loadBoundaryData();
+      const local = resolveBoundaryFromPreloaded('postcode', c);
+      if(local) return local;
       const rev = await fetch(`https://nominatim.openstreetmap.org/reverse?lat=${c.lat}&lon=${c.lng}&format=json&addressdetails=1`,{headers:{'Accept-Language':'en-US'}});
       const d = await rev.json();
       const val = d.address?.postcode || null;
@@ -898,14 +1174,14 @@ const MATCHING_CATS = [
 
 // ── Nearest categories — "Is the nearest ___ to me the same as to you?" ──
 const NEAREST_CATS = [
-  { icon:'🌳', label:'Park',             overpass:(c,r)=>`nwr["leisure"="park"]["name"](around:${r},${c.lat},${c.lng});` },
-  { icon:'⛳', label:'Golf Course',       overpass:(c,r)=>`nwr["leisure"="golf_course"](around:${r},${c.lat},${c.lng});` },
-  { icon:'📚', label:'Library',          overpass:(c,r)=>`nwr["amenity"="library"](around:${r},${c.lat},${c.lng});` },
-  { icon:'🏥', label:'Hospital',         overpass:(c,r)=>`nwr["amenity"="hospital"](around:${r},${c.lat},${c.lng});` },
-  { icon:'🏛️', label:'Museum',           overpass:(c,r)=>`nwr["tourism"="museum"](around:${r},${c.lat},${c.lng});` },
-  { icon:'🎬', label:'Movie Theater',    overpass:(c,r)=>`nwr["amenity"="cinema"](around:${r},${c.lat},${c.lng});` },
-  { icon:'🦒', label:'Zoo / Aquarium',   overpass:(c,r)=>`nwr["tourism"~"^(zoo|aquarium)$"](around:${r},${c.lat},${c.lng});` },
-  { icon:'🏳️', label:'Foreign Consulate',overpass:(c,r)=>`nwr["office"~"diplomatic|consulate"](around:${r},${c.lat},${c.lng});nwr["amenity"="embassy"](around:${r},${c.lat},${c.lng});` },
+  { icon:'🌳', label:'Park',             instances: async()=>{ await loadPoiData(); return getNamedPoiCollection('Park'); }, overpass:(c,r)=>`nwr["leisure"="park"]["name"](around:${r},${c.lat},${c.lng});` },
+  { icon:'⛳', label:'Golf Course',      instances: async()=>{ await loadPoiData(); return getNamedPoiCollection('Golf Course'); }, overpass:(c,r)=>`nwr["leisure"="golf_course"](around:${r},${c.lat},${c.lng});` },
+  { icon:'📚', label:'Library',          instances: async()=>{ await loadPoiData(); return getNamedPoiCollection('Library'); }, overpass:(c,r)=>`nwr["amenity"="library"](around:${r},${c.lat},${c.lng});` },
+  { icon:'🏥', label:'Hospital',         instances: async()=>{ await loadPoiData(); return getNamedPoiCollection('Hospital'); }, overpass:(c,r)=>`nwr["amenity"="hospital"](around:${r},${c.lat},${c.lng});` },
+  { icon:'🏛️', label:'Museum',          instances: async()=>{ await loadPoiData(); return getNamedPoiCollection('Museum'); }, overpass:(c,r)=>`nwr["tourism"="museum"](around:${r},${c.lat},${c.lng});` },
+  { icon:'🎬', label:'Movie Theater',   instances: async()=>{ await loadPoiData(); return getNamedPoiCollection('Movie Theater'); }, overpass:(c,r)=>`nwr["amenity"="cinema"](around:${r},${c.lat},${c.lng});` },
+  { icon:'🦒', label:'Zoo / Aquarium',  instances: async()=>{ await loadPoiData(); return getNamedPoiCollection('Zoo / Aquarium'); }, overpass:(c,r)=>`nwr["tourism"~"^(zoo|aquarium)$"](around:${r},${c.lat},${c.lng});` },
+  { icon:'🏳️', label:'Foreign Consulate', instances: async()=>{ await loadPoiData(); return getNamedPoiCollection('Foreign Consulate'); }, overpass:(c,r)=>`nwr["office"~"diplomatic|consulate"](around:${r},${c.lat},${c.lng});nwr["amenity"="embassy"](around:${r},${c.lat},${c.lng});` },
 ];
 // osm_class: 'boundary', 'postcode', or null (any)
 // admin_level: OSM admin level (6=county, 8=municipality, 10=neighborhood) or null
@@ -1286,11 +1562,9 @@ async function selectNearestCat(catObj){
   renderBuildBody();
   try{
     const radiusM = 35000;
-    const items = await overpassSearch(catObj.overpass(qparams.center, radiusM), qparams.center, radiusM);
+    const pois = await getCategoryInstances(catObj, qparams.center, radiusM);
     qparams._nearest_searching = false;
-    if(!items.length){ toast('No '+catObj.label+' found nearby'); renderBuildBody(); return; }
-
-    const pois = items.map(it=>({name:it.name, lat:it.lat, lng:it.lng}));
+    if(!pois.length){ toast('No '+catObj.label+' found nearby'); renderBuildBody(); return; }
     pois.sort((a,b)=>turfDist(qparams.center,a)-turfDist(qparams.center,b));
     qparams.nearest_seeker_poi = pois[0];
     qparams.nearest_all_pois = pois.slice(0,20);
@@ -1359,8 +1633,30 @@ function tryGenerate(){ if(qtype&&QDEFS[qtype]&&QDEFS[qtype].isReady(qparams)) g
 const _adminBoundaries = { counties: [], towns: [] };
 
 async function loadAdminBoundaries(){
-  const S=41.85, N=42.80, W=-71.70, E=-70.40;
   try{
+    const staticData = preloadedData.boundaries || await fetchOptionalJSON(DATA_FILES.boundaries, 'boundaries');
+    if(staticData){
+      preloadedData.boundaries = staticData;
+      _adminBoundaries.counties = (getBoundaryDataset('county') || []).flatMap(item => {
+        const feature = coerceFeature(item, item.name);
+        return featureToDisplayLines(feature).map(line => ({
+          ...line,
+          properties: {...(line.properties || {}), name: item.name || feature?.properties?.name || '', admin_level: '6'},
+        }));
+      });
+      _adminBoundaries.towns = (getBoundaryDataset('city') || []).flatMap(item => {
+        const feature = coerceFeature(item, item.name);
+        return featureToDisplayLines(feature).map(line => ({
+          ...line,
+          properties: {...(line.properties || {}), name: item.name || feature?.properties?.name || '', admin_level: '8'},
+        }));
+      });
+      if(countyLayer) countyLayer.addData({type:'FeatureCollection',features:_adminBoundaries.counties});
+      if(townLayer) townLayer.addData({type:'FeatureCollection',features:_adminBoundaries.towns});
+      console.log(`Admin boundaries: ${_adminBoundaries.counties.length} county segments, ${_adminBoundaries.towns.length} town segments`);
+      return;
+    }
+
     // Fetch counties (admin_level=6) and towns/cities (admin_level=8) in one query
     const q=`[out:json][timeout:30];(
       relation["admin_level"="6"]["boundary"="administrative"](${S},${W},${N},${E});
@@ -1517,13 +1813,24 @@ const MEASURE_CATS = [
 
   // BORDERS
   { group:'Borders', icon:'🏛️', label:'A County Border',
-    instances: async (c) => nearestBorderPoints(c, 'county', 6) },
+    instances: async (c) => {
+      await loadBoundaryData();
+      const preloaded = getPreloadedBorderPoints('county');
+      return preloaded.length ? preloaded : nearestBorderPoints(c, 'county', 6);
+    } },
   { group:'Borders', icon:'🏙️', label:'A City Border',
-    instances: async (c) => nearestBorderPoints(c, 'city', 8) },
+    instances: async (c) => {
+      await loadBoundaryData();
+      const preloaded = getPreloadedBorderPoints('city');
+      return preloaded.length ? preloaded : nearestBorderPoints(c, 'city', 8);
+    } },
 
   // NATURAL
   { group:'Natural', icon:'🌊', label:'Sea Level',
     instances: async (c) => {
+      await loadPoiData();
+      const preloaded = getNamedPoiCollection('Sea Level');
+      if(preloaded.length) return preloaded;
       // Harbor shoreline: fetch coastline ways and densify
       const r = 50000;
       const q = `[out:json][timeout:25];way["natural"="coastline"](around:${r},${c.lat},${c.lng});out geom 300;`;
@@ -1533,6 +1840,9 @@ const MEASURE_CATS = [
     }},
   { group:'Natural', icon:'💧', label:'A Body of Water',
     instances: async (c) => {
+      await loadPoiData();
+      const preloaded = getNamedPoiCollection('A Body of Water');
+      if(preloaded.length) return preloaded;
       const r = 35000;
       const q = `[out:json][timeout:25];(way["natural"~"^(water|bay)$"]["name"](around:${r},${c.lat},${c.lng});relation["natural"~"^(water|bay)$"]["name"](around:${r},${c.lat},${c.lng});way["waterway"="river"]["name"](around:${r},${c.lat},${c.lng}););out center 50;`;
       const data = await overpassRaw(q);
@@ -1540,6 +1850,9 @@ const MEASURE_CATS = [
     }},
   { group:'Natural', icon:'🏖️', label:'A Coastline',
     instances: async (c) => {
+      await loadPoiData();
+      const preloaded = getNamedPoiCollection('A Coastline');
+      if(preloaded.length) return preloaded;
       const r = 50000;
       const q = `[out:json][timeout:25];way["natural"="coastline"](around:${r},${c.lat},${c.lng});out geom 300;`;
       const data = await overpassRaw(q);
@@ -1547,26 +1860,35 @@ const MEASURE_CATS = [
       return pts.length ? pts : [{lat:42.3551, lng:-71.0497, name:'Boston coastline'}];
     }},
   { group:'Natural', icon:'🌳', label:'A Park',
+    instances: async ()=>{ await loadPoiData(); return getNamedPoiCollection('A Park'); },
     overpass:(c,r)=>`nwr["leisure"="park"]["name"](around:${r},${c.lat},${c.lng});` },
 
   // PLACES OF INTEREST
   { group:'Places of Interest', icon:'🎢', label:'An Amusement Park',
+    instances: async ()=>{ await loadPoiData(); return getNamedPoiCollection('An Amusement Park'); },
     overpass:(c,r)=>`nwr["tourism"="theme_park"](around:${r},${c.lat},${c.lng});nwr["leisure"="amusement_arcade"](around:${r},${c.lat},${c.lng});` },
   { group:'Places of Interest', icon:'🦒', label:'A Zoo / Aquarium',
+    instances: async ()=>{ await loadPoiData(); return getNamedPoiCollection('A Zoo / Aquarium'); },
     overpass:(c,r)=>`nwr["tourism"~"^(zoo|aquarium)$"](around:${r},${c.lat},${c.lng});` },
   { group:'Places of Interest', icon:'⛳', label:'A Golf Course',
+    instances: async ()=>{ await loadPoiData(); return getNamedPoiCollection('A Golf Course'); },
     overpass:(c,r)=>`nwr["leisure"="golf_course"](around:${r},${c.lat},${c.lng});` },
   { group:'Places of Interest', icon:'🏛️', label:'A Museum',
+    instances: async ()=>{ await loadPoiData(); return getNamedPoiCollection('A Museum'); },
     overpass:(c,r)=>`nwr["tourism"="museum"](around:${r},${c.lat},${c.lng});` },
   { group:'Places of Interest', icon:'🎬', label:'A Movie Theater',
+    instances: async ()=>{ await loadPoiData(); return getNamedPoiCollection('A Movie Theater'); },
     overpass:(c,r)=>`nwr["amenity"="cinema"](around:${r},${c.lat},${c.lng});` },
 
   // PUBLIC UTILITIES
   { group:'Public Utilities', icon:'🏥', label:'A Hospital',
+    instances: async ()=>{ await loadPoiData(); return getNamedPoiCollection('A Hospital'); },
     overpass:(c,r)=>`nwr["amenity"="hospital"](around:${r},${c.lat},${c.lng});` },
   { group:'Public Utilities', icon:'📚', label:'A Library',
+    instances: async ()=>{ await loadPoiData(); return getNamedPoiCollection('A Library'); },
     overpass:(c,r)=>`nwr["amenity"="library"](around:${r},${c.lat},${c.lng});` },
   { group:'Public Utilities', icon:'🏳️', label:'A Foreign Consulate',
+    instances: async ()=>{ await loadPoiData(); return getNamedPoiCollection('A Foreign Consulate'); },
     overpass:(c,r)=>`nwr["office"~"diplomatic|consulate"](around:${r},${c.lat},${c.lng});nwr["amenity"="embassy"](around:${r},${c.lat},${c.lng});` },
 ];
 
@@ -1752,15 +2074,7 @@ async function selectMeasureCat(catObj){
   else clearBoundaryHighlight();
   renderBuildBody();
   try{
-    let instances=[];
-    if(catObj.instances){
-      instances = await catObj.instances(qparams.center);
-    } else {
-      // overpass-based: fetch all within 15km
-      const radiusM=35000;
-      const items=await overpassSearch(catObj.overpass(qparams.center,radiusM),qparams.center,radiusM);
-      instances=items.map(it=>({lat:it.lat,lng:it.lon||it.lng,name:it.name||catObj.label}));
-    }
+    const instances = await getCategoryInstances(catObj, qparams.center, 35000);
     if(!instances.length){toast('No '+catObj.label+' found nearby');qparams._msearching=false;renderBuildBody();return;}
 
     // Find seeker's nearest
@@ -2113,9 +2427,10 @@ async function hiderAutoMatchLookup(){
   navigator.geolocation.getCurrentPosition(
     async (pos) => {
       try{
-        const hiderVal = await cat.resolve({lat:pos.coords.latitude, lng:pos.coords.longitude});
+        const resolved = await cat.resolve({lat:pos.coords.latitude, lng:pos.coords.longitude});
+        const hiderVal = resolved?.val;
         if(!hiderVal){ toast('Could not determine your '+q.category_label); return; }
-        const match = hiderVal.toLowerCase().trim() === q.seeker_val.toLowerCase().trim();
+        const match = normKey(hiderVal) === normKey(q.seeker_val);
         const answer = match ? 'Yes' : 'No';
         const expl = `Your ${q.category_label}: <b>${hiderVal}</b> / Seeker's: <b>${q.seeker_val}</b> → <b>${answer.toUpperCase()}</b>`;
         hiderPickAnswer(answer, expl);
@@ -2141,11 +2456,10 @@ async function hiderAutoNearestLookup(){
       try{
         const loc = {lat:pos.coords.latitude, lng:pos.coords.longitude};
         if(btns) btns.innerHTML = '<div style="font-size:9px;color:var(--dim);margin-top:6px">🔍 Searching for nearest '+q.category_label+'…</div>';
-        const radiusM = 35000;
-        const items = await overpassSearch(cat.overpass(loc, radiusM), loc, radiusM);
+        const items = await getCategoryInstances(cat, loc, 35000);
         if(!items.length){ toast('No '+q.category_label+' found near your location'); return; }
         const nearest = items.sort((a,b)=>turfDist(loc,a)-turfDist(loc,b))[0];
-        const match = nearest.name.toLowerCase().trim() === q.seeker_poi.name.toLowerCase().trim();
+        const match = normKey(nearest.name) === normKey(q.seeker_poi.name);
         const answer = match ? 'Yes' : 'No';
         const expl = `Your nearest ${q.category_label}: <b>${nearest.name}</b> / Seeker's: <b>${q.seeker_poi.name}</b> → <b>${answer.toUpperCase()}</b>`;
         hiderPickAnswer(answer, expl);
@@ -2226,7 +2540,7 @@ async function hiderComputeAnswer(hiderLoc){
     const nearest = instances.slice().sort((a,b)=>turfDist(hiderLoc,a)-turfDist(hiderLoc,b))[0];
     const hiderDist = turfDist(hiderLoc, nearest);
     const seekerDist = q.seeker_dist;
-    answer = hiderDist < seekerDist ? 'closer' : 'further';
+    answer = hiderDist <= seekerDist ? 'closer' : 'further';
     explanation = `Your nearest ${q.category_label}: <b>${nearest.name}</b> (${hiderDist.toFixed(2)}mi) / Seeker's: ${seekerDist.toFixed(2)}mi → <b>${answer.toUpperCase()}</b>`;
 
   } else if(q.type === 'tentacles'){
