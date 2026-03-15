@@ -1,0 +1,1192 @@
+// ── Safe onclick dispatch — avoids quote escaping in HTML attributes ──
+const _clicks = [];
+function _c(fn){ _clicks.push(fn); return `_dispatch(${_clicks.length-1})`; }
+function _dispatch(i){ _clicks[i](); }
+function _clearClicks(){ _clicks.length=0; }
+
+// ── Category data ──
+// ── Matching categories — "Are we in the same ___?" ──
+// resolve(latLng) returns { val: string, boundary: GeoJSON polygon | null }
+const MATCHING_CATS = [
+  {
+    icon:'🏛️', label:'County', cat:'county',
+    resolve: async (c) => {
+      await loadBoundaryData();
+      const local = resolveBoundaryFromPreloaded('county', c);
+      if(local) return local;
+      const rev = await fetch(`https://nominatim.openstreetmap.org/reverse?lat=${c.lat}&lon=${c.lng}&format=json&addressdetails=1`,{headers:{'Accept-Language':'en-US'}});
+      const d = await rev.json();
+      const val = d.address?.county || d.address?.state_district || null;
+      if(!val) return { val:null, boundary:null };
+      const boundary = await fetchNominatimBoundary(val + ' Massachusetts', 'boundary', 6);
+      return { val, boundary };
+    }
+  },
+  {
+    icon:'🏙️', label:'City / Town', cat:'city',
+    resolve: async (c) => {
+      await loadBoundaryData();
+      const local = resolveBoundaryFromPreloaded('city', c);
+      if(local) return local;
+      const rev = await fetch(`https://nominatim.openstreetmap.org/reverse?lat=${c.lat}&lon=${c.lng}&format=json&addressdetails=1`,{headers:{'Accept-Language':'en-US'}});
+      const d = await rev.json();
+      const val = d.address?.city || d.address?.town || d.address?.village || null;
+      if(!val) return { val:null, boundary:null };
+      const boundary = await fetchNominatimBoundary(val + ' Massachusetts', 'boundary', 8);
+      return { val, boundary };
+    }
+  },
+  {
+    icon:'🏘️', label:'Neighborhood', cat:'neighborhood',
+    resolve: async (c) => {
+      await loadBoundaryData();
+      const local = resolveBoundaryFromPreloaded('neighborhood', c);
+      if(local) return local;
+      const rev = await fetch(`https://nominatim.openstreetmap.org/reverse?lat=${c.lat}&lon=${c.lng}&format=json&addressdetails=1&zoom=15`,{headers:{'Accept-Language':'en-US'}});
+      const d = await rev.json();
+      const val = d.address?.suburb || d.address?.neighbourhood || d.address?.quarter || null;
+      if(!val) return { val:null, boundary:null };
+      const boundary = await fetchNominatimBoundary(val + ' Boston Massachusetts', 'boundary', 10);
+      return { val, boundary };
+    }
+  },
+  {
+    icon:'📮', label:'ZIP Code', cat:'postcode',
+    resolve: async (c) => {
+      await loadBoundaryData();
+      const local = resolveBoundaryFromPreloaded('postcode', c);
+      if(local) return local;
+      const rev = await fetch(`https://nominatim.openstreetmap.org/reverse?lat=${c.lat}&lon=${c.lng}&format=json&addressdetails=1`,{headers:{'Accept-Language':'en-US'}});
+      const d = await rev.json();
+      const val = d.address?.postcode || null;
+      if(!val) return { val:null, boundary:null };
+      const boundary = await fetchNominatimBoundary(val + ' Massachusetts', 'postcode', null);
+      return { val, boundary };
+    }
+  },
+];
+
+// ── Nearest categories — "Is the nearest ___ to me the same as to you?" ──
+const NEAREST_CATS = [
+  { icon:'🌳', label:'Park',             instances: async()=>{ await loadPoiData(); return getNamedPoiCollection('Park'); }, overpass:(c,r)=>`nwr["leisure"="park"]["name"](around:${r},${c.lat},${c.lng});` },
+  { icon:'⛳', label:'Golf Course',      instances: async()=>{ await loadPoiData(); return getNamedPoiCollection('Golf Course'); }, overpass:(c,r)=>`nwr["leisure"="golf_course"](around:${r},${c.lat},${c.lng});` },
+  { icon:'📚', label:'Library',          instances: async()=>{ await loadPoiData(); return getNamedPoiCollection('Library'); }, overpass:(c,r)=>`nwr["amenity"="library"](around:${r},${c.lat},${c.lng});` },
+  { icon:'🏥', label:'Hospital',         instances: async()=>{ await loadPoiData(); return getNamedPoiCollection('Hospital'); }, overpass:(c,r)=>`nwr["amenity"="hospital"](around:${r},${c.lat},${c.lng});` },
+  { icon:'🏛️', label:'Museum',          instances: async()=>{ await loadPoiData(); return getNamedPoiCollection('Museum'); }, overpass:(c,r)=>`nwr["tourism"="museum"](around:${r},${c.lat},${c.lng});` },
+  { icon:'🎬', label:'Movie Theater',   instances: async()=>{ await loadPoiData(); return getNamedPoiCollection('Movie Theater'); }, overpass:(c,r)=>`nwr["amenity"="cinema"](around:${r},${c.lat},${c.lng});` },
+  { icon:'🦒', label:'Zoo / Aquarium',  instances: async()=>{ await loadPoiData(); return getNamedPoiCollection('Zoo / Aquarium'); }, overpass:(c,r)=>`nwr["tourism"~"^(zoo|aquarium)$"](around:${r},${c.lat},${c.lng});` },
+  { icon:'🏳️', label:'Foreign Consulate', instances: async()=>{ await loadPoiData(); return getNamedPoiCollection('Foreign Consulate'); }, overpass:(c,r)=>`nwr["office"~"diplomatic|consulate"](around:${r},${c.lat},${c.lng});nwr["amenity"="embassy"](around:${r},${c.lat},${c.lng});` },
+];
+// osm_class: 'boundary', 'postcode', or null (any)
+// admin_level: OSM admin level (6=county, 8=municipality, 10=neighborhood) or null
+async function fetchNominatimBoundary(query, featureClass, adminLevel){
+  try{
+    let url = `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(query)}&format=json&limit=5&polygon_geojson=1&countrycodes=us`;
+    const res = await fetch(url, {headers:{'Accept-Language':'en-US'}});
+    const items = await res.json();
+    if(!items.length) return null;
+    // Find best match: prefer items with a polygon and matching class/admin_level
+    const scored = items.map(item=>{
+      let score = 0;
+      if(item.geojson && (item.geojson.type==='Polygon'||item.geojson.type==='MultiPolygon')) score += 10;
+      if(item.class === featureClass || item.type === featureClass) score += 5;
+      if(adminLevel && item.extratags?.admin_level == adminLevel) score += 3;
+      return {item, score};
+    }).sort((a,b)=>b.score-a.score);
+    const best = scored[0].item;
+    if(!best.geojson || (best.geojson.type!=='Polygon' && best.geojson.type!=='MultiPolygon')) return null;
+    // Wrap in a GeoJSON Feature
+    return {type:'Feature', properties:{name:best.display_name}, geometry:best.geojson};
+  } catch(e){
+    console.warn('Boundary fetch failed:', e);
+    return null;
+  }
+}
+
+// ── Landmass precomputation ──
+// One Overpass query at startup → land pieces → each stop gets a landmass index
+const _landmassCache = {
+  ready: false,
+  pieces: [],           // array of Turf polygon Features
+  stopIndex: {},        // stopId → piece index
+};
+
+async function precomputeLandmasses(){
+  // Bounding box covers the whole MBTA network area
+  const S=41.85, N=42.80, W=-71.70, E=-70.40;
+
+  const overpassQ = `[out:json][timeout:30];(
+    way["natural"~"^(water|bay|coastline)$"](${S},${W},${N},${E});
+    way["waterway"="riverbank"](${S},${W},${N},${E});
+    relation["natural"~"^(water|bay)$"](${S},${W},${N},${E});
+    relation["waterway"="riverbank"](${S},${W},${N},${E});
+  );out geom;`;
+
+  const endpoints=[
+    'https://overpass-api.de/api/interpreter',
+    'https://overpass.kumi.systems/api/interpreter'
+  ];
+  let data;
+  for(const url of endpoints){
+    try{
+      const res=await fetch(url,{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'data='+encodeURIComponent(overpassQ)});
+      if(res.ok){data=await res.json();break;}
+    }catch(e){}
+  }
+  if(!data||!data.elements?.length){ console.warn('Landmass precompute: no water data'); return; }
+
+  // Build water polygons
+  const waterPolys=[];
+  const tryAdd=(geom)=>{
+    if(!geom||geom.length<4) return;
+    try{
+      let c=geom.map(p=>[p.lon,p.lat]);
+      const f=c[0],l=c[c.length-1];
+      if(f[0]!==l[0]||f[1]!==l[1]) c.push(f);
+      if(c.length>=4) waterPolys.push(turf.polygon([c]));
+    }catch(e){}
+  };
+  data.elements.forEach(el=>{
+    if(el.type==='way') tryAdd(el.geometry);
+    if(el.type==='relation'&&el.members)
+      el.members.forEach(m=>{ if(m.type==='way') tryAdd(m.geometry); });
+  });
+
+  if(!waterPolys.length){ console.warn('Landmass precompute: no valid water polys'); return; }
+
+  // Build land = bbox minus water
+  let land=turf.bboxPolygon([W,S,E,N]);
+  for(const w of waterPolys){
+    try{ land=turf.difference(land,w)||land; }catch(e){}
+  }
+
+  // Extract pieces
+  const geom=land.geometry||land;
+  if(geom.type==='Polygon') _landmassCache.pieces=[turf.polygon(geom.coordinates)];
+  else if(geom.type==='MultiPolygon') _landmassCache.pieces=geom.coordinates.map(c=>turf.polygon(c));
+  else if(land.geometry?.type==='Polygon') _landmassCache.pieces=[turf.polygon(land.geometry.coordinates)];
+  else if(land.geometry?.type==='MultiPolygon') _landmassCache.pieces=land.geometry.coordinates.map(c=>turf.polygon(c));
+
+  // Assign each stop to a piece
+  const stops=Object.entries(stopLineMap);
+  for(const [sid,s] of stops){
+    const pt=turf.point([s.lng,s.lat]);
+    const idx=_landmassCache.pieces.findIndex(p=>{
+      try{return turf.booleanPointInPolygon(pt,p);}catch(e){return false;}
+    });
+    if(idx>=0) _landmassCache.stopIndex[sid]=idx;
+  }
+
+  _landmassCache.ready=true;
+  const uniquePieces=new Set(Object.values(_landmassCache.stopIndex)).size;
+  console.log(`Landmass: ${_landmassCache.pieces.length} pieces, ${stops.length} stops assigned, ${uniquePieces} distinct landmasses`);
+}
+
+// Return the landmass polygon for a given lat/lng (finds nearest stop, uses its cached piece)
+function landmassForPoint(latLng){
+  if(!_landmassCache.ready) return null;
+  // Find nearest stop
+  const stops=Object.entries(stopLineMap);
+  if(!stops.length) return null;
+  let nearestSid=null, nearestDist=Infinity;
+  for(const [sid,s] of stops){
+    const d=turfDist(latLng,s);
+    if(d<nearestDist){nearestDist=d;nearestSid=sid;}
+  }
+  if(!nearestSid) return null;
+  const idx=_landmassCache.stopIndex[nearestSid];
+  if(idx===undefined) return null;
+  const piece=_landmassCache.pieces[idx];
+  return {type:'Feature',properties:{name:'landmass'},geometry:piece.geometry};
+}
+
+// Old per-question async resolver — now just a fast lookup
+async function resolveSeekersLandmass(center){
+  return landmassForPoint(center);
+}
+
+const PHOTO_PROMPTS = [
+  {icon:'🤳', text:'A selfie of yourself'},
+  {icon:'🌤️', text:'The sky directly above you'},
+  {icon:'🛤️', text:'The widest street you can see'},
+  {icon:'🚉', text:'Your train platform or stop'},
+  {icon:'🏙️', text:'The tallest building in view'},
+  {icon:'🏪', text:'The nearest shop sign'},
+  {icon:'🌳', text:'A tree near your location'},
+  {icon:'🌉', text:'The nearest bridge or overpass'},
+  {icon:'🗺️', text:'A street sign showing your location'},
+  {icon:'🚪', text:'A door to a nearby building'},
+];
+
+function renderBuildBody(){
+  _clearClicks();
+  const el = document.getElementById('build-body');
+  if(!qtype){ el.innerHTML='<p class="empty" style="margin-top:8px">Choose a question type above to get started.</p>'; return; }
+  let h = '';
+
+  // Pick steps
+  if(pickStepDefs.length > 0){
+    h += '<div class="sec" style="margin-top:8px">Steps</div><div class="steps">';
+    pickStepDefs.forEach((s,i)=>{
+      const val=qparams[s.key], isDone=!!val, isCur=i===pickStep;
+      h += `<div class="step-item ${isDone?'done-row':isCur?'active-row':''}">
+        <div class="step-dot ${isDone?'done':isCur?'next':''}"></div>
+        <div style="flex:1;min-width:0">
+          <div>${isDone?'✓ '+s.key.replace(/_/g,' ').toUpperCase():s.label}</div>
+          ${isDone?`<div class="step-val">📍 ${val.lat.toFixed(4)}, ${val.lng.toFixed(4)}</div>`:''}
+          ${isCur?`<div id="gps-btn-${i}" class="step-gps-btn" onclick="useMyLocation('${s.key}',${i})">📡 Use My Location</div>`:''}
+        </div></div>`;
+    });
+    h += '</div>';
+    if(pickStep >= pickStepDefs.length)
+      h += `<button class="btn btn-ghost" style="margin-bottom:8px;margin-top:4px" onclick="restartPick()">↺ Re-pick Points</button>`;
+  }
+
+  // Type-specific params
+  if(qtype==='radar')      h += renderRadarParams();
+  else if(qtype==='thermo')h += renderThermoParams();
+  else if(qtype==='measure')h += renderMeasureParams();
+  else if(qtype==='tentacles')h += renderTentaclesParams();
+  else if(qtype==='matching')h += renderMatchingParams();
+  else if(qtype==='photo') h += renderPhotoParams();
+
+  el.innerHTML = h;
+}
+
+function renderRadarParams(){
+  const presets=[{r:0.25,l:'¼ mi'},{r:0.5,l:'½ mi'},{r:2,l:'2 mi'},{r:3,l:'3 mi'},{r:5,l:'5 mi'}];
+  const isCustom = qparams.radius_miles && !presets.find(p=>p.r===qparams.radius_miles);
+  let h='<div class="sec">Radar Radius</div><div class="axrow" style="flex-wrap:wrap;gap:5px">';
+  presets.forEach(p=>{
+    h+=`<div class="axbtn ${qparams.radius_miles===p.r?'on':''}" onclick="${_c(()=>{setParam('radius_miles',p.r);setParam('_customR',false);updatePreview();tryGenerate();renderBuildBody();})}">${p.l}</div>`;
+  });
+  h+=`<div class="axbtn ${isCustom||qparams._customR?'on':''}" onclick="${_c(()=>{setParam('_customR',true);renderBuildBody();})}">Custom</div></div>`;
+  if(isCustom||qparams._customR)
+    h+=`<div class="param"><div class="plabel">Miles <span class="pval" id="rv">${qparams.radius_miles||0.5}</span></div>
+    <input type="range" min="0.1" max="10" step="0.1" value="${qparams.radius_miles||0.5}"
+    oninput="setParam('radius_miles',+this.value);document.getElementById('rv').textContent=this.value;updatePreview();tryGenerate()"></div>`;
+  return h;
+}
+
+function renderThermoParams(){
+  const presets=[{r:0.5,l:'½ mi'},{r:1,l:'1 mi'},{r:2,l:'2 mi'},{r:3,l:'3 mi'},{r:5,l:'5 mi'}];
+  const isCustom = qparams.travel_miles && !presets.find(p=>p.r===qparams.travel_miles);
+  let h='<div class="sec">Travel Distance</div><div class="axrow" style="flex-wrap:wrap;gap:5px">';
+  presets.forEach(p=>{
+    h+=`<div class="axbtn ${qparams.travel_miles===p.r?'on':''}" onclick="${_c(()=>{setParam('travel_miles',p.r);setParam('_customT',false);updatePreview();tryGenerate();renderBuildBody();})}">${p.l}</div>`;
+  });
+  h+=`<div class="axbtn ${isCustom||qparams._customT?'on':''}" onclick="${_c(()=>{setParam('_customT',true);renderBuildBody();})}">Custom</div></div>`;
+  if(isCustom||qparams._customT)
+    h+=`<div class="param"><div class="plabel">Miles <span class="pval" id="tv">${qparams.travel_miles||1}</span></div>
+    <input type="range" min="0.1" max="10" step="0.1" value="${qparams.travel_miles||1}"
+    oninput="setParam('travel_miles',+this.value);document.getElementById('tv').textContent=this.value;updatePreview();tryGenerate()"></div>`;
+  return h;
+}
+
+function renderMeasureParams(){
+  if(!qparams.center) return '<p class="empty" style="margin-top:6px;font-size:9px">Set your location above first.</p>';
+  let h = '<div class="sec">What to Measure From</div>';
+
+  // Group by category
+  const groups = {};
+  MEASURE_CATS.forEach(c=>{
+    if(!groups[c.group]) groups[c.group]=[];
+    groups[c.group].push(c);
+  });
+  Object.entries(groups).forEach(([grp, cats])=>{
+    h += `<div style="font-size:7.5px;letter-spacing:0.1em;text-transform:uppercase;color:var(--dim);margin:8px 0 5px">${grp}</div>`;
+    h += '<div class="poi-presets">';
+    cats.forEach(c=>{
+      h+=`<div class="poi-chip ${qparams._mcat===c.label?'on':''}" onclick="${_c(()=>selectMeasureCat(c))}">${c.icon} ${c.label}</div>`;
+    });
+    h += '</div>';
+  });
+
+  if(qparams._msearching) h+='<div style="font-size:9px;color:var(--dim);margin-top:8px">⏳ Finding nearest…</div>';
+  else if(qparams.measure_seeker_nearest)
+    h+=`<div class="found-result" style="margin-top:8px">
+      📍 <b>${qparams.measure_seeker_nearest.name}</b><br>
+      <span style="color:var(--dim)">${qparams.measure_seeker_dist.toFixed(2)} mi from you</span><br>
+      <span style="font-size:8px;color:var(--dim)">${qparams.measure_all_instances?.length||1} instances found for zone</span>
+    </div>`;
+  return h;
+}
+
+function renderTentaclesParams(){
+  if(!qparams.center) return '<p class="empty" style="margin-top:6px;font-size:9px">Set your location above first.</p>';
+  let h='<div class="sec">Tentacle Type</div><div class="poi-presets">';
+  TENTACLES_CATS.forEach(c=>{
+    h+=`<div class="poi-chip ${qparams._tcat===c.label?'on':''}" onclick="${_c(()=>selectTentacleCat(c))}">${c.icon} ${c.label}</div>`;
+  });
+  h+='</div>';
+  const radPresets=[{r:0.5,l:'½ mi'},{r:1,l:'1 mi'},{r:2,l:'2 mi'}];
+  h+='<div class="sec">Reach Radius</div><div class="axrow">';
+  radPresets.forEach(p=>{
+    h+=`<div class="axbtn ${qparams.radius_miles===p.r?'on':''}" onclick="${_c(()=>{setParam('radius_miles',p.r);updatePreview();if(qparams.tentacle_options)tryGenerate();renderBuildBody();})}">${p.l}</div>`;
+  });
+  h+='</div>';
+  if(qparams._tsearching) h+='<div style="font-size:9px;color:var(--dim);margin-top:6px">⏳ Searching…</div>';
+  else if(qparams.tentacle_options&&qparams.tentacle_options.length){
+    h+=`<div class="found-result" style="margin-top:8px">🐙 Found <b>${qparams.tentacle_options.length} options</b> nearby:</div>`;
+    h+='<div class="tent-opt-list">';
+    qparams.tentacle_options.forEach((o,i)=>{
+      h+=`<div class="tent-opt"><div class="tent-opt-num" style="background:var(--teal);color:#000">${i+1}</div>${o.name}</div>`;
+    });
+    h+='</div>';
+  }
+  return h;
+}
+
+function renderMatchingParams(){
+  if(!qparams.center) return '<p class="empty" style="margin-top:6px;font-size:9px">Set your location above first.</p>';
+
+  // ── Section 1: Are we in the same… ──
+  let h = '<div class="sec" style="margin-top:4px">Are we in the same…</div>';
+  h += '<div style="display:flex;flex-direction:column;gap:5px;margin-top:6px">';
+  MATCHING_CATS.forEach(c=>{
+    const sel = qparams.matching_cat === c.cat;
+    h += `<div class="sitem${sel?' active-row':''}" style="${sel?'border-color:var(--purple);background:rgba(160,96,255,0.08)':''}"
+      onclick="${_c(()=>selectMatchingCat(c))}">
+      <span style="font-size:16px;margin-right:10px;vertical-align:middle">${c.icon}</span>
+      <span style="vertical-align:middle">${c.label}?</span>
+      ${c.cat==='landmass' && !_landmassCache.ready ? '<span style="float:right;font-size:8px;color:var(--gold)">⏳ precomputing…</span>' : ''}
+      ${sel?'<span style="float:right;color:var(--purple);font-size:9px">✓</span>':''}
+    </div>`;
+  });
+  h += '</div>';
+  if(qparams._matching_searching)
+    h += '<div style="font-size:9px;color:var(--dim);margin-top:8px">⏳ Looking up your location and boundary…</div>';
+  else if(qparams.matching_seeker_val){
+    const hasBoundary = !!qparams.matching_boundary;
+    h += `<div class="found-result" style="margin-top:8px">
+      <b>${qparams.matching_cat_label}:</b> ${qparams.matching_seeker_val}
+      <div style="font-size:8px;color:${hasBoundary?'var(--green)':'var(--gold)'};margin-top:4px">
+        ${hasBoundary ? '✓ Boundary loaded — zone will update on answer' : '⚠ No boundary — informational only'}
+      </div>
+    </div>`;
+  }
+
+  // ── Section 2: Is the nearest ___ the same… ──
+  h += '<div class="sec" style="margin-top:14px;padding-top:14px;border-top:1px solid var(--border)">Is the nearest ___ to me the same as to you?</div>';
+  h += '<div style="display:flex;flex-direction:column;gap:5px;margin-top:6px">';
+  NEAREST_CATS.forEach(c=>{
+    const sel = qparams.nearest_cat === c.label;
+    h += `<div class="sitem${sel?' active-row':''}" style="${sel?'border-color:var(--teal);background:rgba(32,200,176,0.08)':''}"
+      onclick="${_c(()=>selectNearestCat(c))}">
+      <span style="font-size:16px;margin-right:10px;vertical-align:middle">${c.icon}</span>
+      <span style="vertical-align:middle">${c.label}</span>
+      ${sel?'<span style="float:right;color:var(--teal);font-size:9px">✓</span>':''}
+    </div>`;
+  });
+  h += '</div>';
+  if(qparams._nearest_searching)
+    h += '<div style="font-size:9px;color:var(--dim);margin-top:8px">⏳ Searching for nearby options…</div>';
+  else if(qparams.nearest_seeker_poi){
+    const hasPoly = !!qparams.nearest_voronoi;
+    h += `<div class="found-result" style="margin-top:8px">
+      <b>Your nearest ${qparams.nearest_cat_label}:</b> ${qparams.nearest_seeker_poi.name}<br>
+      <span style="color:var(--dim);font-size:8px">${qparams.nearest_all_pois?.length||0} total options found</span>
+      <div style="font-size:8px;color:${hasPoly?'var(--green)':'var(--gold)'};margin-top:3px">
+        ${hasPoly?'✓ Voronoi zone computed':'⚠ Not enough options for zone — informational only'}
+      </div>
+    </div>`;
+  }
+
+  return h;
+}
+
+async function selectMatchingCat(catObj){
+  if(!qparams.center){ toast('Set your location first'); return; }
+  if(catObj.cat === 'landmass' && !_landmassCache.ready){
+    toast('⏳ Still precomputing landmasses — try again in a moment'); return;
+  }
+  qparams.matching_cat = catObj.cat;
+  qparams.matching_cat_label = catObj.label;
+  qparams.matching_seeker_val = null;
+  qparams.matching_boundary = null;
+  qparams._matching_searching = true;
+  highlightBoundary(catObj.cat);
+  renderBuildBody();
+  try{
+    const result = await catObj.resolve(qparams.center);
+    qparams._matching_searching = false;
+    if(!result.val){ toast('Could not determine your '+catObj.label+' — try a different location'); renderBuildBody(); return; }
+    qparams.matching_seeker_val = result.val;
+    // Normalize: ensure seeker's point is INSIDE the polygon, flip if not
+    let boundary = result.boundary || null;
+    if(boundary){
+      try{
+        const pt = turf.point([qparams.center.lng, qparams.center.lat]);
+        if(!turf.booleanPointInPolygon(pt, boundary)){
+          const BBOX = turf.bboxPolygon([-72.5, 41.5, -70.0, 43.0]);
+          const flipped = turf.difference(BBOX, boundary);
+          if(flipped && turf.booleanPointInPolygon(pt, flipped)){
+            boundary = flipped;
+            console.log('Boundary flipped for', result.val);
+          }
+        }
+        // Simplify to avoid freezing on mobile
+        boundary = turf.simplify(boundary, {tolerance:0.0005, highQuality:false});
+      }catch(e){ console.warn('Boundary normalize/simplify failed:', e); }
+    }
+    qparams.matching_boundary = boundary;
+    qparams._matching_boundary_simplified = boundary; // already simplified
+    if(result.boundary){
+      toast(`✓ Got boundary for ${result.val}`);
+    } else {
+      toast(`⚠ No boundary found for ${result.val} — question will be informational only`);
+    }
+    renderBuildBody();
+    tryGenerate();
+  } catch(e){
+    qparams._matching_searching = false;
+    toast('Lookup failed: '+e.message);
+    renderBuildBody();
+  }
+}
+
+async function selectNearestCat(catObj){
+  if(!qparams.center){ toast('Set your location first'); return; }
+  qparams.nearest_cat = catObj.label;
+  qparams.nearest_cat_label = catObj.label;
+  qparams.nearest_seeker_poi = null;
+  qparams.nearest_all_pois = null;
+  qparams.nearest_voronoi = null;
+  qparams._nearest_searching = true;
+  renderBuildBody();
+  try{
+    const radiusM = 35000;
+    const pois = await getCategoryInstances(catObj, qparams.center, radiusM);
+    qparams._nearest_searching = false;
+    if(!pois.length){ toast('No '+catObj.label+' found nearby'); renderBuildBody(); return; }
+    pois.sort((a,b)=>turfDist(qparams.center,a)-turfDist(qparams.center,b));
+    qparams.nearest_seeker_poi = pois[0];
+    qparams.nearest_all_pois = pois.slice(0,20);
+
+    if(pois.length >= 2){
+      try{
+        const fc = turf.featureCollection(pois.map(p=>turf.point([p.lng,p.lat])));
+        const cells = turf.voronoi(fc, {bbox:[-72,41.5,-70,43]});
+        if(cells && cells.features.length){
+          // Find cell containing the nearest POI point
+          const nearestPt = turf.point([pois[0].lng, pois[0].lat]);
+          const seekerPt  = turf.point([qparams.center.lng, qparams.center.lat]);
+          const correctCell = cells.features.find(cell=>{
+            try{ return turf.booleanPointInPolygon(nearestPt, cell); }catch(e){ return false; }
+          });
+          if(correctCell){
+            // Verify seeker is also inside this cell (they should be, since it's their nearest POI)
+            const seekerInside = (()=>{ try{ return turf.booleanPointInPolygon(seekerPt, correctCell); }catch(e){ return false; }})();
+            qparams.nearest_voronoi = seekerInside ? correctCell : null;
+            if(!seekerInside) console.warn('Nearest: seeker not in correct Voronoi cell — no zone update');
+          }
+          // Drop teardrop pins — gold #1 for nearest, blue for rest
+          clearPoiMarkers();
+          pois.slice(0,100).forEach((p,i)=>{
+            const col = i===0 ? '#f0a030' : '#4a7090';
+            const m = L.marker([p.lat,p.lng],{icon:tentaclePin(i+1,col),zIndexOffset:1500+i})
+              .bindPopup(`<div class="stop-popup"><div class="stop-popup-name">${p.name}</div>${i===0?'<div style="font-size:9px;color:#f0a030;margin-top:2px">★ Your nearest</div>':''}</div>`,{offset:[0,-28],maxWidth:220})
+              .addTo(map);
+            pickedMarkers.push(m);
+          });
+          map.fitBounds(L.latLngBounds([[pois[0].lat,pois[0].lng],[qparams.center.lat,qparams.center.lng]]).pad(0.3));
+        }
+      }catch(e){ console.warn('Voronoi failed:',e); }
+    }
+    renderBuildBody(); tryGenerate();
+  }catch(e){ qparams._nearest_searching=false; toast('Search failed: '+e.message); renderBuildBody(); }
+}
+
+function renderPhotoParams(){
+  let h='<div class="photo-grid">';
+  PHOTO_PROMPTS.forEach(p=>{
+    const sel=qparams.photo_prompt===p.text;
+    h+=`<div class="photo-opt ${sel?'on':''}" onclick="${_c(()=>{qparams.photo_prompt=p.text;tryGenerate();renderBuildBody();})}">
+      <span class="po-icon">${p.icon}</span><span class="po-text">${p.text}</span></div>`;
+  });
+  h+='</div>';
+  h+=`<div class="sec">Or Custom Prompt</div>
+  <textarea class="jarea" rows="2" placeholder="Describe what to photograph…"
+    oninput="qparams.photo_prompt=this.value;tryGenerate()">${qparams.photo_prompt&&!PHOTO_PROMPTS.find(p=>p.text===qparams.photo_prompt)?qparams.photo_prompt:''}</textarea>`;
+  return h;
+}
+
+// Helpers for param rendering
+function setParam(k,v){ qparams[k]=v; }
+function tryGenerate(){ if(qtype&&QDEFS[qtype]&&QDEFS[qtype].isReady(qparams)) generateJSON(); }
+
+// ── Category data — Overpass tags ──
+// Each entry has: icon, label, and an overpass() fn that returns the Overpass query body
+// for a given {lat,lng,radiusM}
+// ── Measure categories ──
+// Each has: icon, label, group, and either overpass() or resolve() (async, returns {lat,lng,name})
+// ── Measure helpers ──
+
+// ── Administrative boundary loader ──
+// Stores fetched relation geometries keyed by OSM id for later highlight lookup
+const _adminBoundaries = { counties: [], towns: [] };
+
+async function loadAdminBoundaries(){
+  try{
+    const staticData = preloadedData.boundaries || await fetchOptionalJSON(DATA_FILES.boundaries, 'boundaries');
+    if(staticData){
+      preloadedData.boundaries = staticData;
+      _adminBoundaries.counties = (getBoundaryDataset('county') || []).flatMap(item => {
+        const feature = coerceFeature(item, item.name);
+        return featureToDisplayLines(feature).map(line => ({
+          ...line,
+          properties: {...(line.properties || {}), name: item.name || feature?.properties?.name || '', admin_level: '6'},
+        }));
+      });
+      _adminBoundaries.towns = (getBoundaryDataset('city') || []).flatMap(item => {
+        const feature = coerceFeature(item, item.name);
+        return featureToDisplayLines(feature).map(line => ({
+          ...line,
+          properties: {...(line.properties || {}), name: item.name || feature?.properties?.name || '', admin_level: '8'},
+        }));
+      });
+      if(countyLayer) countyLayer.addData({type:'FeatureCollection',features:_adminBoundaries.counties});
+      if(townLayer) townLayer.addData({type:'FeatureCollection',features:_adminBoundaries.towns});
+      console.log(`Admin boundaries: ${_adminBoundaries.counties.length} county segments, ${_adminBoundaries.towns.length} town segments`);
+      return;
+    }
+
+    // Fetch counties (admin_level=6) and towns/cities (admin_level=8) in one query
+    const q=`[out:json][timeout:30];(
+      relation["admin_level"="6"]["boundary"="administrative"](${S},${W},${N},${E});
+      relation["admin_level"="8"]["boundary"="administrative"](${S},${W},${N},${E});
+    );out geom 2000;`;
+    const data = await overpassRaw(q);
+
+    (data.elements||[]).forEach(rel=>{
+      if(rel.type!=='relation') return;
+      const level = rel.tags?.admin_level;
+      const name  = rel.tags?.name || '';
+      // Convert member ways to GeoJSON LineStrings for display
+      (rel.members||[]).forEach(m=>{
+        if(m.type!=='way'||!m.geometry||m.geometry.length<2) return;
+        const coords = m.geometry.map(p=>[p.lon,p.lat]);
+        const feat = {type:'Feature',properties:{name,admin_level:level,rel_id:rel.id},geometry:{type:'LineString',coordinates:coords}};
+        if(level==='6') _adminBoundaries.counties.push(feat);
+        else if(level==='8') _adminBoundaries.towns.push(feat);
+      });
+    });
+
+    // Add to map layers
+    if(countyLayer) countyLayer.addData({type:'FeatureCollection',features:_adminBoundaries.counties});
+    if(townLayer)   townLayer.addData({type:'FeatureCollection',features:_adminBoundaries.towns});
+    console.log(`Admin boundaries: ${_adminBoundaries.counties.length} county segments, ${_adminBoundaries.towns.length} town segments`);
+  }catch(e){ console.warn('Admin boundary load failed:', e); }
+}
+
+// Highlight boundaries relevant to the active question category
+function highlightBoundary(cat){
+  if(!boundaryHighlightLayer) return;
+  boundaryHighlightLayer.clearLayers();
+  boundaryHighlightLayer.remove();
+
+  let features = [];
+  if(cat === 'county' || cat === 'A County Border'){
+    features = _adminBoundaries.counties;
+  } else if(cat === 'city' || cat === 'A City Border'){
+    features = _adminBoundaries.towns;
+  }
+  if(!features.length) return;
+
+  boundaryHighlightLayer.clearLayers();
+  boundaryHighlightLayer.addData({type:'FeatureCollection',features});
+  boundaryHighlightLayer.addTo(map);
+}
+
+function clearBoundaryHighlight(){
+  if(!boundaryHighlightLayer) return;
+  boundaryHighlightLayer.clearLayers();
+  boundaryHighlightLayer.remove();
+}
+
+// Raw Overpass fetch returning parsed JSON
+async function overpassRaw(query){
+  const endpoints=['https://overpass-api.de/api/interpreter','https://overpass.kumi.systems/api/interpreter'];
+  for(const url of endpoints){
+    try{
+      const res=await fetch(url,{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'data='+encodeURIComponent(query)});
+      if(res.ok) return await res.json();
+    }catch(e){}
+  }
+  return {elements:[]};
+}
+
+// Convert Overpass way geometries to a list of evenly-spaced points (every `stepMiles`)
+function densifyWaysToPoints(data, stepMiles=0.25){
+  const pts=[];
+  const seen=new Set();
+  (data.elements||[]).forEach(el=>{
+    if(el.type!=='way'||!el.geometry) return;
+    const coords=el.geometry.map(p=>[p.lon,p.lat]);
+    if(coords.length<2) return;
+    const line=turf.lineString(coords);
+    const len=turf.length(line,{units:'miles'});
+    const steps=Math.max(1,Math.round(len/stepMiles));
+    for(let i=0;i<=steps;i++){
+      try{
+        const pt=turf.along(line,(i/steps)*len,{units:'miles'});
+        const [lng,lat]=pt.geometry.coordinates;
+        const key=`${lat.toFixed(4)},${lng.toFixed(4)}`;
+        if(!seen.has(key)){seen.add(key);pts.push({lat,lng,name:el.tags?.name||'Track'});}
+      }catch(e){}
+    }
+  });
+  return pts;
+}
+
+// Fetch border polygon and return densified points along the nearest edge
+async function nearestBorderPoints(center, type, adminLevel){
+  const name = type==='county' ? 'Massachusetts counties' : 'Massachusetts municipalities';
+  // Fetch all admin boundaries of the given level in the area
+  const pad=0.3;
+  const s=center.lat-pad,n=center.lat+pad,w=center.lng-pad,e=center.lng+pad;
+  const q=`[out:json][timeout:25];relation["admin_level"="${adminLevel}"]["boundary"="administrative"](${s},${w},${n},${e});out geom 500;`;
+  const data=await overpassRaw(q);
+  // Collect all way geometry points from all matching relations
+  const pts=[];
+  const seen=new Set();
+  (data.elements||[]).forEach(el=>{
+    if(el.type!=='relation'||!el.members) return;
+    el.members.forEach(m=>{
+      if(m.type!=='way'||!m.geometry) return;
+      m.geometry.forEach(p=>{
+        const key=`${p.lat.toFixed(4)},${p.lon.toFixed(4)}`;
+        if(!seen.has(key)){seen.add(key);pts.push({lat:p.lat,lng:p.lon,name:'Border'});}
+      });
+    });
+  });
+  return pts;
+}
+
+const MEASURE_CATS = [
+  // TRANSIT
+  { group:'Transit', icon:'🚆', label:'An Amtrak Line',
+    instances: async (c) => {
+      // Fetch NEC and Downeaster route relations by name across the full MBTA bounding box
+      // Using relation-based query to get entire track, not just nearby sections
+      const S=41.0, N=43.5, W=-72.0, E=-70.0; // broad bbox covering NEC Boston-Providence + Downeaster to Portland
+      const q = `[out:json][timeout:30];(
+        relation["route"="train"]["operator"~"Amtrak",i](${S},${W},${N},${E});
+        relation["route"="train"]["name"~"Downeaster|Northeast Corridor|NEC|Acela|Regional",i](${S},${W},${N},${E});
+      );out geom 500;`;
+      const data = await overpassRaw(q);
+      // Relations return members with geometry
+      const pts = [];
+      const seen = new Set();
+      (data.elements||[]).forEach(el=>{
+        if(el.type!=='relation') return;
+        (el.members||[]).forEach(m=>{
+          if(m.type!=='way'||!m.geometry) return;
+          m.geometry.forEach(p=>{
+            const key=`${p.lat.toFixed(3)},${p.lon.toFixed(3)}`;
+            if(!seen.has(key)){ seen.add(key); pts.push({lat:p.lat, lng:p.lon, name:'Amtrak track'}); }
+          });
+        });
+      });
+      if(pts.length) return pts;
+      // Fallback: way-based query if relations returned nothing
+      const q2=`[out:json][timeout:30];way["railway"="rail"]["usage"="main"](${S},${W},${N},${E});out geom 300;`;
+      const data2=await overpassRaw(q2);
+      return densifyWaysToPoints(data2, 0.3);
+    }},
+  { group:'Transit', icon:'🚉', label:'A Commuter Rail Station',
+    instances: async (c) => {
+      const list = commuterRailStopsList.length ? commuterRailStopsList : [];
+      // Filter to stops within the T network's playable footprint
+      const T_BBOX = {minLat:42.18, maxLat:42.67, minLng:-71.55, maxLng:-70.85};
+      return list.filter(s =>
+        s.lat >= T_BBOX.minLat && s.lat <= T_BBOX.maxLat &&
+        s.lng >= T_BBOX.minLng && s.lng <= T_BBOX.maxLng
+      );
+    }},
+
+  // BORDERS
+  { group:'Borders', icon:'🏛️', label:'A County Border',
+    instances: async (c) => {
+      await loadBoundaryData();
+      const preloaded = getPreloadedBorderPoints('county');
+      return preloaded.length ? preloaded : nearestBorderPoints(c, 'county', 6);
+    } },
+  { group:'Borders', icon:'🏙️', label:'A City Border',
+    instances: async (c) => {
+      await loadBoundaryData();
+      const preloaded = getPreloadedBorderPoints('city');
+      return preloaded.length ? preloaded : nearestBorderPoints(c, 'city', 8);
+    } },
+
+  // NATURAL
+  { group:'Natural', icon:'🌊', label:'Sea Level',
+    instances: async (c) => {
+      await loadPoiData();
+      const preloaded = getNamedPoiCollection('Sea Level');
+      if(preloaded.length) return preloaded;
+      // Harbor shoreline: fetch coastline ways and densify
+      const r = 50000;
+      const q = `[out:json][timeout:25];way["natural"="coastline"](around:${r},${c.lat},${c.lng});out geom 300;`;
+      const data = await overpassRaw(q);
+      const pts = densifyWaysToPoints(data, 0.2);
+      return pts.length ? pts : [{lat:42.3551, lng:-71.0497, name:'Boston Harbor shore'}];
+    }},
+  { group:'Natural', icon:'💧', label:'A Body of Water',
+    instances: async (c) => {
+      await loadPoiData();
+      const preloaded = getNamedPoiCollection('A Body of Water');
+      if(preloaded.length) return preloaded;
+      const r = 35000;
+      const q = `[out:json][timeout:25];(way["natural"~"^(water|bay)$"]["name"](around:${r},${c.lat},${c.lng});relation["natural"~"^(water|bay)$"]["name"](around:${r},${c.lat},${c.lng});way["waterway"="river"]["name"](around:${r},${c.lat},${c.lng}););out center 50;`;
+      const data = await overpassRaw(q);
+      return (data.elements||[]).filter(e=>e.center||e.lat).map(e=>({lat:e.center?.lat||e.lat,lng:e.center?.lon||e.lon,name:e.tags?.name||'Water'}));
+    }},
+  { group:'Natural', icon:'🏖️', label:'A Coastline',
+    instances: async (c) => {
+      await loadPoiData();
+      const preloaded = getNamedPoiCollection('A Coastline');
+      if(preloaded.length) return preloaded;
+      const r = 50000;
+      const q = `[out:json][timeout:25];way["natural"="coastline"](around:${r},${c.lat},${c.lng});out geom 300;`;
+      const data = await overpassRaw(q);
+      const pts = densifyWaysToPoints(data, 0.2);
+      return pts.length ? pts : [{lat:42.3551, lng:-71.0497, name:'Boston coastline'}];
+    }},
+  { group:'Natural', icon:'🌳', label:'A Park',
+    instances: async ()=>{ await loadPoiData(); return getNamedPoiCollection('A Park'); },
+    overpass:(c,r)=>`nwr["leisure"="park"]["name"](around:${r},${c.lat},${c.lng});` },
+
+  // PLACES OF INTEREST
+  { group:'Places of Interest', icon:'🎢', label:'An Amusement Park',
+    instances: async ()=>{ await loadPoiData(); return getNamedPoiCollection('An Amusement Park'); },
+    overpass:(c,r)=>`nwr["tourism"="theme_park"](around:${r},${c.lat},${c.lng});nwr["leisure"="amusement_arcade"](around:${r},${c.lat},${c.lng});` },
+  { group:'Places of Interest', icon:'🦒', label:'A Zoo / Aquarium',
+    instances: async ()=>{ await loadPoiData(); return getNamedPoiCollection('A Zoo / Aquarium'); },
+    overpass:(c,r)=>`nwr["tourism"~"^(zoo|aquarium)$"](around:${r},${c.lat},${c.lng});` },
+  { group:'Places of Interest', icon:'⛳', label:'A Golf Course',
+    instances: async ()=>{ await loadPoiData(); return getNamedPoiCollection('A Golf Course'); },
+    overpass:(c,r)=>`nwr["leisure"="golf_course"](around:${r},${c.lat},${c.lng});` },
+  { group:'Places of Interest', icon:'🏛️', label:'A Museum',
+    instances: async ()=>{ await loadPoiData(); return getNamedPoiCollection('A Museum'); },
+    overpass:(c,r)=>`nwr["tourism"="museum"](around:${r},${c.lat},${c.lng});` },
+  { group:'Places of Interest', icon:'🎬', label:'A Movie Theater',
+    instances: async ()=>{ await loadPoiData(); return getNamedPoiCollection('A Movie Theater'); },
+    overpass:(c,r)=>`nwr["amenity"="cinema"](around:${r},${c.lat},${c.lng});` },
+
+  // PUBLIC UTILITIES
+  { group:'Public Utilities', icon:'🏥', label:'A Hospital',
+    instances: async ()=>{ await loadPoiData(); return getNamedPoiCollection('A Hospital'); },
+    overpass:(c,r)=>`nwr["amenity"="hospital"](around:${r},${c.lat},${c.lng});` },
+  { group:'Public Utilities', icon:'📚', label:'A Library',
+    instances: async ()=>{ await loadPoiData(); return getNamedPoiCollection('A Library'); },
+    overpass:(c,r)=>`nwr["amenity"="library"](around:${r},${c.lat},${c.lng});` },
+  { group:'Public Utilities', icon:'🏳️', label:'A Foreign Consulate',
+    instances: async ()=>{ await loadPoiData(); return getNamedPoiCollection('A Foreign Consulate'); },
+    overpass:(c,r)=>`nwr["office"~"diplomatic|consulate"](around:${r},${c.lat},${c.lng});nwr["amenity"="embassy"](around:${r},${c.lat},${c.lng});` },
+];
+
+const TENTACLES_CATS = [
+  {icon:'🍩', label:"Dunkin'",      overpass:(c,r)=>`nwr["name"~"Dunkin",i](around:${r},${c.lat},${c.lng});`},
+  {icon:'☕', label:'Starbucks',    overpass:(c,r)=>`nwr["name"~"Starbucks",i](around:${r},${c.lat},${c.lng});`},
+  {icon:'💊', label:'CVS',          overpass:(c,r)=>`nwr["name"~"CVS",i](around:${r},${c.lat},${c.lng});`},
+  {icon:'🍟', label:"McDonald's",   overpass:(c,r)=>`nwr["name"~"McDonald",i](around:${r},${c.lat},${c.lng});`},
+  {icon:'🏥', label:'Hospitals',    overpass:(c,r)=>`nwr["amenity"~"hospital|clinic"](around:${r},${c.lat},${c.lng});`},
+  {icon:'📚', label:'Libraries',    overpass:(c,r)=>`nwr["amenity"="library"](around:${r},${c.lat},${c.lng});`},
+  {icon:'🌳', label:'Parks',        overpass:(c,r)=>`nwr["leisure"="park"]["name"](around:${r},${c.lat},${c.lng});`},
+  {icon:'⛽', label:'Gas station',  overpass:(c,r)=>`nwr["amenity"="fuel"](around:${r},${c.lat},${c.lng});`},
+];
+
+// ── Overpass API search ──
+async function overpassSearch(overpassBody, near, radiusM=5000){
+  const query = `[out:json][timeout:25];(${overpassBody});out center 100;`;
+  // Try primary, fall back to mirror
+  const endpoints = [
+    'https://overpass-api.de/api/interpreter',
+    'https://overpass.kumi.systems/api/interpreter'
+  ];
+  let data;
+  for(const url of endpoints){
+    try{
+      const res = await fetch(url, {
+        method:'POST',
+        headers:{'Content-Type':'application/x-www-form-urlencoded'},
+        body:'data='+encodeURIComponent(query)
+      });
+      if(!res.ok) continue;
+      data = await res.json();
+      break;
+    }catch(e){ continue; }
+  }
+  if(!data){ throw new Error('Overpass API unavailable'); }
+  const elements = (data.elements||[]).filter(e=>e.tags&&e.tags.name);
+  const pts = elements.map(e=>({
+    name: e.tags.name,
+    lat:  e.lat  ?? e.center?.lat,
+    lng:  e.lon  ?? e.center?.lon,
+    id:   e.id
+  })).filter(p=>p.lat&&p.lng);
+  pts.sort((a,b)=>turfDist({lat:a.lat,lng:a.lng},near)-turfDist({lat:b.lat,lng:b.lng},near));
+  return pts;
+}
+
+// Build a short street-aware label for a place using reverse geocode
+async function shortLabel(name, lat, lng){
+  try{
+    const r = await fetch(`https://nominatim.openstreetmap.org/reverse?lat=${lat}&lon=${lng}&format=json&addressdetails=1`,{headers:{'Accept-Language':'en-US'}});
+    const d = await r.json();
+    const addr = d.address||{};
+    const road = addr.road||addr.pedestrian||addr.footway||addr.path||'';
+    const hood = addr.suburb||addr.neighbourhood||addr.quarter||'';
+    const loc  = road || hood;
+    return loc ? `${name} — ${loc}` : name;
+  }catch(e){ return name; }
+}
+
+// ══════════════════════════════════════════════════════
+//  MARKER ICONS
+// ══════════════════════════════════════════════════════
+
+// Seeker "you are here" — bold red crosshair pin with pulsing ring
+function makeStopIcon(colors, isCR){
+  const n = colors.length;
+
+  // Sizing: CR stops get larger to accommodate the outer ring
+  const rInner = n > 1 ? 6 : 5;       // inner filled circle
+  const gap    = 2;                     // white gap between rings
+  const rOuter = rInner + gap + 2;     // outer ring (only for CR)
+  const r      = isCR ? rOuter : rInner;
+
+  const pad  = 2;
+  const size = (r + pad) * 2;
+  const cx   = size / 2, cy = size / 2;
+
+  // ── Inner circle / pie ──
+  let innerSVG = '';
+  if(n === 1){
+    innerSVG = `<circle cx="${cx}" cy="${cy}" r="${rInner}" fill="${colors[0]}" stroke="white" stroke-width="1.5"/>`;
+  } else {
+    const TAU = 2 * Math.PI;
+    const startAngle = -Math.PI / 2;
+    let paths = '';
+    colors.forEach((col, i) => {
+      const a0 = startAngle + (i / n) * TAU;
+      const a1 = startAngle + ((i + 1) / n) * TAU;
+      const x0 = cx + rInner * Math.cos(a0), y0 = cy + rInner * Math.sin(a0);
+      const x1 = cx + rInner * Math.cos(a1), y1 = cy + rInner * Math.sin(a1);
+      const large = (a1 - a0) > Math.PI ? 1 : 0;
+      paths += `<path d="M${cx},${cy} L${x0.toFixed(2)},${y0.toFixed(2)} A${rInner},${rInner} 0 ${large},1 ${x1.toFixed(2)},${y1.toFixed(2)} Z" fill="${col}"/>`;
+    });
+    innerSVG = paths + `<circle cx="${cx}" cy="${cy}" r="${rInner}" fill="none" stroke="white" stroke-width="1.5"/>`;
+  }
+
+  // ── Drop shadow ──
+  const shadowR = isCR ? rOuter : rInner;
+  const shadow = `<circle cx="${cx+1}" cy="${cy+1}" r="${shadowR+1}" fill="rgba(0,0,0,0.3)"/>`;
+
+  // ── CR concentric rings ──
+  // White gap ring, then outer colored ring — matches MBTA printed map style
+  let crRings = '';
+  if(isCR){
+    // White gap ring fills the space between inner circle and outer ring
+    const rMid = rInner + gap / 2;
+    crRings =
+      // White donut filling the gap
+      `<circle cx="${cx}" cy="${cy}" r="${rInner + gap}" fill="white"/>` +
+      // Outer ring: stroke in line color(s)
+      // For single-color: one ring in that color
+      // For multi-color: stroke in the first color (most prominent line)
+      `<circle cx="${cx}" cy="${cy}" r="${rOuter}" fill="white" stroke="${colors[0]}" stroke-width="2"/>`;
+
+    // If multi-line, split the outer ring with a dashed second color
+    if(n === 2){
+      crRings +=
+        `<circle cx="${cx}" cy="${cy}" r="${rOuter}" fill="none" stroke="${colors[1]}" stroke-width="2" stroke-dasharray="${Math.PI*rOuter/2} ${Math.PI*rOuter/2}" stroke-dashoffset="${Math.PI*rOuter/4}"/>`;
+    }
+  }
+
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${size}" height="${size}" viewBox="0 0 ${size} ${size}">
+    ${shadow}${crRings}${innerSVG}
+  </svg>`;
+
+  return L.divIcon({
+    className: '',
+    iconSize: [size, size],
+    iconAnchor: [cx, cy],
+    popupAnchor: [0, -cy - 2],
+    html: svg
+  });
+}
+
+function seekerPin(col='#e84040'){
+  return L.divIcon({className:'', iconSize:[0,0], html:`
+    <div style="position:relative;width:32px;height:32px;transform:translate(-16px,-16px)">
+      <div style="position:absolute;inset:0;border-radius:50%;border:2px solid ${col};opacity:0.35;animation:pulse 1.5s ease-in-out infinite"></div>
+      <div style="position:absolute;inset:7px;border-radius:50%;background:${col};border:2.5px solid white;box-shadow:0 2px 12px rgba(0,0,0,0.5)"></div>
+      <div style="position:absolute;top:50%;left:0;right:0;height:1.5px;background:${col};opacity:0.7;transform:translateY(-50%)"></div>
+      <div style="position:absolute;left:50%;top:0;bottom:0;width:1.5px;background:${col};opacity:0.7;transform:translateX(-50%)"></div>
+    </div>`});
+}
+
+// Tentacle option — teardrop pin with number badge
+function tentaclePin(num, col){
+  return L.divIcon({className:'', iconSize:[0,0], html:`
+    <div style="position:relative;transform:translate(-12px,-30px)">
+      <svg width="24" height="32" viewBox="0 0 24 32" style="filter:drop-shadow(0 2px 4px rgba(0,0,0,0.5))">
+        <path d="M12 0 C5.4 0 0 5.4 0 12 C0 20 12 32 12 32 C12 32 24 20 24 12 C24 5.4 18.6 0 12 0Z" fill="${col}"/>
+        <circle cx="12" cy="11" r="8" fill="rgba(0,0,0,0.2)"/>
+      </svg>
+      <div style="position:absolute;top:4px;left:0;right:0;text-align:center;font-size:10px;font-weight:900;color:white;font-family:'Space Mono',monospace;line-height:14px;text-shadow:0 1px 2px rgba(0,0,0,0.4)">${num}</div>
+    </div>`});
+}
+
+// Measure nearest result — teal diamond pin
+function measurePin(){
+  return L.divIcon({className:'', iconSize:[0,0], html:`
+    <div style="transform:translate(-10px,-10px);width:20px;height:20px">
+      <div style="width:14px;height:14px;background:#20c8b0;border:2.5px solid white;border-radius:3px;transform:rotate(45deg) translate(3px,3px);box-shadow:0 2px 8px rgba(0,0,0,0.5)"></div>
+    </div>`});
+}
+
+// Hider location — glowing purple "eye" pin
+function hiderPin(){
+  return L.divIcon({className:'', iconSize:[0,0], html:`
+    <div style="position:relative;width:36px;height:36px;transform:translate(-18px,-18px)">
+      <div style="position:absolute;inset:0;border-radius:50%;background:rgba(160,96,255,0.2);animation:pulse 1.2s ease-in-out infinite"></div>
+      <div style="position:absolute;inset:4px;border-radius:50%;border:2px solid rgba(160,96,255,0.5);animation:pulse 1.2s ease-in-out infinite 0.3s"></div>
+      <div style="position:absolute;inset:9px;border-radius:50%;background:#a060ff;border:2.5px solid white;box-shadow:0 0 14px rgba(160,96,255,0.8)"></div>
+    </div>`});
+}
+
+async function selectMeasureCat(catObj){
+  if(!qparams.center){toast('Set your location first');return;}
+  qparams._mcat=catObj.label; qparams._mcatlabel=catObj.label; qparams._msearching=true;
+  qparams.measure_cat=catObj.label; qparams.measure_cat_label=catObj.label;
+  qparams.measure_seeker_nearest=null; qparams.measure_seeker_dist=null; qparams.measure_all_instances=null;
+  if(catObj.label==='A County Border') highlightBoundary('county');
+  else if(catObj.label==='A City Border') highlightBoundary('city');
+  else clearBoundaryHighlight();
+  renderBuildBody();
+  try{
+    const instances = await getCategoryInstances(catObj, qparams.center, 35000);
+    if(!instances.length){toast('No '+catObj.label+' found nearby');qparams._msearching=false;renderBuildBody();return;}
+
+    // Find seeker's nearest
+    instances.sort((a,b)=>turfDist(qparams.center,a)-turfDist(qparams.center,b));
+    const nearest=instances[0];
+    const dist=turfDist(qparams.center,nearest);
+
+    qparams._msearching=false;
+    qparams.measure_seeker_nearest={lat:nearest.lat,lng:nearest.lng,name:nearest.name};
+    qparams.measure_seeker_dist=dist;
+    qparams.measure_all_instances=instances.slice(0,200); // cap for zone geometry
+
+    // Drop teardrop pins — gold #1 for nearest, teal for rest
+    clearPoiMarkers();
+    const POI_CATS_LINEAR = new Set(['An Amtrak Line','A County Border','A City Border','Sea Level','A Coastline']);
+    const isLinear = POI_CATS_LINEAR.has(catObj.label);
+    if(isLinear){
+      // For linear/edge categories, just show a single teal diamond at the nearest point
+      const m=L.marker([nearest.lat,nearest.lng],{icon:measurePin(),zIndexOffset:1500}).addTo(map);
+      pickedMarkers.push(m);
+    } else {
+      // For POI categories, show numbered teardrop pins
+      instances.slice(0,100).forEach((p,i)=>{
+        if(!p.lat||!p.lng) return;
+        const col = i===0 ? '#f0a030' : '#4a7090';
+        const m = L.marker([p.lat,p.lng],{icon:tentaclePin(i+1,col),zIndexOffset:1500+i})
+          .bindPopup(`<div class="stop-popup"><div class="stop-popup-name">${p.name}</div>${i===0?'<div style="font-size:9px;color:#f0a030;margin-top:2px">★ Your nearest</div>':''}</div>`,{offset:[0,-28],maxWidth:220})
+          .addTo(map);
+        pickedMarkers.push(m);
+      });
+    }
+    // Fit map to show nearest + seeker location
+    if(nearest.lat && nearest.lng){
+      const bounds = L.latLngBounds([[nearest.lat,nearest.lng],[qparams.center.lat,qparams.center.lng]]).pad(0.3);
+      map.fitBounds(bounds);
+    }
+    renderBuildBody(); updatePreview(); tryGenerate();
+  }catch(e){qparams._msearching=false;toast('Search failed: '+e.message);renderBuildBody();}
+}
+
+async function selectTentacleCat(catObj){
+  if(!qparams.center){toast('Set your location first');return;}
+  qparams._tcat=catObj.label; qparams._tcatlabel=catObj.label; qparams._tsearching=true;
+  qparams.tentacle_options=null;
+  renderBuildBody();
+  try{
+    const rad = qparams.radius_miles||1;
+    const radiusM = Math.round(rad * 1609.34 * 1.5); // search 1.5x reach radius
+    const items = await overpassSearch(catObj.overpass(qparams.center, radiusM), qparams.center, radiusM);
+    if(items.length < 2){
+      toast(`Found ${items.length} ${catObj.label} nearby — try a larger radius`);
+      qparams._tsearching=false; renderBuildBody(); return;
+    }
+    // Label each with its street address (batch reverse geocode, up to 6)
+    const top = items.slice(0,8);
+    const labeled = await Promise.all(top.map(it=>shortLabel(it.name,it.lat,it.lng)));
+    const opts = top.map((it,i)=>({name:labeled[i], lat:it.lat, lng:it.lng}));
+    qparams._tsearching=false;
+    qparams.tentacle_options=opts;
+    const TENT_COL = '#f0a030';
+    opts.forEach((o,i)=>{
+      const m=L.marker([o.lat,o.lng],{icon:tentaclePin(i+1,TENT_COL),zIndexOffset:1500})
+        .bindPopup(`<div class="stop-popup"><div class="stop-popup-name">${o.name}</div></div>`,{offset:[0,-28],maxWidth:220})
+        .addTo(map);
+      pickedMarkers.push(m);
+    });
+    // Fit map to show all results
+    if(opts.length){
+      const bounds=L.latLngBounds(opts.map(o=>[o.lat,o.lng])).pad(0.3);
+      map.fitBounds(bounds);
+    }
+    renderBuildBody(); updatePreview(); tryGenerate();
+  }catch(e){qparams._tsearching=false;toast('Search failed: '+e.message);renderBuildBody();}
+}
+
+function restartPick(){
+  QDEFS[qtype].pickSteps.forEach(s=>delete qparams[s.key]);
+  clearMarkers();previewLayer.clearLayers();pickStep=0;
+  document.getElementById('json-out-section').style.display='none';
+  showBanner(pickStepDefs[0].label);
+  document.getElementById('panel').classList.add('collapsed');
+  renderBuildBody();
+}
+
+function updatePreview(){
+  previewLayer.clearLayers();if(!qtype)return;
+  try{
+    if(qtype==='radar'&&qparams.center&&qparams.radius_miles) previewLayer.addData(makeCircle(qparams.center,qparams.radius_miles,'miles'));
+    if(qtype==='thermo'&&qparams.center&&qparams.travel_miles) previewLayer.addData(makeCircle(qparams.center,qparams.travel_miles,'miles'));
+    if(qtype==='measure'&&qparams.measure_seeker_nearest&&qparams.measure_seeker_dist) previewLayer.addData(makeCircle(qparams.measure_seeker_nearest,qparams.measure_seeker_dist,'miles'));
+    if(qtype==='tentacles'&&qparams.center&&qparams.radius_miles) previewLayer.addData(makeCircle(qparams.center,qparams.radius_miles,'miles'));
+  }catch(e){}
+}
+
+function generateJSON(){
+  const def=QDEFS[qtype];
+  const json=def.toJSON(qparams);
+  json.id='q'+Date.now().toString(36);
+  // Yield to UI thread before heavy stringify (prevents freeze on mobile)
+  setTimeout(()=>{
+    document.getElementById('json-out').value=JSON.stringify(json,null,2);
+    document.getElementById('json-out-section').style.display='block';
+    updatePreview();
+    renderSimulBtns(json);
+  },0);
+}
+
+// ── per-type answer option definitions ──
+const SIMUL_OPTS = {
+  radar:    [{val:'yes',    icon:'✅', label:'Within',    color:'#18b050'}, {val:'no',      icon:'❌', label:'Outside',  color:'#e84040'}],
+  thermo:   [{val:'closer', icon:'🔥', label:'Closer',    color:'#f0a030'}, {val:'further', icon:'❄️', label:'Further',  color:'#3a8eff'}],
+  measure:  [{val:'closer', icon:'🔥', label:'Closer',    color:'#f0a030'}, {val:'further', icon:'❄️', label:'Further',  color:'#3a8eff'}],
+  matching: [{val:'Yes', icon:'✅', label:'Yes — same', color:'#18b050'}, {val:'No', icon:'❌', label:'No — different', color:'#e84040'}],
+  nearest:  [{val:'Yes', icon:'✅', label:'Yes — same', color:'#18b050'}, {val:'No', icon:'❌', label:'No — different', color:'#e84040'}],
+  tentacles:[{val:'no',     icon:'❌', label:'Not nearby',color:'#e84040'}],
+};
+
+let _simulActive = null; // currently previewed answer val
+
+function renderSimulBtns(json){
+  _simulActive = null;
+  simulLayer.clearLayers();
+  const opts = SIMUL_OPTS[json.type];
+  const container = document.getElementById('simul-btns');
+  const hint      = document.getElementById('simul-hint');
+  const bar       = document.getElementById('map-simul-bar');
+  const msbBtns   = document.getElementById('msb-btns');
+  hint.className  = 'simul-result-hint';
+  if(!opts){
+    container.innerHTML='';
+    msbBtns.innerHTML='';
+    bar.classList.remove('visible');
+    return;
+  }
+  // Panel buttons
+  container.innerHTML = opts.map(o =>
+    `<button class="simul-btn" id="sb-${o.val}"
+       style="--simul-col:${o.color}"
+       onclick="previewAnswer('${o.val}')">
+       <span class="s-icon">${o.icon}</span>${o.label}
+     </button>`
+  ).join('');
+  // Map bar buttons
+  msbBtns.innerHTML = opts.map(o =>
+    `<button class="msb-btn" id="msb-${o.val}"
+       style="--msb-col:${o.color}"
+       onclick="previewAnswer('${o.val}')">
+       ${o.icon} ${o.label}
+     </button>`
+  ).join('');
+  bar.classList.add('visible');
+  document.getElementById('msb-area').innerHTML = 'tap to preview';
+}
+
+function previewAnswer(val){
+  const def = QDEFS[qtype];
+  const opts = SIMUL_OPTS[qtype];
+  const hint = document.getElementById('simul-hint');
+
+  // Toggle off if same button pressed twice
+  if(_simulActive === val){
+    _simulActive = null;
+    simulLayer.clearLayers();
+    document.querySelectorAll('.simul-btn,.msb-btn').forEach(b=>b.classList.remove('active'));
+    hint.className = 'simul-result-hint';
+    document.getElementById('msb-area').innerHTML = 'tap to preview';
+    return;
+  }
+
+  _simulActive = val;
+  document.querySelectorAll('.simul-btn,.msb-btn').forEach(b=>b.classList.remove('active'));
+  const btn  = document.getElementById(`sb-${val}`);
+  const mbtn = document.getElementById(`msb-${val}`);
+  if(btn)  btn.classList.add('active');
+  if(mbtn) mbtn.classList.add('active');
+
+  const opt = opts.find(o=>o.val===val);
+  const col = opt ? opt.color : '#20c8b0';
+
+  try {
+    const q = {...JSON.parse(document.getElementById('json-out').value), answer: val};
+    const result = def.applyToZone(validZone, q);
+    if(!result){ toast('Nothing left in zone for this answer'); return; }
+
+    simulLayer.clearLayers();
+    simulLayer.options.style = {
+      color: col, weight: 2, fillColor: col, fillOpacity: 0.28, interactive: false
+    };
+    simulLayer.addData(result);
+
+    try{ map.fitBounds(L.geoJSON(result).getBounds().pad(0.12)); }catch(e){}
+
+    const area = (turf.area(result)/1e6).toFixed(1);
+    const pctRemain = validZone ? Math.round(turf.area(result)/turf.area(validZone)*100) : '?';
+    const pctElim   = typeof pctRemain === 'number' ? 100 - pctRemain : '?';
+    const hintHTML = `<b>${opt ? opt.icon+' '+opt.label : val}:</b> ${area} km² remain <span style="color:${col}">(${pctElim}% eliminated)</span>`;
+    hint.innerHTML = hintHTML;
+    hint.className = 'simul-result-hint visible';
+    document.getElementById('msb-area').innerHTML = `<b style="color:${col}">${pctElim}%</b> eliminated`;
+  } catch(e) {
+    toast('Preview error: '+e.message);
+  }
+}
+
+function copyQ(){
+  navigator.clipboard.writeText(document.getElementById('json-out').value).then(()=>{
+    const fl=document.getElementById('cf');fl.classList.add('on');setTimeout(()=>fl.classList.remove('on'),2200);
+    toast('Copied! Send to your friend.');
+  }).catch(()=>toast('Tap the text area and copy manually'));
+}
+
+function resetBuild(){
+  qtype=null;qparams={};pickStep=-1;pickStepDefs=[];
+  clearMarkers();previewLayer.clearLayers();simulLayer.clearLayers();hideBanner();
+  clearBoundaryHighlight();
+  _simulActive=null;
+  document.querySelectorAll('.qbtn').forEach(b=>b.classList.remove('on'));
+  document.getElementById('json-out-section').style.display='none';
+  document.getElementById('map-simul-bar').classList.remove('visible');
+  renderBuildBody();
+}
