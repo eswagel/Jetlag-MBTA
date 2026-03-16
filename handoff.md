@@ -1,280 +1,344 @@
-# Jet Lag MBTA Hide & Seek — Claude Code Handoff
+# Jet Lag MBTA Hide & Seek — Current Handoff
 
-## Project Overview
+## Overview
 
-A single-file progressive web app (`jetlag-mbta.html`) that implements a Boston MBTA-based version of the Jet Lag hide & seek game. The hider picks a secret location somewhere on the T network; seekers ask geographic questions to narrow down the zone.
+This repository contains a static browser app for a Boston MBTA version of Jet Lag hide-and-seek.
 
-**Stack:** Vanilla HTML/CSS/JS · Leaflet 1.9.4 · Turf.js 6.5.0 · CartoDB Positron tiles  
-**APIs used at runtime:** MBTA V3 (`api-v3.mbta.com`), Overpass (`overpass-api.de`), Nominatim (OpenStreetMap geocoding)  
-**No backend, no build step** — single HTML file, works as iPhone PWA via Safari "Add to Home Screen"
+It is no longer a single giant HTML file:
 
----
+- `jetlag-mbta.html` is the document shell
+- `assets/css/app.css` contains styles
+- `assets/js/app/` contains the application JS split by responsibility
+- `data/` contains precomputed runtime datasets
+- `scripts/` contains generators for those datasets
 
-## What's Done
+The app is still build-free at runtime. It can be hosted as plain static files, including on GitHub Pages, as long as the final generated files in `data/` are committed.
 
-### Game Modes
-Three modes selectable at game start:
-- **Seeker** — Ask + Apply + Log tabs only
-- **Hider** — Answer tab only, prompted to pick their station on map at start
-- **Dev** — All tabs, for solo testing
+## Current Repository State
 
-### Map
-- CartoDB Positron base tiles (clean, minimal)
-- Full MBTA rapid transit network drawn from live MBTA V3 API: Red (Ashmont + Braintree branches drawn separately by terminal latitude), Orange, Blue, Green B/C/D/E, Mattapan
-- Red branch shape selection uses shape ID keyword match with terminal-latitude fallback
-- Stop markers as SVG icons:
-  - Single-line: solid filled circle in line color
-  - Multi-line transfer: pie-chart split between distinct colors (Green branches collapsed to one color)
-  - Commuter rail interchange: concentric double-ring (inner filled + white gap + outer ring), matching MBTA printed map style
-- Commuter rail stops fetched from MBTA V3 API (`route_type=2`) with parent station ID deduplication; double-ring only shown within T network bbox
-- Administrative boundaries drawn at startup from Overpass: county (admin_level=6) dashed blue-grey lines, town/city (admin_level=8) lighter thinner lines
+### Last committed state
 
-### Zone System
-- Valid zone starts as union of all stop buffers at chosen hide radius (0.1 / 0.25 / 0.5 / 1.0 mi)
-- Red mask overlay = eliminated area; green dashed border = valid zone
-- Zone shrinks as questions are answered
-- Area display in km², with "X% eliminated" preview when toggling what-if answers
+Latest commit on `main`:
 
-### Question Types
+- `b53729a` — `Add offline data generators and datasets`
 
-#### 📡 Radar
-Seeker picks location + radius. Yes = inside circle (`safeIsect`), No = outside (`safeDiff`).
+That commit added:
 
-#### 🌡️ Thermometer
-Seeker picks location + travel distance. Closer/further from seeker.
+- `data/mbta-data.json`
+- `data/pois.json`
+- `data/boundaries.json`
+- `data/landmasses.json`
+- generator scripts under `scripts/`
+- `.gitignore`
+- `package.json` / `package-lock.json`
 
-#### 📏 Measure — "Are you closer/further from your nearest ___ than I am from mine?"
-Seeker picks location, selects category. App fetches all instances, finds seeker's nearest, bakes `seeker_dist` into JSON. Zone = union of circles of `seeker_dist` around all instances. Hider finds their own nearest from `all_instances` array in JSON.
+### Current uncommitted working tree
 
-Categories (grouped):
-- **Transit:** Amtrak Line (fetches full route relations by bbox), Commuter Rail Station (from preloaded MBTA data, filtered to T network bbox)
-- **Borders:** County Border (OSM admin_level=6 edge points), City Border (admin_level=8 edge points)
-- **Natural:** Sea Level (coastline ways densified to points), Body of Water (named water bodies), Coastline (densified)
-- **Places of Interest:** Park, Amusement Park, Zoo/Aquarium, Golf Course, Museum, Movie Theater
-- **Public Utilities:** Hospital, Library, Foreign Consulate
+There are currently local modifications in:
 
-POI categories show numbered teardrop pins (gold #1 = nearest). Linear/edge categories show a teal diamond at nearest point. Seeker's crosshair dot persists when switching categories.
+- `assets/js/app/02-map.js`
+- `assets/js/app/04-build.js`
 
-#### 🐙 Tentacles
-Seeker picks location + radius + POI type. App finds all instances within radius, hider answers which they're closest to. Zone = Voronoi cell intersection.
+Those changes do two things:
 
-#### 🔗 Matching — two sections in one panel
+1. add `Landmass` as a visible `MATCHING_CATS` option
+2. load `landmasses.json` eagerly at startup and change the stale UI wording from "precomputing" to "loading"
 
-**"Are we in the same ___?"**  
-Reverse-geocodes seeker location, fetches Nominatim boundary polygon, normalizes orientation (checks seeker's point is inside, flips if not), simplifies polygon to avoid mobile freeze. Zone = `safeIsect` (Yes) or `safeDiff` (No).
-- County, City/Town, Neighborhood, ZIP Code
+These changes are not yet committed.
 
-**"Is the nearest ___ to me the same as to you?"** (Nearest sub-section)
-Seeker picks location + category, app fetches all instances, finds nearest, computes Voronoi cell. Hider GPS-locates and app finds their nearest for auto-answer.
-- Park, Golf Course, Library, Hospital, Museum, Movie Theater, Zoo/Aquarium, Foreign Consulate
+## Tech Stack
 
-Relevant boundary questions highlight county or city admin boundaries on map in amber.
+- Vanilla HTML / CSS / JS
+- Leaflet 1.9.4
+- Turf.js in the browser
+- Python 3 + `shapely` for landmass generation
+- Node for the other generators and local syntax checking
 
-#### 📸 Photo
-No zone effect. Seeker picks a photo prompt, hider sends photo.
+## Runtime Data Model
 
-### Hider Flow
-- Hider picks their station by tapping the map at game start (station badge shown in Answer tab)
-- Station used for identity questions (Matching/Nearest auto-answer)
-- Geo questions (Radar, Thermo, Measure, Tentacles) require separate GPS/map location per question
-- Auto-answer via GPS for Measure, Matching, Nearest
-- Veto and Randomize card support
+The app now prefers precomputed local files first and only falls back live when a file or category is missing.
 
-### Other
-- localStorage save/resume
-- Answer preview ("what if closer?") with % eliminated display
-- Question log tab
-- `seekerPinMarkers` separated from `pickedMarkers` so seeker dot persists across POI category changes
-- Boundary highlight layer drawn on top when county/city matching/measure question is active
+Runtime files in `data/`:
 
----
+- `mbta-data.json`
+  - full rapid transit line shapes and stops
+  - commuter rail stop list
+- `pois.json`
+  - measure / nearest / tentacle POI categories
+  - coastline points
+  - Amtrak line geometry
+- `boundaries.json`
+  - counties
+  - cities / towns
+  - limited postcode coverage
+  - currently no useful neighborhood coverage
+- `landmasses.json`
+  - currently generated landmass polygons and stop-to-piece assignment
 
-## What Needs to Be Done (Offline Precomputation)
+Ignored local-only files:
 
-This is the main remaining work. Currently several data sources are fetched live on each game load. All of them should be precomputed and saved as static JSON files in the same directory as the HTML.
+- `data/_cache/`
+- `node_modules/`
+- `scripts/__pycache__/`
 
-### 1. `landmasses.json` — T Network Landmass Polygons
+`data/_cache/` is generation-only checkpoint data and should not be committed.
 
-**Why:** The "Are we on the same landmass?" question (currently disabled) requires knowing which connected land polygon each T stop is on. This is expensive to compute live (Overpass fetch + Turf difference operations).
+## What Works
 
-**How to build:**
-1. Fetch all water bodies in MBTA bbox (`S=41.85, N=42.80, W=-71.70, E=-70.40`) from Overpass:
-   - `way["natural"~"^(water|bay|coastline)$"]`
-   - `way["waterway"="riverbank"]`
-   - `relation["natural"~"^(water|bay)$"]`
-   - `relation["waterway"="riverbank"]`
-2. Convert way geometries to Turf polygons
-3. `land = turf.difference(bboxPolygon, ...all water polys)`
-4. Extract MultiPolygon pieces
-5. For each T stop in `stopLineMap`, find which piece contains it via `booleanPointInPolygon`
-6. **Important:** Check whether the Neponset River separates Quincy from Boston — it may be mapped as a line (`waterway=river`) rather than a polygon (`waterway=riverbank`). If so, buffer river lines by ~30m before differencing.
+### Core gameplay
 
-**Output format:**
-```json
-{
-  "pieces": [
-    { "id": 0, "name": "Mainland Boston/Cambridge", "geometry": { "type": "Polygon", "coordinates": [...] } },
-    { "id": 1, "name": "East Boston", "geometry": { ... } }
-  ],
-  "stops": {
-    "place-aport": 1,
-    "place-mvbcl": 1,
-    "place-sstat": 0
-  }
-}
+- setup flow with hide radius
+- seeker / hider / dev modes
+- map rendering with MBTA network and stop icons
+- zone masking and shrinking
+- save / resume
+- question log
+- hider station selection and auto-answer flows
+
+### Question types
+
+- Radar
+- Thermometer
+- Measure
+- Tentacles
+- Matching
+- Nearest
+- Photo
+
+### Offline-first data paths
+
+- MBTA network loads from `data/mbta-data.json`
+- POI-backed questions load from `data/pois.json`
+- county / city matching loads from `data/boundaries.json`
+- landmass data loads from `data/landmasses.json`
+
+### Generator scripts
+
+- `scripts/generate-mbta-data.js`
+- `scripts/generate-pois.js`
+- `scripts/generate-boundaries.js`
+- `scripts/generate-landmasses.py`
+
+There is also a shared shoreline helper used by the JS coastline path:
+
+- `scripts/lib/shoreline.js`
+
+## Landmass Status
+
+Landmass work has changed significantly from the original handoff.
+
+### What is true now
+
+- landmasses are no longer live-generated in the browser
+- the browser loads `data/landmasses.json`
+- there is now a Python landmass generator using `shapely`
+- the generator uses checkpointed cache files in `data/_cache/landmasses-v1/`
+- the JS/Turf-based landmass generator was kept in the repo but is no longer the preferred path
+
+### Why Python was introduced
+
+The Turf/browser-style approach was too brittle and too slow for:
+
+- coastline polygonization
+- splitting by buffered river geometry
+- subtracting large sets of water geometry
+
+The Python + Shapely version completes successfully and is materially more reliable.
+
+### Current limitation
+
+The current landmass output is still not semantically correct for the desired gameplay regions.
+
+The current generated `landmasses.json` produces 3 landmasses:
+
+- `North Side / East Boston`
+- `Boston / Brookline`
+- `Quincy / Braintree`
+
+This is not the desired design.
+
+The desired gameplay landmasses are closer to:
+
+- Cambridge / Somerville
+- Everett / East Boston / Revere / Malden
+- Boston / Brookline / Newton
+- Quincy / Braintree
+
+The user explicitly wants the landmass identity to be reasoned by city / neighborhood, with care for split municipalities such as Boston and Medford, and with important river separators including the Charles, Mystic, and Neponset handled correctly.
+
+This is the biggest current unresolved design issue.
+
+## Boundary Status
+
+`boundaries.json` is partially successful.
+
+### Good
+
+- counties are generated and usable
+- cities / towns are generated and usable
+- these are enough for most matching and admin-boundary display flows
+
+### Not good enough yet
+
+- neighborhood coverage is effectively missing
+- postcode / ZIP coverage is thin and not trustworthy enough
+
+So:
+
+- county matching is mostly offline
+- city / town matching is mostly offline
+- neighborhood matching still effectively depends on fallback behavior
+- ZIP code matching is not production-ready offline
+
+## POI Status
+
+`pois.json` is generated and currently includes:
+
+- parks
+- golf courses
+- libraries
+- hospitals
+- medical sites
+- museums
+- movie theaters
+- zoo / aquarium
+- foreign consulates
+- amusement parks
+- Dunkin'
+- Starbucks
+- CVS
+- McDonald's
+- gas stations
+- bodies of water
+- coastline
+- Amtrak lines
+
+This is sufficient for the current measure / nearest / tentacle offline-first flows.
+
+## Known Issues
+
+### 1. Landmass grouping is still wrong
+
+This is the most important unresolved correctness issue.
+
+The current generated groups are not the intended gameplay groups. The next implementation should likely stop trying to infer landmasses only from hydrology and instead encode the intended city / neighborhood splits directly.
+
+### 2. Landmass loading feels heavier than it should
+
+Even though the browser is only loading a file now, `landmasses.json` is still larger and more detailed than it needs to be.
+
+Reasons:
+
+- current polygons are still geometry-heavy
+- the generator was aimed at "true land pieces" rather than minimal gameplay regions
+
+If landmasses are rewritten as explicit gameplay regions, the final asset can be much smaller and feel instant.
+
+### 3. Neighborhood matching is not solved
+
+The current boundary pipeline does not yet produce a reliable neighborhood dataset.
+
+### 4. ZIP / postcode matching is not solved
+
+The current postcode output is not strong enough to rely on.
+
+### 5. Old landmass code still exists in browser JS
+
+`assets/js/app/04-build.js` still contains the old in-browser `precomputeLandmasses()` implementation, even though the runtime now loads `landmasses.json`.
+
+It is effectively obsolete and should either be removed or clearly quarantined so it does not confuse future work.
+
+### 6. Landmass matching implementation is mid-transition
+
+There are uncommitted changes that expose landmass matching in the UI and load `landmasses.json` eagerly at startup, but the underlying landmass semantics are still wrong.
+
+That means the feature is wired, but not yet final.
+
+## Recommended Next Development Directions
+
+### Highest priority
+
+1. Replace current generated landmasses with explicit gameplay landmasses.
+2. Define landmass identity by city / neighborhood rules, with manual exceptions where needed.
+3. Regenerate a much smaller `landmasses.json`.
+
+This should likely be done as a rules-driven generator, not another "let hydrology decide everything" pass.
+
+### Likely implementation direction for landmasses
+
+Use:
+
+- city polygons from `boundaries.json`
+- explicit Boston sub-area rules
+- explicit Medford split rules
+- explicit river-based separators for the Charles / Mystic / Neponset where they matter
+
+The goal is not perfect physical geography. The goal is stable and intuitive gameplay regions.
+
+### After that
+
+4. finish neighborhood matching or remove / de-emphasize it if the data remains unreliable
+5. improve ZIP handling or remove / de-emphasize it similarly
+6. compact final data formats once the logical datasets are stable
+
+## Desired Feature Additions
+
+### Custom boundary drawing
+
+This should be added.
+
+The app should support drawing a custom boundary or region and then applying:
+
+- include only inside the custom boundary
+- exclude the custom boundary
+
+This would be useful both as a gameplay / dev tool and as a way to express constraints that do not map cleanly onto the existing canned question types.
+
+This should be called out explicitly in future development planning.
+
+### Landmass UX
+
+Once landmasses are corrected:
+
+- the matching landmass question should remain enabled
+- the app should treat landmass data as a normal startup asset
+- there should be no "precomputing" language anywhere
+
+## Useful Commands
+
+Syntax checks:
+
+```bash
+node --check assets/js/app/01-core.js
+node --check assets/js/app/02-map.js
+node --check assets/js/app/04-build.js
+python3 -m py_compile scripts/generate-landmasses.py
 ```
 
-**How to wire back in:** Replace the disabled `precomputeLandmasses()` call with `fetch('landmasses.json')`, populate `_landmassCache.pieces` and `_landmassCache.stopIndex`, set `_landmassCache.ready = true`. Then re-add the Landmass option to `MATCHING_CATS`.
+Generator commands:
 
----
-
-### 2. `mbta-data.json` — Full T Network Snapshot
-
-**Why:** Currently the app makes ~10 parallel API calls to MBTA V3 on every load to fetch shapes and stops. This causes a multi-second delay and requires network. The T network changes rarely.
-
-**How to build:**
-Replicate what `loadMBTAData()` does, but save the result:
-1. For each of the 9 GAME_LINES, fetch:
-   - `/shapes?filter[route]=${routeId}` → decode polylines → pick correct branch shape
-   - `/stops?filter[route]=${routeId}` → collect stop coordinates, names, IDs
-2. Apply the same branch/trunk logic (ASHMONT_ONLY, BRAINTREE_ONLY sets)
-3. Also fetch commuter rail stops: `/stops?filter[route_type]=2&page[size]=500`
-
-**Output format:**
-```json
-{
-  "lines": [
-    {
-      "id": "Red-Ashmont",
-      "shapePath": [[42.395, -71.142], ...],
-      "stops": [
-        { "id": "place-asmnl", "name": "Ashmont", "lat": 42.284652, "lng": -71.063777 }
-      ]
-    }
-  ],
-  "commuterRail": [
-    { "id": "place-bbsta", "name": "Back Bay", "lat": 42.3478, "lng": -71.0746 }
-  ]
-}
+```bash
+node scripts/generate-mbta-data.js
+node scripts/generate-pois.js
+node scripts/generate-boundaries.js
+python3 scripts/generate-landmasses.py
 ```
 
-**How to wire in:** Replace `loadMBTAData()` with a `fetch('mbta-data.json')` that populates `stopLineMap`, `allStops`, `commuterRailStops`, `commuterRailStopsList`, then draws everything synchronously. Startup becomes instant and works offline.
+Package script:
 
----
-
-### 3. `pois.json` — Points of Interest
-
-**Why:** Measure and Nearest questions currently hit Overpass live (slow, unreliable). All the relevant POI categories are static enough to precompute for the Boston metro area.
-
-**How to build:**
-For each category, run a broad Overpass query over the T network bbox and save all results:
-- Parks: `nwr["leisure"="park"]["name"]`
-- Golf courses: `nwr["leisure"="golf_course"]`
-- Libraries: `nwr["amenity"="library"]`
-- Hospitals: `nwr["amenity"="hospital"]`
-- Museums: `nwr["tourism"="museum"]`
-- Movie theaters: `nwr["amenity"="cinema"]`
-- Zoo/Aquarium: `nwr["tourism"~"^(zoo|aquarium)$"]`
-- Foreign consulates: `nwr["office"~"diplomatic|consulate"]`, `nwr["amenity"="embassy"]`
-- Amusement parks: `nwr["tourism"="theme_park"]`
-- Bodies of water: named water features
-- Coastline: densified points from `way["natural"="coastline"]`
-
-**Output format:**
-```json
-{
-  "parks": [{ "name": "Boston Common", "lat": 42.355, "lng": -71.066 }, ...],
-  "hospitals": [...],
-  "libraries": [...],
-  "coastline": [{ "lat": 42.355, "lng": -70.99 }, ...]
-}
+```bash
+npm run generate:landmasses
 ```
 
-**How to wire in:** In `MEASURE_CATS` and `NEAREST_CATS`, replace `overpass:` functions with `instances: async () => POIS.parks` etc. (loaded at startup from `pois.json`).
+## Bottom Line
 
----
+This repo is much further along than the original handoff:
 
-### 4. `boundaries.json` — Administrative Boundary Polygons
+- the app is modularized
+- offline datasets exist
+- runtime no longer depends entirely on live APIs
+- the landmass pipeline has been moved to Python
 
-**Why:** Matching questions for county/city currently fetch from Nominatim live. The boundaries never change. Also eliminates the mobile freeze from simplifying large polygons.
+The main remaining correctness problem is that landmass regions are still inferred the wrong way.
 
-**How to build:**
-1. Fetch all county (admin_level=6) boundaries in Massachusetts: `relation["admin_level"="6"]["boundary"="administrative"]` for the bbox
-2. Fetch all municipality (admin_level=8) boundaries
-3. For each, extract the full polygon geometry and simplify with `turf.simplify(tolerance: 0.0005)`
-4. Also fetch neighborhood boundaries (admin_level=10) for Boston proper
-
-**Output format:**
-```json
-{
-  "counties": [
-    { "name": "Suffolk County", "geometry": { "type": "Polygon", "coordinates": [...] } },
-    { "name": "Norfolk County", "geometry": { ... } }
-  ],
-  "cities": [
-    { "name": "Boston", "geometry": { ... } },
-    { "name": "Cambridge", "geometry": { ... } }
-  ],
-  "neighborhoods": [
-    { "name": "Back Bay", "geometry": { ... } }
-  ]
-}
-```
-
-**How to wire in:** In `MATCHING_CATS`, replace the Nominatim `resolve` functions with local lookups: reverse-geocode to get the name, then find it in the preloaded boundaries by name match. No more per-question network calls, no polygon normalization needed (precompute with seeker point verified inside), no freeze.
-
----
-
-## Known Issues / Technical Debt
-
-1. **Overpass reliability** — Overpass is used for Tentacles, Measure (linear categories), and Matching (on-the-fly). It's slow and occasionally down. The `pois.json` precomputation resolves most of this. The remaining live calls would be Tentacles (radius-based from arbitrary point) and border edge points — those are harder to precompute fully.
-
-2. **Commuter rail closer/further logic** — The zone geometry (union of circles around all CR stations at `seeker_dist`) is mathematically correct but the closer/further direction has been confirmed reversed at some point during development. Worth testing carefully with a known case (e.g. seeker at Park St, nearest CR = South Station at ~0.5mi → answer "further" should eliminate everything within 0.5mi of any CR station).
-
-3. **Nominatim boundary orientation** — Nominatim sometimes returns boundary polygons as complements (the world minus the region). There's normalization code that checks `booleanPointInPolygon` and flips if needed. The `boundaries.json` precomputation would eliminate this entirely by verifying once offline.
-
-4. **Neighborhood Matching** — OSM neighborhood boundaries are inconsistent. Some Boston neighborhoods are well-mapped (Back Bay, South End), others aren't closed polygons. `boundaries.json` should document which ones work.
-
-5. **Amtrak track completeness** — The Amtrak query fetches route relations by bbox (`S=41.0, N=43.5`). Check in Overpass Turbo that both the NEC (Boston–Providence) and Downeaster (Boston–Portland) are returned. The fallback uses `way["railway"="rail"]["usage"="main"]` which may include non-Amtrak tracks.
-
-6. **Body of water Measure** — Returns named water body centroids. This works for large bodies (Charles River, Boston Harbor) but small ponds return misleading results. Consider filtering by area in precomputed POIs.
-
----
-
-## File Structure (Current and Target)
-
-```
-jetlag-mbta.html       ← main app (single file, ~3400 lines)
-
-# To be created:
-landmasses.json        ← T stop → landmass piece index
-mbta-data.json         ← full T network snapshot
-pois.json              ← all POIs by category
-boundaries.json        ← simplified admin boundary polygons
-```
-
-All JSON files should live in the same directory as the HTML. Load them at startup in `initMap()` or early in the page lifecycle, parallel to the existing MBTA API call (or replacing it).
-
----
-
-## Key Constants and State
-
-```js
-// Bounding box for the whole MBTA network
-const S=41.85, N=42.80, W=-71.70, E=-70.40;
-
-// T network bbox for CR stop filtering
-const T_BBOX = {minLat:42.18, maxLat:42.67, minLng:-71.55, maxLng:-70.85};
-
-// Hide-radius choices (miles)
-[0.1, 0.25, 0.5, 1.0]
-
-// GAME_LINES array drives all T line rendering and stop loading
-// Red-Ashmont and Red-Braintree are separate entries with branchKeyword
-
-// stopLineMap: { stopId → { name, lat, lng, lines: Set<lineId> } }
-// commuterRailStops: Set<stopId> (includes parent station IDs)
-// commuterRailStopsList: [{id, name, lat, lng}] (deduplicated by name)
-// validZone: Turf GeoJSON polygon — current game zone
-// _landmassCache: { ready, pieces[], stopIndex{} }
-```
+The next person should treat landmass generation as a rules / gameplay-definition problem, not just a geometry problem.
