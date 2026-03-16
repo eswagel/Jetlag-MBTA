@@ -34,6 +34,7 @@ function initMap(){
 
   renderZone();
   map.on('click',onMapClick);
+  loadLandmassData(); // async background load of precomputed landmasses
   loadMBTAData();
   loadAdminBoundaries(); // async background fetch
 }

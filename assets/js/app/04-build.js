@@ -9,6 +9,15 @@ function _clearClicks(){ _clicks.length=0; }
 // resolve(latLng) returns { val: string, boundary: GeoJSON polygon | null }
 const MATCHING_CATS = [
   {
+    icon:'🏝️', label:'Landmass', cat:'landmass',
+    resolve: async (c) => {
+      await loadLandmassData();
+      const boundary = await resolveSeekersLandmass(c);
+      const val = boundary?.properties?.name || null;
+      return { val, boundary: boundary || null };
+    }
+  },
+  {
     icon:'🏛️', label:'County', cat:'county',
     resolve: async (c) => {
       await loadBoundaryData();
@@ -197,7 +206,14 @@ function landmassForPoint(latLng){
   const idx=_landmassCache.stopIndex[nearestSid];
   if(idx===undefined) return null;
   const piece=_landmassCache.pieces[idx];
-  return {type:'Feature',properties:{name:'landmass'},geometry:piece.geometry};
+  return {
+    type:'Feature',
+    properties:{
+      id: piece.properties?.id,
+      name: piece.properties?.name || 'Landmass',
+    },
+    geometry:piece.geometry
+  };
 }
 
 // Old per-question async resolver — now just a fast lookup
@@ -349,7 +365,7 @@ function renderMatchingParams(){
       onclick="${_c(()=>selectMatchingCat(c))}">
       <span style="font-size:16px;margin-right:10px;vertical-align:middle">${c.icon}</span>
       <span style="vertical-align:middle">${c.label}?</span>
-      ${c.cat==='landmass' && !_landmassCache.ready ? '<span style="float:right;font-size:8px;color:var(--gold)">⏳ precomputing…</span>' : ''}
+      ${c.cat==='landmass' && !_landmassCache.ready ? '<span style="float:right;font-size:8px;color:var(--gold)">⏳ loading…</span>' : ''}
       ${sel?'<span style="float:right;color:var(--purple);font-size:9px">✓</span>':''}
     </div>`;
   });
@@ -398,7 +414,7 @@ function renderMatchingParams(){
 async function selectMatchingCat(catObj){
   if(!qparams.center){ toast('Set your location first'); return; }
   if(catObj.cat === 'landmass' && !_landmassCache.ready){
-    toast('⏳ Still precomputing landmasses — try again in a moment'); return;
+    toast('⏳ Still loading landmasses — try again in a moment'); return;
   }
   qparams.matching_cat = catObj.cat;
   qparams.matching_cat_label = catObj.label;
