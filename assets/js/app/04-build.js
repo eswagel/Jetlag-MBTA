@@ -667,6 +667,9 @@ const MEASURE_CATS = [
   // TRANSIT
   { group:'Transit', icon:'🚆', label:'An Amtrak Line',
     instances: async (c) => {
+      await loadPoiData();
+      const preloaded = getNamedLinearCollection('An Amtrak Line');
+      if(preloaded.length) return preloaded;
       // Fetch NEC and Downeaster route relations by name across the full MBTA bounding box
       // Using relation-based query to get entire track, not just nearby sections
       const S=41.0, N=43.5, W=-72.0, E=-70.0; // broad bbox covering NEC Boston-Providence + Downeaster to Portland
@@ -1017,15 +1020,32 @@ async function selectTentacleCat(catObj){
   try{
     const rad = qparams.radius_miles||1;
     const radiusM = Math.round(rad * 1609.34 * 1.5); // search 1.5x reach radius
-    const items = await overpassSearch(catObj.overpass(qparams.center, radiusM), qparams.center, radiusM);
+    await loadPoiData();
+    const preloaded = getNamedPoiCollection(catObj.label);
+    let items = preloaded;
+    if(items.length){
+      items = items
+        .filter(it => turfDist(qparams.center, it) <= radiusM)
+        .map(it => ({
+          ...it,
+          id: `${it.name}-${it.lat.toFixed(5)}-${it.lng.toFixed(5)}`,
+        }))
+        .sort((a,b)=>turfDist({lat:a.lat,lng:a.lng},qparams.center)-turfDist({lat:b.lat,lng:b.lng},qparams.center));
+    } else {
+      items = await overpassSearch(catObj.overpass(qparams.center, radiusM), qparams.center, radiusM);
+    }
     if(items.length < 2){
       toast(`Found ${items.length} ${catObj.label} nearby — try a larger radius`);
       qparams._tsearching=false; renderBuildBody(); return;
     }
-    // Label each with its street address (batch reverse geocode, up to 6)
     const top = items.slice(0,8);
-    const labeled = await Promise.all(top.map(it=>shortLabel(it.name,it.lat,it.lng)));
-    const opts = top.map((it,i)=>({name:labeled[i], lat:it.lat, lng:it.lng}));
+    let opts;
+    if(preloaded.length){
+      opts = top.map(it => ({name: it.name, lat: it.lat, lng: it.lng}));
+    } else {
+      const labeled = await Promise.all(top.map(it=>shortLabel(it.name,it.lat,it.lng)));
+      opts = top.map((it,i)=>({name:labeled[i], lat:it.lat, lng:it.lng}));
+    }
     qparams._tsearching=false;
     qparams.tentacle_options=opts;
     const TENT_COL = '#f0a030';

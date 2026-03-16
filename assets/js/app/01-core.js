@@ -266,6 +266,12 @@ function lookupPoiCollection(keys){
   return normalizePlaces(items);
 }
 
+function lookupLinearPoiCollection(keys, fallbackName='Line'){
+  const items = findFirstArray(preloadedData.pois, keys);
+  if(!Array.isArray(items)) return [];
+  return items.flatMap(item => pointsFromFeatureGeometry(coerceFeature(item, item.name), item.name || fallbackName));
+}
+
 function getNamedPoiCollection(label){
   const keyMap = {
     'Park': ['parks'],
@@ -285,12 +291,28 @@ function getNamedPoiCollection(label){
     'Foreign Consulate': ['foreignConsulates', 'foreign_consulates', 'consulates'],
     'A Foreign Consulate': ['foreignConsulates', 'foreign_consulates', 'consulates'],
     'An Amusement Park': ['amusementParks', 'amusement_parks'],
+    "Dunkin'": ['dunkin'],
+    'Starbucks': ['starbucks'],
+    'CVS': ['cvs'],
+    "McDonald's": ['mcdonalds', 'mcDonalds'],
+    'Hospitals': ['medicalSites', 'medical_sites', 'hospitals'],
+    'Libraries': ['libraries'],
+    'Parks': ['parks'],
+    'Gas station': ['gasStations', 'gas_stations'],
     'A Body of Water': ['bodiesOfWater', 'bodies_of_water', 'waterBodies'],
     'Sea Level': ['seaLevel', 'sea_level', 'coastline'],
     'A Coastline': ['coastline', 'seaLevel', 'sea_level'],
   };
   const keys = keyMap[label];
   return keys ? lookupPoiCollection(keys) : [];
+}
+
+function getNamedLinearCollection(label){
+  const keyMap = {
+    'An Amtrak Line': ['amtrakLines', 'amtrak_lines'],
+  };
+  const keys = keyMap[label];
+  return keys ? lookupLinearPoiCollection(keys, label) : [];
 }
 
 function getPreloadedBorderPoints(type){

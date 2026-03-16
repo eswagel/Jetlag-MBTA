@@ -1,0 +1,15 @@
+{
+  "name": "jetlag-mbta",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Static data generators for the Jet Lag MBTA app",
+  "scripts": {
+    "generate:mbta": "node scripts/generate-mbta-data.js",
+    "generate:boundaries": "node scripts/generate-boundaries.js",
+    "generate:pois": "node scripts/generate-pois.js",
+    "generate:landmasses": "python3 scripts/generate-landmasses.py"
+  },
+  "dependencies": {
+    "@turf/turf": "^7.3.4"
+  }
+}
