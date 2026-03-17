@@ -115,6 +115,29 @@
       background: color-mix(in srgb, var(--msb-col, var(--accent)) 18%, var(--panel2));
     }
     .msb-divider { width: 1px; height: 18px; background: var(--border); flex-shrink: 0; margin: 0 2px; }
+    .msb-key {
+      display: inline-flex; align-items: center; gap: 8px;
+      font-size: 8px; color: var(--dim); text-transform: uppercase;
+      letter-spacing: 0.08em; flex-shrink: 0;
+    }
+    .msb-key-item {
+      display: inline-flex; align-items: center; gap: 5px;
+      font-weight: 700;
+    }
+    .msb-key-item-keep { color: #72df93; }
+    .msb-key-item-cut { color: #ff7a7a; }
+    .msb-swatch {
+      width: 10px; height: 10px; border-radius: 3px; display: inline-block;
+      box-shadow: 0 0 0 1px rgba(0,0,0,0.35) inset;
+    }
+    .msb-swatch-keep {
+      background: rgba(24,176,80,0.42);
+      border: 1.5px solid #4fe07c;
+    }
+    .msb-swatch-cut {
+      background: rgba(232,64,64,0.42);
+      border: 1.5px solid #ff6b6b;
+    }
     .msb-area {
       font-size: 8px; color: var(--dim); font-family: 'IBM Plex Mono', monospace;
       padding-left: 6px; min-width: 80px; flex-shrink: 0; transition: color 0.2s;

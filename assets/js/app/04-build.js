@@ -1136,9 +1136,37 @@ const SIMUL_OPTS = {
 
 let _simulActive = null; // currently previewed answer val
 
+function setPreviewMapMode(active){
+  if(maskLayer?.setStyle){
+    maskLayer.setStyle({
+      color:'transparent',
+      weight:0,
+      fillColor:'#cc1010',
+      fillOpacity: active ? 0.16 : 0.42,
+    });
+  }
+  if(borderLayer?.setStyle){
+    borderLayer.setStyle(active ? {
+      color:'#7fd99b',
+      weight:2,
+      fillColor:'#7fd99b',
+      fillOpacity:0.04,
+      dashArray:'4 4',
+    } : {
+      color:'#18b050',
+      weight:3,
+      fillColor:'#18b050',
+      fillOpacity:0.10,
+      dashArray:'7 4',
+    });
+  }
+}
+
 function renderSimulBtns(json){
   _simulActive = null;
   simulLayer.clearLayers();
+  simulMaskLayer.clearLayers();
+  setPreviewMapMode(false);
   const opts = SIMUL_OPTS[json.type];
   const container = document.getElementById('simul-btns');
   const hint      = document.getElementById('simul-hint');
@@ -1168,21 +1196,24 @@ function renderSimulBtns(json){
      </button>`
   ).join('');
   bar.classList.add('visible');
-  document.getElementById('msb-area').innerHTML = 'tap to preview';
+  document.getElementById('msb-area').innerHTML = 'green stays · red goes';
 }
 
 function previewAnswer(val){
   const def = QDEFS[qtype];
   const opts = SIMUL_OPTS[qtype];
   const hint = document.getElementById('simul-hint');
+  const remainColor = '#18b050';
 
   // Toggle off if same button pressed twice
   if(_simulActive === val){
     _simulActive = null;
     simulLayer.clearLayers();
+    simulMaskLayer.clearLayers();
+    setPreviewMapMode(false);
     document.querySelectorAll('.simul-btn,.msb-btn').forEach(b=>b.classList.remove('active'));
     hint.className = 'simul-result-hint';
-    document.getElementById('msb-area').innerHTML = 'tap to preview';
+    document.getElementById('msb-area').innerHTML = 'green stays · red goes';
     return;
   }
 
@@ -1200,22 +1231,29 @@ function previewAnswer(val){
     const q = {...JSON.parse(document.getElementById('json-out').value), answer: val};
     const result = def.applyToZone(validZone, q);
     if(!result){ toast('Nothing left in zone for this answer'); return; }
+    const eliminated = safeDiff(validZone, result);
+    setPreviewMapMode(true);
 
     simulLayer.clearLayers();
+    simulMaskLayer.clearLayers();
     simulLayer.options.style = {
-      color: col, weight: 2, fillColor: col, fillOpacity: 0.28, interactive: false
+      color: '#4fe07c', weight: 3, fillColor: '#37c96b', fillOpacity: 0.30, interactive: false
+    };
+    simulMaskLayer.options.style = {
+      color: '#ff6b6b', weight: 2, fillColor: '#ff5a5a', fillOpacity: 0.30, interactive: false
     };
     simulLayer.addData(result);
+    if(eliminated) simulMaskLayer.addData(eliminated);
 
     try{ map.fitBounds(L.geoJSON(result).getBounds().pad(0.12)); }catch(e){}
 
     const area = (turf.area(result)/1e6).toFixed(1);
     const pctRemain = validZone ? Math.round(turf.area(result)/turf.area(validZone)*100) : '?';
     const pctElim   = typeof pctRemain === 'number' ? 100 - pctRemain : '?';
-    const hintHTML = `<b>${opt ? opt.icon+' '+opt.label : val}:</b> ${area} km² remain <span style="color:${col}">(${pctElim}% eliminated)</span>`;
+    const hintHTML = `<b>${opt ? opt.icon+' '+opt.label : val}:</b> ${area} km² remain <span style="color:${col}">(${pctElim}% eliminated)</span><br><span style="font-size:8px;color:var(--dim)">Green stays in play. Red is eliminated by this answer.</span>`;
     hint.innerHTML = hintHTML;
     hint.className = 'simul-result-hint visible';
-    document.getElementById('msb-area').innerHTML = `<b style="color:${col}">${pctElim}%</b> eliminated`;
+    document.getElementById('msb-area').innerHTML = `<b style="color:var(--green)">${pctRemain}%</b> stays · <b style="color:#e84040">${pctElim}%</b> cut`;
   } catch(e) {
     toast('Preview error: '+e.message);
   }
@@ -1230,7 +1268,8 @@ function copyQ(){
 
 function resetBuild(){
   qtype=null;qparams={};pickStep=-1;pickStepDefs=[];
-  clearMarkers();previewLayer.clearLayers();simulLayer.clearLayers();hideBanner();
+  clearMarkers();previewLayer.clearLayers();simulLayer.clearLayers();simulMaskLayer.clearLayers();hideBanner();
+  setPreviewMapMode(false);
   clearBoundaryHighlight();
   _simulActive=null;
   document.querySelectorAll('.qbtn').forEach(b=>b.classList.remove('on'));

@@ -31,6 +31,7 @@ function initMap(){
 
   previewLayer=L.geoJSON(null,{interactive:false,style:{color:'#f0a030',weight:1.5,fillColor:'#f0a030',fillOpacity:0.08,dashArray:'4 3'}}).addTo(map);
   simulLayer=L.geoJSON(null,{interactive:false,style:{color:'#20c8b0',weight:2,fillColor:'#20c8b0',fillOpacity:0.22}}).addTo(map);
+  simulMaskLayer=L.geoJSON(null,{interactive:false,style:{color:'transparent',weight:0,fillColor:'#e84040',fillOpacity:0.18}}).addTo(map);
 
   renderZone();
   map.on('click',onMapClick);
