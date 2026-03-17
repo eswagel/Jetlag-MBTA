@@ -465,19 +465,35 @@ const QDEFS = {
       seeker_nearest:p.measure_seeker_nearest,   // {lat,lng,name} — seeker's nearest instance
       seeker_dist:p.measure_seeker_dist,          // seeker's distance to their nearest
       all_instances:p.measure_all_instances||[],  // all known instances for zone geometry
+      linear_features:p.measure_linear_features||[],
       question:`Compared to me, are you closer to or further from your nearest ${p.measure_cat_label}? I am ${p.measure_seeker_dist.toFixed(2)} mi from mine.`,
       answer_opts:['closer','further']
     }),
     applyToZone:(zone,q)=>{
-      if(!q.all_instances||!q.all_instances.length) return zone;
       try{
-        // Zone = union of circles of radius seeker_dist around every instance
-        // "closer" = inside that union; "further" = outside
-        const circles = q.all_instances.map(p=>makeCircle(p, q.seeker_dist, 'miles'));
-        let union = circles[0];
-        for(let i=1;i<circles.length;i++){
-          try{ union = turf.union(union, circles[i]) || union; }catch(e){}
+        let union = null;
+        if(q.linear_features?.length){
+          const buffered = q.linear_features
+            .map(item => coerceFeature(item, item.name))
+            .filter(Boolean)
+            .map(feature => {
+              try{ return turf.buffer(feature, q.seeker_dist, {units:'miles'}); }catch(e){ return null; }
+            })
+            .filter(Boolean);
+          union = buffered[0] || null;
+          for(let i=1;i<buffered.length;i++){
+            try{ union = turf.union(union, buffered[i]) || union; }catch(e){}
+          }
+        } else if(q.all_instances?.length){
+          // Zone = union of circles of radius seeker_dist around every instance
+          // "closer" = inside that union; "further" = outside
+          const circles = q.all_instances.map(p=>makeCircle(p, q.seeker_dist, 'miles'));
+          union = circles[0];
+          for(let i=1;i<circles.length;i++){
+            try{ union = turf.union(union, circles[i]) || union; }catch(e){}
+          }
         }
+        if(!union) return zone;
         if(q.answer==='closer') return safeIsect(zone, union);
         return safeDiff(zone, union);
       }catch(e){ return zone; }

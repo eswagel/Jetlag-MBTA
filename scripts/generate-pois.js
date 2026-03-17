@@ -6,6 +6,7 @@ const {fetchCoastlineWays, densifyCoastlineWays} = require('./lib/shoreline');
 
 const OUTPUT = path.resolve(__dirname, '..', 'data', 'pois.json');
 const BBOX = {south: 42.18, west: -71.55, north: 42.67, east: -70.85};
+const AMTRAK_CLIP_BBOX = [BBOX.west - 0.08, BBOX.south - 0.08, BBOX.east + 0.08, BBOX.north + 0.08];
 const OVERPASS_ENDPOINTS = [
   'https://overpass-api.de/api/interpreter',
   'https://overpass.kumi.systems/api/interpreter',
@@ -95,12 +96,30 @@ function segmentKey(coords){
   return a < b ? `${a}|${b}` : `${b}|${a}`;
 }
 
-function buildMergedMultiLineFeature(elements, fallbackName, tolerance = 0.001){
-  const segments = [];
-  const seen = new Set();
+function normalizeAmtrakName(name){
+  const value = String(name || '').toLowerCase();
+  if(value.includes('downeaster')) return 'Amtrak Downeaster';
+  if(value.includes('acela') || value.includes('northeast regional') || value.includes('northeast corridor') || /\bnec\b/.test(value)){
+    return 'Amtrak Northeast Corridor';
+  }
+  if(value.includes('lake shore limited')) return 'Amtrak Lake Shore Limited';
+  return name || 'Amtrak track';
+}
+
+function extractLineCoords(geometry){
+  if(!geometry) return [];
+  if(geometry.type === 'LineString') return [geometry.coordinates];
+  if(geometry.type === 'MultiLineString') return geometry.coordinates;
+  return [];
+}
+
+function buildNamedMultiLineFeatures(elements, fallbackName, tolerance = 0.001, clipBbox = null, turf = null){
+  const grouped = new Map();
 
   for(const el of elements || []){
     if(el.type !== 'relation' || !Array.isArray(el.members)) continue;
+    const name = normalizeAmtrakName(el.tags?.name || fallbackName);
+    const group = grouped.get(name) || {name, seen:new Set(), segments:[]};
     for(const member of el.members || []){
       if(member.type !== 'way' || !Array.isArray(member.geometry) || member.geometry.length < 2) continue;
       const coords = simplifyLineCoords(
@@ -108,21 +127,35 @@ function buildMergedMultiLineFeature(elements, fallbackName, tolerance = 0.001){
         tolerance
       );
       if(coords.length < 2) continue;
-      const key = segmentKey(coords);
-      if(seen.has(key)) continue;
-      seen.add(key);
-      segments.push(coords);
+      const clippedGeometries = [];
+      if(clipBbox && turf){
+        try{
+          const clipped = turf.bboxClip(turf.lineString(coords), clipBbox);
+          clippedGeometries.push(...extractLineCoords(clipped.geometry));
+        }catch(err){}
+      } else {
+        clippedGeometries.push(coords);
+      }
+      for(const geomCoords of clippedGeometries){
+        if(!Array.isArray(geomCoords) || geomCoords.length < 2) continue;
+        const key = segmentKey(geomCoords);
+        if(group.seen.has(key)) continue;
+        group.seen.add(key);
+        group.segments.push(geomCoords);
+      }
     }
+    grouped.set(name, group);
   }
 
-  if(!segments.length) return [];
-  return [{
-    name: fallbackName,
-    geometry: {
-      type: 'MultiLineString',
-      coordinates: segments,
-    },
-  }];
+  return [...grouped.values()]
+    .filter(group => group.segments.length)
+    .map(group => ({
+      name: group.name,
+      geometry: {
+        type: 'MultiLineString',
+        coordinates: group.segments,
+      },
+    }));
 }
 
 async function fetchCategory(name, body, outMode = 'center', fallbackName = 'POI'){
@@ -140,7 +173,8 @@ async function fetchAmtrakLines(){
   );out geom;`;
   console.log('Fetching amtrakLines...');
   const data = await overpassRaw(query);
-  return buildMergedMultiLineFeature(data.elements, 'Amtrak track');
+  const turf = await import('@turf/turf');
+  return buildNamedMultiLineFeatures(data.elements, 'Amtrak track', 0.001, AMTRAK_CLIP_BBOX, turf);
 }
 
 async function loadExistingPayload(){

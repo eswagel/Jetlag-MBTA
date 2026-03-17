@@ -1080,16 +1080,129 @@ function hiderPin(){
     </div>`});
 }
 
+function amtrakLineColor(name){
+  if(/downeaster/i.test(name)) return '#4aa3ff';
+  if(/lake shore/i.test(name)) return '#a060ff';
+  return '#20c8b0';
+}
+
+function amtrakLineLabel(name){
+  if(/downeaster/i.test(name)) return 'Downeaster';
+  if(/lake shore/i.test(name)) return 'Lake Shore';
+  return 'NE Corridor';
+}
+
+function renderAmtrakMeasureLines(center, nearestName){
+  const raw = Array.isArray(preloadedData.pois?.amtrakLines) ? preloadedData.pois.amtrakLines : [];
+  if(!raw.length) return;
+  const clipBox = [
+    T_BBOX.minLng - 0.08,
+    T_BBOX.minLat - 0.08,
+    T_BBOX.maxLng + 0.08,
+    T_BBOX.maxLat + 0.08,
+  ];
+  raw.forEach(item => {
+    const feature = coerceFeature(item, item.name);
+    if(!feature) return;
+    let displayFeature = feature;
+    try{
+      const clipped = turf.bboxClip(feature, clipBox);
+      if(clipped?.geometry?.coordinates?.length) displayFeature = clipped;
+    }catch(e){}
+    const name = item.name || feature.properties?.name || 'Amtrak';
+    const active = name === nearestName;
+    const color = amtrakLineColor(name);
+    const lineLayer = L.geoJSON(displayFeature, {
+      interactive: false,
+      style: {
+        color,
+        weight: active ? 5 : 3,
+        opacity: active ? 0.95 : 0.72,
+      }
+    }).addTo(map);
+    pickedMarkers.push(lineLayer);
+
+    const labelPts = pointsFromFeatureGeometry(displayFeature, name);
+    if(!labelPts.length) return;
+    labelPts.sort((a,b)=>turfDist(center,a)-turfDist(center,b));
+    const anchor = labelPts[0];
+    const label = L.tooltip({
+      permanent: true,
+      direction: 'center',
+      className: `measure-line-label${active ? ' active' : ''}`,
+      opacity: 1,
+      offset: [0,0],
+    })
+      .setLatLng([anchor.lat, anchor.lng])
+      .setContent(amtrakLineLabel(name))
+      .addTo(map);
+    pickedMarkers.push(label);
+  });
+}
+
 async function selectMeasureCat(catObj){
   if(!qparams.center){toast('Set your location first');return;}
   qparams._mcat=catObj.label; qparams._mcatlabel=catObj.label; qparams._msearching=true;
   qparams.measure_cat=catObj.label; qparams.measure_cat_label=catObj.label;
-  qparams.measure_seeker_nearest=null; qparams.measure_seeker_dist=null; qparams.measure_all_instances=null;
+  qparams.measure_seeker_nearest=null; qparams.measure_seeker_dist=null; qparams.measure_all_instances=null; qparams.measure_linear_features=null;
   if(catObj.label==='A County Border') highlightBoundary('county');
   else if(catObj.label==='A City Border') highlightBoundary('city');
   else clearBoundaryHighlight();
   renderBuildBody();
   try{
+    if(catObj.label === 'An Amtrak Line'){
+      await loadPoiData();
+      const rawLines = Array.isArray(preloadedData.pois?.amtrakLines) ? preloadedData.pois.amtrakLines : [];
+      const lineFeatures = rawLines
+        .map(item => ({name:item.name, feature:coerceFeature(item, item.name)}))
+        .filter(item => item.feature);
+      if(!lineFeatures.length){
+        toast('No Amtrak lines found in local data');
+        qparams._msearching=false;
+        renderBuildBody();
+        return;
+      }
+
+      const seekerPoint = turf.point([qparams.center.lng, qparams.center.lat]);
+      let best = null;
+      lineFeatures.forEach(item => {
+        try{
+          const snapped = turf.nearestPointOnLine(item.feature, seekerPoint, {units:'miles'});
+          const dist = snapped?.properties?.dist;
+          if(!Number.isFinite(dist)) return;
+          if(!best || dist < best.dist){
+            const [lng, lat] = snapped.geometry.coordinates;
+            best = {name:item.name, lat, lng, dist};
+          }
+        }catch(e){}
+      });
+      if(!best){
+        toast('Could not determine the nearest Amtrak line');
+        qparams._msearching=false;
+        renderBuildBody();
+        return;
+      }
+
+      qparams._msearching=false;
+      qparams.measure_seeker_nearest={lat:best.lat,lng:best.lng,name:best.name};
+      qparams.measure_seeker_dist=best.dist;
+      qparams.measure_linear_features=lineFeatures.map(item => ({
+        name:item.name,
+        geometry:item.feature.geometry,
+      }));
+      qparams.measure_all_instances=[{lat:best.lat,lng:best.lng,name:best.name}];
+
+      clearPoiMarkers();
+      renderAmtrakMeasureLines(qparams.center, best.name);
+      const m=L.marker([best.lat,best.lng],{icon:measurePin(),zIndexOffset:1500}).addTo(map);
+      m.bindPopup(`<div class="stop-popup"><div class="stop-popup-name">${best.name}</div><div style="font-size:9px;color:#f0a030">★ Your nearest point on this line</div></div>`,{offset:[0,-12],maxWidth:220});
+      pickedMarkers.push(m);
+      const bounds = L.latLngBounds([[best.lat,best.lng],[qparams.center.lat,qparams.center.lng]]).pad(0.3);
+      map.fitBounds(bounds);
+      renderBuildBody(); updatePreview(); tryGenerate();
+      return;
+    }
+
     const instances = await getCategoryInstances(catObj, qparams.center, 35000);
     if(!instances.length){toast('No '+catObj.label+' found nearby');qparams._msearching=false;renderBuildBody();return;}
 
@@ -1108,8 +1221,12 @@ async function selectMeasureCat(catObj){
     const POI_CATS_LINEAR = new Set(['An Amtrak Line','A County Border','A City Border','Sea Level','A Coastline']);
     const isLinear = POI_CATS_LINEAR.has(catObj.label);
     if(isLinear){
-      // For linear/edge categories, just show a single teal diamond at the nearest point
+      if(catObj.label === 'An Amtrak Line'){
+        renderAmtrakMeasureLines(qparams.center, nearest.name);
+      }
+      // For linear/edge categories, show a single teal diamond at the nearest point
       const m=L.marker([nearest.lat,nearest.lng],{icon:measurePin(),zIndexOffset:1500}).addTo(map);
+      m.bindPopup(`<div class="stop-popup"><div class="stop-popup-name">${nearest.name}</div><div style="font-size:9px;color:#f0a030">★ Your nearest point on this line</div></div>`,{offset:[0,-12],maxWidth:220});
       pickedMarkers.push(m);
     } else {
       // For POI categories, show numbered teardrop pins
