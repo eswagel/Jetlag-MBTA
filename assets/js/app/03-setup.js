@@ -157,6 +157,7 @@ function onMapClick(e){
   }
   renderBuildBody();
   updatePreview();
+  if(qtype === 'thermo') tryGenerate();
 }
 
 // ══════════════════════════════════════════════════════
@@ -195,6 +196,7 @@ function useMyLocation(key, stepIndex){
       }
       renderBuildBody();
       updatePreview();
+      if(qtype === 'thermo') tryGenerate();
       toast(`📡 Got your location (±${Math.round(pos.coords.accuracy)}m)`);
     },
     (err)=>{
@@ -211,7 +213,7 @@ function useMyLocation(key, stepIndex){
 // ══════════════════════════════════════════════════════
 function selectQType(type){
   qtype=type;
-  qparams={radius_miles:1, travel_miles:1};
+  qparams={radius_miles:1, travel_miles:0.5};
   pickStep=-1; pickStepDefs=QDEFS[type].pickSteps;
   clearMarkers(); previewLayer.clearLayers(); simulLayer.clearLayers(); simulMaskLayer.clearLayers();
   if(typeof setPreviewMapMode === 'function') setPreviewMapMode(false);

@@ -239,18 +239,82 @@ function renderRadarParams(){
 }
 
 function renderThermoParams(){
-  const presets=[{r:0.5,l:'½ mi'},{r:1,l:'1 mi'},{r:2,l:'2 mi'},{r:3,l:'3 mi'},{r:5,l:'5 mi'}];
-  const isCustom = qparams.travel_miles && !presets.find(p=>p.r===qparams.travel_miles);
+  const presets=[{r:0.5,l:'1/2 mi'},{r:3,l:'3 mi'},{r:10,l:'10 mi'}];
   let h='<div class="sec">Travel Distance</div><div class="axrow" style="flex-wrap:wrap;gap:5px">';
   presets.forEach(p=>{
-    h+=`<div class="axbtn ${qparams.travel_miles===p.r?'on':''}" onclick="${_c(()=>{setParam('travel_miles',p.r);setParam('_customT',false);updatePreview();tryGenerate();renderBuildBody();})}">${p.l}</div>`;
+    h+=`<div class="axbtn ${qparams.travel_miles===p.r?'on':''}" onclick="${_c(()=>selectThermoDistance(p.r))}">${p.l}</div>`;
   });
-  h+=`<div class="axbtn ${isCustom||qparams._customT?'on':''}" onclick="${_c(()=>{setParam('_customT',true);renderBuildBody();})}">Custom</div></div>`;
-  if(isCustom||qparams._customT)
-    h+=`<div class="param"><div class="plabel">Miles <span class="pval" id="tv">${qparams.travel_miles||1}</span></div>
-    <input type="range" min="0.1" max="10" step="0.1" value="${qparams.travel_miles||1}"
-    oninput="setParam('travel_miles',+this.value);document.getElementById('tv').textContent=this.value;updatePreview();tryGenerate()"></div>`;
+  h+='</div>';
+  if(!qparams.center){
+    h+='<p class="empty" style="margin-top:8px;font-size:9px">Set your current location above first.</p>';
+    return h;
+  }
+  h+=`<div class="found-result" style="margin-top:10px">
+    <b>Step 2:</b> Pick where you would move next
+    <div style="font-size:8px;color:var(--dim);margin-top:4px">Drag the gold point around the ring to choose any endpoint exactly ${qparams.travel_miles || 0.5} miles from your current location.</div>
+  </div>`;
+  if(qparams.thermo_dest){
+    h+=`<div class="found-result" style="margin-top:8px">
+      <b>Selected endpoint:</b> ${qparams.thermo_dest.lat.toFixed(4)}, ${qparams.thermo_dest.lng.toFixed(4)}
+      <div style="font-size:8px;color:var(--dim);margin-top:4px">The dashed line is the divider through your current location: points in the travel direction are “closer,” points behind it are “further.”</div>
+    </div>`;
+  }
   return h;
+}
+
+function selectThermoDistance(miles){
+  qparams.travel_miles = miles;
+  qparams.thermo_dest = getDefaultThermoDest(qparams.center, miles);
+  renderBuildBody();
+  updatePreview();
+  tryGenerate();
+}
+
+function thermoPointAtBearing(center, miles, bearing){
+  if(!center || !miles) return null;
+  const dest = turf.destination(turf.point([center.lng, center.lat]), miles, bearing, {units:'miles'});
+  const [lng, lat] = dest.geometry.coordinates;
+  return {lat, lng};
+}
+
+function getDefaultThermoDest(center, miles){
+  return thermoPointAtBearing(center, miles, 90);
+}
+
+function snapThermoDest(latLng){
+  if(!qparams.center || !qparams.travel_miles) return null;
+  const bearing = turf.bearing(toPt(qparams.center), toPt(latLng));
+  return thermoPointAtBearing(qparams.center, qparams.travel_miles, bearing);
+}
+
+function syncThermoHandleMarker(){
+  if(qtype !== 'thermo'){
+    clearPoiMarkers();
+    return;
+  }
+  if(!qparams.center || !qparams.travel_miles) return;
+  if(!qparams.thermo_dest) qparams.thermo_dest = getDefaultThermoDest(qparams.center, qparams.travel_miles);
+  if(!thermoHandleMarker){
+    thermoHandleMarker = L.marker([qparams.thermo_dest.lat, qparams.thermo_dest.lng], {
+      draggable: true,
+      icon: seekerPin('#f0a030'),
+      zIndexOffset: 2600,
+    }).addTo(map);
+    thermoHandleMarker.on('drag', e => {
+      const snapped = snapThermoDest(e.target.getLatLng());
+      if(!snapped) return;
+      e.target.setLatLng([snapped.lat, snapped.lng]);
+      qparams.thermo_dest = snapped;
+      updatePreview();
+    });
+    thermoHandleMarker.on('dragend', () => {
+      renderBuildBody();
+      updatePreview();
+      tryGenerate();
+    });
+  } else {
+    thermoHandleMarker.setLatLng([qparams.thermo_dest.lat, qparams.thermo_dest.lng]);
+  }
 }
 
 function renderMeasureParams(){
@@ -1121,6 +1185,7 @@ async function selectTentacleCat(catObj){
 
 function restartPick(){
   QDEFS[qtype].pickSteps.forEach(s=>delete qparams[s.key]);
+  if(qtype === 'thermo') delete qparams.thermo_dest;
   clearMarkers();previewLayer.clearLayers();pickStep=0;
   document.getElementById('json-out-section').style.display='none';
   showBanner(pickStepDefs[0].label);
@@ -1132,11 +1197,24 @@ function updatePreview(){
   previewLayer.clearLayers();if(!qtype)return;
   try{
     if(qtype==='radar'&&qparams.center&&qparams.radius_miles) previewLayer.addData(makeCircle(qparams.center,qparams.radius_miles,'miles'));
-    if(qtype==='thermo'&&qparams.center&&qparams.travel_miles) previewLayer.addData(makeCircle(qparams.center,qparams.travel_miles,'miles'));
+    if(qtype==='thermo'){
+      syncThermoHandleMarker();
+      if(qparams.center&&qparams.travel_miles) previewLayer.addData(makeCircle(qparams.center,qparams.travel_miles,'miles'));
+      if(qparams.center&&qparams.thermo_dest){
+        previewLayer.addData(turf.lineString([
+          [qparams.center.lng, qparams.center.lat],
+          [qparams.thermo_dest.lng, qparams.thermo_dest.lat],
+        ]));
+        previewLayer.addData(thermoDividerLine(qparams.center, qparams.thermo_dest));
+      }
+    }
     if(qtype==='measure'&&qparams.measure_seeker_nearest&&qparams.measure_seeker_dist) previewLayer.addData(makeCircle(qparams.measure_seeker_nearest,qparams.measure_seeker_dist,'miles'));
     if(qtype==='tentacles'&&qparams.center&&qparams.radius_miles) previewLayer.addData(makeCircle(qparams.center,qparams.radius_miles,'miles'));
     if(qtype==='custom_boundary'&&qparams.custom_boundary_geojson) previewLayer.addData(qparams.custom_boundary_geojson);
   }catch(e){}
+  if(previewLayer?.bringToFront) previewLayer.bringToFront();
+  if(thermoHandleMarker?.bringToFront) thermoHandleMarker.bringToFront();
+  refreshActiveAnswerPreview();
 }
 
 function generateJSON(){
@@ -1238,7 +1316,7 @@ function clearZonePreview(){
   setPreviewMapMode(false);
 }
 
-function renderZonePreviewResult(result, label, color){
+function renderZonePreviewResult(result, label, color, shouldFit=true){
   if(!result) return;
   const hint = document.getElementById('simul-hint');
   const eliminated = safeDiff(validZone, result);
@@ -1253,7 +1331,9 @@ function renderZonePreviewResult(result, label, color){
   };
   simulLayer.addData(result);
   if(eliminated) simulMaskLayer.addData(eliminated);
-  try{ map.fitBounds(L.geoJSON(result).getBounds().pad(0.12)); }catch(e){}
+  if(shouldFit){
+    try{ map.fitBounds(L.geoJSON(result).getBounds().pad(0.12)); }catch(e){}
+  }
   const area = (turf.area(result)/1e6).toFixed(1);
   const pctRemain = validZone ? Math.round(turf.area(result)/turf.area(validZone)*100) : '?';
   const pctElim = typeof pctRemain === 'number' ? 100 - pctRemain : '?';
@@ -1266,14 +1346,41 @@ function renderZonePreviewResult(result, label, color){
   document.getElementById('map-simul-bar').classList.add('visible');
 }
 
+function getLivePreviewQuestion(){
+  if(!qtype || !QDEFS[qtype] || !QDEFS[qtype].isReady(qparams)) return null;
+  try{
+    return QDEFS[qtype].toJSON(qparams);
+  }catch(e){
+    return null;
+  }
+}
+
+function refreshActiveAnswerPreview(){
+  if(!_simulActive || !qtype) return;
+  const def = QDEFS[qtype];
+  const opts = SIMUL_OPTS[qtype];
+  if(!def || !opts) return;
+  const opt = opts.find(o=>o.val===_simulActive);
+  if(!opt) return;
+  const liveQ = getLivePreviewQuestion();
+  if(!liveQ) return;
+  try{
+    const q = {...liveQ, answer:_simulActive};
+    const result = def.applyToZone(validZone, q);
+    if(!result) return;
+    renderZonePreviewResult(result, `${opt.icon} ${opt.label}`, opt.color, false);
+  }catch(e){}
+}
+
 function renderSimulBtns(json){
-  _simulActive = null;
-  clearZonePreview();
   const opts = SIMUL_OPTS[json.type];
   const container = document.getElementById('simul-btns');
   const hint      = document.getElementById('simul-hint');
   const bar       = document.getElementById('map-simul-bar');
   const msbBtns   = document.getElementById('msb-btns');
+  const preserved = opts?.some(o=>o.val===_simulActive) ? _simulActive : null;
+  _simulActive = preserved;
+  clearZonePreview();
   hint.className  = 'simul-result-hint';
   if(!opts){
     container.innerHTML='';
@@ -1298,7 +1405,15 @@ function renderSimulBtns(json){
      </button>`
   ).join('');
   bar.classList.add('visible');
-  document.getElementById('msb-area').innerHTML = 'green stays · red goes';
+  if(_simulActive){
+    const btn  = document.getElementById(`sb-${_simulActive}`);
+    const mbtn = document.getElementById(`msb-${_simulActive}`);
+    if(btn) btn.classList.add('active');
+    if(mbtn) mbtn.classList.add('active');
+    refreshActiveAnswerPreview();
+  } else {
+    document.getElementById('msb-area').innerHTML = 'green stays · red goes';
+  }
 }
 
 function previewAnswer(val){
@@ -1327,7 +1442,9 @@ function previewAnswer(val){
   const col = opt ? opt.color : '#20c8b0';
 
   try {
-    const q = {...JSON.parse(document.getElementById('json-out').value), answer: val};
+    const liveQ = getLivePreviewQuestion();
+    const baseQ = liveQ || JSON.parse(document.getElementById('json-out').value);
+    const q = {...baseQ, answer: val};
     const result = def.applyToZone(validZone, q);
     if(!result){ toast('Nothing left in zone for this answer'); return; }
     renderZonePreviewResult(result, opt ? `${opt.icon} ${opt.label}` : val, col);

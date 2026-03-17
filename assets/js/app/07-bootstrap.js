@@ -27,10 +27,12 @@ function toast(msg,ms=2400){const el=document.getElementById('toast');el.textCon
 function clearMarkers(){
   pickedMarkers.forEach(m=>m.remove()); pickedMarkers=[];
   seekerPinMarkers.forEach(m=>m.remove()); seekerPinMarkers=[];
+  if(thermoHandleMarker){ thermoHandleMarker.remove(); thermoHandleMarker = null; }
 }
 function clearPoiMarkers(){
   // Only clear POI teardrops, not the seeker location dot
   pickedMarkers.forEach(m=>m.remove()); pickedMarkers=[];
+  if(thermoHandleMarker){ thermoHandleMarker.remove(); thermoHandleMarker = null; }
 }
 
 initMap();

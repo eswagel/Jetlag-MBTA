@@ -230,9 +230,11 @@ async function hiderComputeAnswer(hiderLoc){
     explanation = `You are ${d.toFixed(2)}mi from the radar center (radius: ${q.radius_miles}mi) → <b>${answer.toUpperCase()}</b>`;
 
   } else if(q.type === 'thermo'){
-    const d = turfDist(hiderLoc, q.center);
-    answer = d <= q.travel_miles ? 'closer' : 'further';
-    explanation = `You are ${d.toFixed(2)}mi from the seeker (threshold: ${q.travel_miles}mi) → <b>${answer.toUpperCase()}</b>`;
+    const h = projectLocal(hiderLoc, q.center);
+    const d = projectLocal(q.thermo_dest, q.center);
+    const dot = h.x * d.x + h.y * d.y;
+    answer = dot >= 0 ? 'closer' : 'further';
+    explanation = `Using the travel direction from the seeker's current location, you are ${answer === 'closer' ? 'ahead of' : 'behind'} the divider line after a ${q.travel_miles}mi move → <b>${answer.toUpperCase()}</b>`;
 
   } else if(q.type === 'measure'){
     // Find hider's nearest instance from all_instances
@@ -318,7 +320,7 @@ function openAnswerModal(q, def, isRandom=false){
 function describeQuestion(q, def){
   const m = {
     radar:     ()=>`Is the hider within <b>${q.radius_miles} mile${q.radius_miles!==1?'s':''}</b> of the seeker's location?`,
-    thermo:    ()=>`After traveling <b>${q.travel_miles} mile${q.travel_miles!==1?'s':''}</b>, is the hider closer or further from the seeker's start point?`,
+    thermo:    ()=>`After the seekers move <b>${q.travel_miles} mile${q.travel_miles!==1?'s':''}</b> in the chosen direction, are you on the <b>closer</b> side or the <b>further</b> side of the divider through their current location?`,
     measure:   ()=>`Are you closer or further from your nearest <b>${q.category_label}</b> than the seeker? (Seeker is <b>${q.seeker_dist?.toFixed(2)}mi</b> from theirs)`,
     tentacles: ()=>`Are you within <b>${q.radius_miles||1} mile</b> of the seeker? If yes — which of these are you closest to?<br><br>${(q.options||[]).map((o,i)=>`<b>${i+1}.</b> ${o.name}`).join('<br>')}`,
     matching:   ()=>`Are you in the same <b>${q.category_label}</b> as the seeker? (Seeker's: <b>${q.seeker_val}</b>)`,
@@ -331,7 +333,7 @@ function describeQuestion(q, def){
 const QICONS = { radar:'📡', thermo:'🌡️', measure:'📏', tentacles:'🐙', matching:'🎱', nearest:'📌', photo:'📸' };
 const QDESC  = {
   radar:     'Set your location and pick a radius — is the hider within that circle?',
-  thermo:    'Set your position and a travel distance — is the hider closer or further than that distance from you?',
+  thermo:    'Set your current position, choose a move distance, and pick an endpoint on that ring. The divider through your current location splits the map into the travel-direction side (closer) and the opposite side (further).',
   measure:   'Pick a landmark type — the app finds the nearest one to you. Is the hider closer or further from it?',
   tentacles: 'Set your location — is the hider nearby? If yes, which of the found options are they closest to?',
   matching:  "Are you in the same county/city/neighborhood/ZIP as the seeker?",

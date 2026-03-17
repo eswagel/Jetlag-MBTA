@@ -39,6 +39,7 @@ let townLayer, countyLayer, boundaryHighlightLayer;
 const commuterRailStops = new Set();
 const commuterRailStopsList = [];
 let seekerPinMarkers = []; // seeker location dots — preserved across POI category changes
+let thermoHandleMarker = null;
 let validZone = cloneGeo(INIT_POLY);
 let constraints = [];
 let qtype=null, qparams={}, pickStep=-1, pickStepDefs=[];
@@ -443,10 +444,14 @@ const QDEFS = {
   thermo:{
     label:'Thermometer', colorTag:'tag-thermo',
     pickSteps:[{key:'center', label:'Tap map — your current position'}],
-    isReady:p=>p.center&&p.travel_miles,
-    toJSON:p=>({type:'thermo',center:p.center,travel_miles:p.travel_miles}),
-    applyToZone:(zone,q)=>q.answer==='closer'?safeIsect(zone,makeCircle(q.center,q.travel_miles,'miles')):safeDiff(zone,makeCircle(q.center,q.travel_miles,'miles')),
-    describe:q=>`<b>${q.answer==='closer'?'CLOSER':'FURTHER'}</b> than ${q.travel_miles}mi from seeker`
+    isReady:p=>p.center&&p.travel_miles&&p.thermo_dest,
+    toJSON:p=>({type:'thermo',center:p.center,travel_miles:p.travel_miles,thermo_dest:p.thermo_dest}),
+    applyToZone:(zone,q)=>{
+      if(!q.center || !q.thermo_dest) return zone;
+      const half = thermoHalf(q.center, q.thermo_dest, q.answer==='closer' ? 'b' : 'a');
+      return safeIsect(zone, half);
+    },
+    describe:q=>`<b>${q.answer==='closer'?'CLOSER':'FURTHER'}</b> to seeker after moving ${q.travel_miles}mi`
   },
   measure:{
     label:'Measure', colorTag:'tag-measure',
@@ -611,16 +616,57 @@ function compassHalf(ref,dir){
   return turf.polygon([h]);
 }
 
-function bisectorHalf(ptA,ptB,side){
-  const pa=toPt(ptA),pb=toPt(ptB),mid=turf.midpoint(pa,pb);
-  const bearAB=turf.bearing(pa,pb);
-  const toward=side==='a'?(bearAB+180)%360:bearAB;
-  const FAR=1500;
-  const bL=turf.destination(mid,FAR,bearAB+90,{units:'kilometers'}).geometry.coordinates;
-  const bR=turf.destination(mid,FAR,bearAB-90,{units:'kilometers'}).geometry.coordinates;
-  const c1=turf.destination(turf.point(bL),FAR,toward,{units:'kilometers'}).geometry.coordinates;
-  const c2=turf.destination(turf.point(bR),FAR,toward,{units:'kilometers'}).geometry.coordinates;
-  return turf.polygon([[bL,c1,c2,bR,bL]]);
+function projectLocal(ll, origin){
+  const lat0 = origin.lat * Math.PI / 180;
+  return {
+    x: (ll.lng - origin.lng) * 111.320 * Math.cos(lat0),
+    y: (ll.lat - origin.lat) * 110.574,
+  };
+}
+
+function unprojectLocal(pt, origin){
+  const lat0 = origin.lat * Math.PI / 180;
+  return [
+    origin.lng + pt.x / (111.320 * Math.cos(lat0)),
+    origin.lat + pt.y / 110.574,
+  ];
+}
+
+function normVec(v){
+  const d = Math.hypot(v.x, v.y) || 1;
+  return {x: v.x / d, y: v.y / d};
+}
+
+function dividerFrame(ptA, ptB){
+  const origin = {lat: ptA.lat, lng: ptA.lng};
+  const b = projectLocal(ptB, origin);
+  const along = normVec({x: b.x, y: b.y});
+  const perp = {x: -along.y, y: along.x};
+  return {origin, along, perp};
+}
+
+function thermoHalf(ptA,ptB,side){
+  const {origin, along, perp} = dividerFrame(ptA, ptB);
+  const toward = side === 'a' ? {x: -along.x, y: -along.y} : along;
+  const halfWidthKm = 800;
+  const depthKm = 1200;
+  const ring = [
+    unprojectLocal({x: perp.x * halfWidthKm, y: perp.y * halfWidthKm}, origin),
+    unprojectLocal({x: perp.x * halfWidthKm + toward.x * depthKm, y: perp.y * halfWidthKm + toward.y * depthKm}, origin),
+    unprojectLocal({x: -perp.x * halfWidthKm + toward.x * depthKm, y: -perp.y * halfWidthKm + toward.y * depthKm}, origin),
+    unprojectLocal({x: -perp.x * halfWidthKm, y: -perp.y * halfWidthKm}, origin),
+    unprojectLocal({x: perp.x * halfWidthKm, y: perp.y * halfWidthKm}, origin),
+  ];
+  return turf.polygon([ring]);
+}
+
+function thermoDividerLine(ptA,ptB){
+  const {origin, perp} = dividerFrame(ptA, ptB);
+  const reachKm = 1200;
+  return turf.lineString([
+    unprojectLocal({x: perp.x * reachKm, y: perp.y * reachKm}, origin),
+    unprojectLocal({x: -perp.x * reachKm, y: -perp.y * reachKm}, origin),
+  ]);
 }
 
 function makeBand(a,b,axis){
