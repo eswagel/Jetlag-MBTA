@@ -112,84 +112,11 @@ async function fetchNominatimBoundary(query, featureClass, adminLevel){
   }
 }
 
-// ── Landmass precomputation ──
-// One Overpass query at startup → land pieces → each stop gets a landmass index
 const _landmassCache = {
   ready: false,
   pieces: [],           // array of Turf polygon Features
   stopIndex: {},        // stopId → piece index
 };
-
-async function precomputeLandmasses(){
-  // Bounding box covers the whole MBTA network area
-  const S=41.85, N=42.80, W=-71.70, E=-70.40;
-
-  const overpassQ = `[out:json][timeout:30];(
-    way["natural"~"^(water|bay|coastline)$"](${S},${W},${N},${E});
-    way["waterway"="riverbank"](${S},${W},${N},${E});
-    relation["natural"~"^(water|bay)$"](${S},${W},${N},${E});
-    relation["waterway"="riverbank"](${S},${W},${N},${E});
-  );out geom;`;
-
-  const endpoints=[
-    'https://overpass-api.de/api/interpreter',
-    'https://overpass.kumi.systems/api/interpreter'
-  ];
-  let data;
-  for(const url of endpoints){
-    try{
-      const res=await fetch(url,{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'data='+encodeURIComponent(overpassQ)});
-      if(res.ok){data=await res.json();break;}
-    }catch(e){}
-  }
-  if(!data||!data.elements?.length){ console.warn('Landmass precompute: no water data'); return; }
-
-  // Build water polygons
-  const waterPolys=[];
-  const tryAdd=(geom)=>{
-    if(!geom||geom.length<4) return;
-    try{
-      let c=geom.map(p=>[p.lon,p.lat]);
-      const f=c[0],l=c[c.length-1];
-      if(f[0]!==l[0]||f[1]!==l[1]) c.push(f);
-      if(c.length>=4) waterPolys.push(turf.polygon([c]));
-    }catch(e){}
-  };
-  data.elements.forEach(el=>{
-    if(el.type==='way') tryAdd(el.geometry);
-    if(el.type==='relation'&&el.members)
-      el.members.forEach(m=>{ if(m.type==='way') tryAdd(m.geometry); });
-  });
-
-  if(!waterPolys.length){ console.warn('Landmass precompute: no valid water polys'); return; }
-
-  // Build land = bbox minus water
-  let land=turf.bboxPolygon([W,S,E,N]);
-  for(const w of waterPolys){
-    try{ land=turf.difference(land,w)||land; }catch(e){}
-  }
-
-  // Extract pieces
-  const geom=land.geometry||land;
-  if(geom.type==='Polygon') _landmassCache.pieces=[turf.polygon(geom.coordinates)];
-  else if(geom.type==='MultiPolygon') _landmassCache.pieces=geom.coordinates.map(c=>turf.polygon(c));
-  else if(land.geometry?.type==='Polygon') _landmassCache.pieces=[turf.polygon(land.geometry.coordinates)];
-  else if(land.geometry?.type==='MultiPolygon') _landmassCache.pieces=land.geometry.coordinates.map(c=>turf.polygon(c));
-
-  // Assign each stop to a piece
-  const stops=Object.entries(stopLineMap);
-  for(const [sid,s] of stops){
-    const pt=turf.point([s.lng,s.lat]);
-    const idx=_landmassCache.pieces.findIndex(p=>{
-      try{return turf.booleanPointInPolygon(pt,p);}catch(e){return false;}
-    });
-    if(idx>=0) _landmassCache.stopIndex[sid]=idx;
-  }
-
-  _landmassCache.ready=true;
-  const uniquePieces=new Set(Object.values(_landmassCache.stopIndex)).size;
-  console.log(`Landmass: ${_landmassCache.pieces.length} pieces, ${stops.length} stops assigned, ${uniquePieces} distinct landmasses`);
-}
 
 function findContainingLandmass(latLng){
   if(!_landmassCache.ready) return null;
