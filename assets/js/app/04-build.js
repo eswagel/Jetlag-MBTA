@@ -191,10 +191,19 @@ async function precomputeLandmasses(){
   console.log(`Landmass: ${_landmassCache.pieces.length} pieces, ${stops.length} stops assigned, ${uniquePieces} distinct landmasses`);
 }
 
-// Return the landmass polygon for a given lat/lng (finds nearest stop, uses its cached piece)
-function landmassForPoint(latLng){
+function findContainingLandmass(latLng){
   if(!_landmassCache.ready) return null;
-  // Find nearest stop
+  const pt = turf.point([latLng.lng, latLng.lat]);
+  for(const piece of _landmassCache.pieces){
+    try{
+      if(turf.booleanPointInPolygon(pt, piece)) return piece;
+    }catch(e){}
+  }
+  return null;
+}
+
+function findNearestStopLandmass(latLng){
+  if(!_landmassCache.ready) return null;
   const stops=Object.entries(stopLineMap);
   if(!stops.length) return null;
   let nearestSid=null, nearestDist=Infinity;
@@ -205,15 +214,18 @@ function landmassForPoint(latLng){
   if(!nearestSid) return null;
   const idx=_landmassCache.stopIndex[nearestSid];
   if(idx===undefined) return null;
-  const piece=_landmassCache.pieces[idx];
-  return {
-    type:'Feature',
-    properties:{
-      id: piece.properties?.id,
-      name: piece.properties?.name || 'Landmass',
-    },
-    geometry:piece.geometry
-  };
+  return _landmassCache.pieces[idx] || null;
+}
+
+// Return the landmass polygon for a given lat/lng.
+// Prefer direct point-in-polygon against the preloaded regions; use nearest stop
+// only as a fallback for tiny gaps introduced by manual drawing/simplification.
+function landmassForPoint(latLng){
+  const direct = findContainingLandmass(latLng);
+  if(direct) return direct;
+  const fallback = findNearestStopLandmass(latLng);
+  if(fallback) return fallback;
+  return null;
 }
 
 // Old per-question async resolver — now just a fast lookup

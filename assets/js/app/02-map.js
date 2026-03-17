@@ -316,4 +316,5 @@ async function loadLandmassData(){
   })).filter(piece => piece.geometry?.type === 'Polygon' || piece.geometry?.type === 'MultiPolygon');
   _landmassCache.stopIndex = {...(data.stops || {})};
   _landmassCache.ready = _landmassCache.pieces.length > 0;
+  if(_landmassCache.ready && typeof renderBuildBody === 'function') renderBuildBody();
 }
