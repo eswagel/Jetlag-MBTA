@@ -92,16 +92,49 @@ function closeResult(){
 function renderLog(){
   const el = document.getElementById('log-list');
   if(!constraints.length){ el.innerHTML='<p class="empty">No constraints applied yet.</p>'; return; }
-  el.innerHTML = constraints.map(q => {
+  el.innerHTML = constraints.map((q, idx) => {
+    const canDelete = q.type !== '_setup';
+    const delBtn = canDelete
+      ? `<button class="cdelete" onclick="deleteConstraintAt(${idx})" title="Delete and recompute zone">✕</button>`
+      : '';
     if(q.type==='_setup')
-      return `<div class="citem"><span class="ctag" style="background:rgba(240,160,48,0.2);color:var(--gold)">SETUP</span><div class="cdesc"><b>${q._label}</b></div></div>`;
+      return `<div class="citem"><span class="ctag" style="background:rgba(240,160,48,0.2);color:var(--gold)">SETUP</span><div class="cdesc"><b>${q._label}</b></div>${delBtn}</div>`;
     if(q.type==='_veto')
-      return `<div class="citem"><span class="ctag" style="background:rgba(232,64,64,0.15);color:var(--accent)">VETO</span><div class="cdesc"><b>Question vetoed — no info gained</b></div></div>`;
+      return `<div class="citem"><span class="ctag" style="background:rgba(232,64,64,0.15);color:var(--accent)">VETO</span><div class="cdesc"><b>Question vetoed — no info gained</b></div>${delBtn}</div>`;
     if(q.type==='_randomize_card'){
       const def=QDEFS[q._qtype];
-      return `<div class="citem"><span class="ctag" style="background:rgba(160,96,255,0.2);color:var(--purple)">RANDOM</span><div class="cdesc"><b>Randomize card played</b> — new question type: <b>${def?def.label:q._qtype}</b></div></div>`;
+      return `<div class="citem"><span class="ctag" style="background:rgba(160,96,255,0.2);color:var(--purple)">RANDOM</span><div class="cdesc"><b>Randomize card played</b> — new question type: <b>${def?def.label:q._qtype}</b></div>${delBtn}</div>`;
     }
     const def=QDEFS[q.type];
-    return `<div class="citem"><span class="ctag ${def?def.colorTag:'tag-radar'}">${def?def.label:q.type}</span><div class="cdesc">${def?def.describe(q):JSON.stringify(q)}</div></div>`;
+    return `<div class="citem"><span class="ctag ${def?def.colorTag:'tag-radar'}">${def?def.label:q.type}</span><div class="cdesc">${def?def.describe(q):JSON.stringify(q)}</div>${delBtn}</div>`;
   }).join('');
+}
+
+function recomputeZoneFromConstraints(){
+  const baseZone = buildHideRadiusZone();
+  if(!baseZone){
+    toast('Could not rebuild base zone');
+    return false;
+  }
+  validZone = baseZone;
+  drawHideRadiusVisuals();
+  for(const q of constraints){
+    if(q.type === '_setup' || q.type === '_veto' || q.type === '_randomize_card') continue;
+    const def = QDEFS[q.type];
+    if(!def) continue;
+    validZone = def.applyToZone(validZone, q) || validZone;
+  }
+  renderZone();
+  renderLog();
+  saveGame();
+  return true;
+}
+
+function deleteConstraintAt(index){
+  if(index < 0 || index >= constraints.length) return;
+  if(constraints[index]?.type === '_setup') return;
+  constraints.splice(index, 1);
+  if(recomputeZoneFromConstraints()){
+    toast('Constraint removed and zone recomputed');
+  }
 }

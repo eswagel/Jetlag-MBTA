@@ -278,8 +278,19 @@
 
     .citem { display: flex; align-items: flex-start; gap: 9px; padding: 9px; background: var(--panel2); border: 1px solid var(--border); border-radius: 8px; margin-bottom: 6px; }
     .ctag { font-size: 7.5px; text-transform: uppercase; letter-spacing: 0.08em; font-weight: 700; padding: 2px 6px; border-radius: 4px; flex-shrink: 0; margin-top: 1px; }
-    .cdesc { font-size: 9px; color: var(--dim); line-height: 1.6; font-family: 'IBM Plex Mono', monospace; }
+    .cdesc { font-size: 9px; color: var(--dim); line-height: 1.6; font-family: 'IBM Plex Mono', monospace; flex: 1; min-width: 0; }
     .cdesc b { color: var(--text); font-weight: normal; }
+    .cdelete {
+      margin-left: auto; flex-shrink: 0;
+      width: 22px; height: 22px; border-radius: 6px;
+      border: 1px solid rgba(232,64,64,0.35);
+      background: rgba(232,64,64,0.10);
+      color: #ff8c8c; cursor: pointer;
+      font-family: 'Space Mono', monospace; font-size: 11px; line-height: 1;
+      display: inline-flex; align-items: center; justify-content: center;
+      transition: all 0.15s;
+    }
+    .cdelete:active { transform: scale(0.96); }
 
     .tag-radar     { background: rgba(232,64,64,0.2);   color: var(--accent); }
     .tag-thermo    { background: rgba(240,160,48,0.2);  color: var(--gold); }

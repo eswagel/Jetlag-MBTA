@@ -32,15 +32,32 @@ function promptHiderStationPick(){
   showBanner('🫣 TAP YOUR STATION on the map to set your hiding location');
 }
 
-function applyHideRadius(){
+function buildHideRadiusZone(){
   const stops = Object.values(stopLineMap);
   console.log(`applyHideRadius: ${stops.length} stops in stopLineMap`);
   if(!stops.length){
-    toast('⚠ Stop data not loaded yet — check console');
-    return;
+    return null;
   }
 
   // Draw individual radius circles for each stop using L.circle (meters, always crisp)
+  const radiusMeters = hideRadiusMi * 1609.34;
+
+  // Build union of all circles for zone clipping
+  let union = makeCircle(stops[0], hideRadiusMi, 'miles');
+  for(let i=1; i<stops.length; i++){
+    try{
+      const c = makeCircle(stops[i], hideRadiusMi, 'miles');
+      union = turf.union(union, c) || union;
+    }catch(e){}
+  }
+
+  // Intersect with full bounding area
+  return safeIsect(INIT_POLY, union);
+}
+
+function drawHideRadiusVisuals(){
+  const stops = Object.values(stopLineMap);
+  if(!stops.length) return;
   radiusLayer.clearLayers();
   const radiusMeters = hideRadiusMi * 1609.34;
   stops.forEach(s => {
@@ -55,18 +72,17 @@ function applyHideRadius(){
       interactive: false
     }).addTo(radiusLayer);
   });
+}
 
-  // Build union of all circles for zone clipping
-  let union = makeCircle(stops[0], hideRadiusMi, 'miles');
-  for(let i=1; i<stops.length; i++){
-    try{
-      const c = makeCircle(stops[i], hideRadiusMi, 'miles');
-      union = turf.union(union, c) || union;
-    }catch(e){}
+function applyHideRadius(){
+  const zone = buildHideRadiusZone();
+  if(!zone){
+    toast('⚠ Stop data not loaded yet — check console');
+    return;
   }
 
-  // Intersect with full bounding area
-  validZone = safeIsect(INIT_POLY, union);
+  drawHideRadiusVisuals();
+  validZone = zone;
   constraints = [{
     type:'_setup',
     answer:'applied',
