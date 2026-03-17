@@ -68,9 +68,9 @@ function applyGameMode(){
 
   // Tab visibility config per mode
   const MODES = {
-    seeker: { tabs: ['build','apply','log'], default: 'build',  badge: '🔭 Seeker',  cls: 'seeker' },
+    seeker: { tabs: ['build','boundary','log'], default: 'build',  badge: '🔭 Seeker',  cls: 'seeker' },
     hider:  { tabs: ['hider'],               default: 'hider',   badge: '🫣 Hider',   cls: 'hider'  },
-    dev:    { tabs: ['build','hider','apply','log'], default: 'build', badge: '🛠 Dev', cls: 'dev'    },
+    dev:    { tabs: ['build','boundary','hider','log'], default: 'build', badge: '🛠 Dev', cls: 'dev'    },
   };
   const cfg = MODES[gameMode] || MODES.dev;
 
@@ -565,6 +565,23 @@ const QDEFS = {
     toJSON:p=>({type:'photo',prompt:p.photo_prompt}),
     applyToZone:(zone)=>zone,
     describe:q=>`📸 ${q.prompt}`
+  },
+  custom_boundary:{
+    label:'Boundary', colorTag:'tag-nearest',
+    pickSteps:[],
+    isReady:p=>Array.isArray(p.custom_boundary_points) && p.custom_boundary_points.length >= 3 && !!p.custom_boundary_mode,
+    toJSON:p=>({
+      type:'custom_boundary',
+      boundary_geojson:p.custom_boundary_geojson,
+      mode:p.custom_boundary_mode,
+    }),
+    applyToZone:(zone,q)=>{
+      if(!q.boundary_geojson) return zone;
+      return q.mode === 'include'
+        ? safeIsect(zone, q.boundary_geojson)
+        : safeDiff(zone, q.boundary_geojson);
+    },
+    describe:q=>`<b>${q.mode==='include'?'INCLUDE':'EXCLUDE'}</b> custom boundary`
   }
 };
 
@@ -610,4 +627,16 @@ function makeBand(a,b,axis){
   const BIG=40;
   if(axis==='lat'){const mn=Math.min(a.lat,b.lat),mx=Math.max(a.lat,b.lat);return turf.polygon([[[-BIG*4,mn],[BIG*4,mn],[BIG*4,mx],[-BIG*4,mx],[-BIG*4,mn]]]);}
   else{const mn=Math.min(a.lng,b.lng),mx=Math.max(a.lng,b.lng);return turf.polygon([[[mn,-BIG],[mx,-BIG],[mx,BIG],[mn,BIG],[mn,-BIG]]]);}
+}
+
+function buildCustomBoundaryFeature(points){
+  if(!Array.isArray(points) || points.length < 3) return null;
+  const ring = points.map(p => [p.lng, p.lat]);
+  const first = ring[0], last = ring[ring.length - 1];
+  if(first[0] !== last[0] || first[1] !== last[1]) ring.push(first);
+  try{
+    return turf.polygon([ring]);
+  }catch(e){
+    return null;
+  }
 }

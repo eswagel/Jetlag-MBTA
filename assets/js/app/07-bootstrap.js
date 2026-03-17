@@ -5,6 +5,14 @@ function switchTab(name){
   // Don't switch to a tab that's hidden in current mode
   const tabEl = document.querySelector(`.tab[data-tab="${name}"]`);
   if(tabEl && tabEl.style.display === 'none') return;
+  if(name === 'boundary'){
+    qtype = 'custom_boundary';
+    qparams.custom_boundary_points = qparams.custom_boundary_points || [];
+    if(typeof renderBoundaryBody === 'function') renderBoundaryBody();
+  } else if(qtype === 'custom_boundary'){
+    qparams._drawingBoundary = false;
+    hideBanner();
+  }
   document.querySelectorAll('.tab').forEach(t=>t.classList.toggle('active',t.dataset.tab===name));
   document.querySelectorAll('.tab-pane').forEach(p=>p.style.display='none');
   const pane = document.getElementById('tab-'+name);
@@ -27,4 +35,5 @@ function clearPoiMarkers(){
 
 initMap();
 renderBuildBody();
+if(typeof renderBoundaryBody === 'function') renderBoundaryBody();
 checkForResume();

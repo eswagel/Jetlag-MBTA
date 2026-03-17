@@ -113,6 +113,18 @@ function onMapClick(e){
     hiderSetLocation(e.latlng.lat, e.latlng.lng, 'map tap');
     return;
   }
+  if(qtype==='custom_boundary' && qparams._drawingBoundary){
+    if(!Array.isArray(qparams.custom_boundary_points)) qparams.custom_boundary_points = [];
+    const {lat,lng}=e.latlng;
+    qparams.custom_boundary_points.push({lat,lng});
+    const m=L.marker([lat,lng],{icon:seekerPin('#20c8b0'),zIndexOffset:2000}).addTo(map);
+    seekerPinMarkers.push(m);
+    qparams.custom_boundary_geojson = buildCustomBoundaryFeature(qparams.custom_boundary_points);
+    if(typeof syncCustomBoundaryPreview === 'function') syncCustomBoundaryPreview();
+    if(typeof renderBoundaryBody === 'function') renderBoundaryBody();
+    updatePreview();
+    return;
+  }
   if(pickStep<0||pickStep>=pickStepDefs.length) return;
   const {lat,lng}=e.latlng;
   qparams[pickStepDefs[pickStep].key]={lat,lng};
@@ -136,7 +148,13 @@ function onMapClick(e){
 // ══════════════════════════════════════════════════════
 function showBanner(msg){document.getElementById('banner-msg').textContent=msg;document.getElementById('pick-banner').classList.add('visible');}
 function hideBanner(){document.getElementById('pick-banner').classList.remove('visible');}
-function dismissBanner(){pickStep=-1;hideBanner();renderBuildBody();}
+function dismissBanner(){
+  pickStep=-1;
+  if(qtype==='custom_boundary') qparams._drawingBoundary = false;
+  hideBanner();
+  if(qtype==='custom_boundary' && typeof renderBoundaryBody === 'function') renderBoundaryBody();
+  else renderBuildBody();
+}
 
 function useMyLocation(key, stepIndex){
   if(!navigator.geolocation){ toast('Geolocation not available on this device'); return; }
@@ -179,7 +197,8 @@ function selectQType(type){
   qtype=type;
   qparams={radius_miles:1, travel_miles:1};
   pickStep=-1; pickStepDefs=QDEFS[type].pickSteps;
-  clearMarkers(); previewLayer.clearLayers(); simulLayer.clearLayers();
+  clearMarkers(); previewLayer.clearLayers(); simulLayer.clearLayers(); simulMaskLayer.clearLayers();
+  if(typeof setPreviewMapMode === 'function') setPreviewMapMode(false);
   document.getElementById('json-out-section').style.display='none';
   document.getElementById('map-simul-bar').classList.remove('visible');
   document.querySelectorAll('.qbtn').forEach(b=>b.classList.toggle('on',b.dataset.q===type));

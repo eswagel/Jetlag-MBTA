@@ -133,8 +133,8 @@
   </div>
   <div class="tabs">
     <div class="tab active" data-tab="build">Ask</div>
+    <div class="tab" data-tab="boundary">Boundary</div>
     <div class="tab" data-tab="hider">Answer</div>
-    <div class="tab" data-tab="apply">Apply</div>
     <div class="tab" data-tab="log">Log</div>
   </div>
   <div id="panel-body">
@@ -233,13 +233,8 @@
       </div>
     </div>
 
-    <!-- SEEKER: apply answered JSON -->
-    <div id="tab-apply" class="tab-pane" style="display:none">
-      <div class="sec">Apply Answer</div>
-      <p class="empty" style="margin-bottom:12px">Paste the hider's response JSON here to update the zone.</p>
-      <textarea class="jarea" id="json-in" rows="9" placeholder='{"type":"radar","answer":"yes",...}'></textarea>
-      <button class="btn btn-red" style="margin-top:8px" onclick="applyAnswer()">Apply → Update Zone</button>
-      <button class="btn btn-ghost" onclick="resetZone()">⟲ Reset Zone</button>
+    <div id="tab-boundary" class="tab-pane" style="display:none">
+      <div id="boundary-body"></div>
     </div>
 
     <div id="tab-log" class="tab-pane" style="display:none">

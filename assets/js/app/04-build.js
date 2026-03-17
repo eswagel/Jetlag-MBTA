@@ -204,8 +204,15 @@ function renderBuildBody(){
   else if(qtype==='tentacles')h += renderTentaclesParams();
   else if(qtype==='matching')h += renderMatchingParams();
   else if(qtype==='photo') h += renderPhotoParams();
+  else if(qtype==='custom_boundary') h += renderCustomBoundaryParams();
 
   el.innerHTML = h;
+}
+
+function renderBoundaryBody(){
+  const el = document.getElementById('boundary-body');
+  if(!el) return;
+  el.innerHTML = renderCustomBoundaryParams();
 }
 
 function renderRadarParams(){
@@ -466,9 +473,98 @@ function renderPhotoParams(){
   return h;
 }
 
+function renderCustomBoundaryParams(){
+  const pts = qparams.custom_boundary_points || [];
+  const mode = qparams.custom_boundary_mode || '';
+  const ready = pts.length >= 3 && !!qparams.custom_boundary_geojson;
+  let h = '<div class="sec">Custom Boundary</div>';
+  h += '<p class="empty" style="margin-bottom:10px">Draw a polygon on the map, then include only that area or exclude it from the current zone.</p>';
+  h += `<div class="found-result" style="margin-top:0">
+    <b>${pts.length}</b> point${pts.length===1?'':'s'} placed
+    <div style="font-size:8px;color:var(--dim);margin-top:4px">${ready?'Boundary ready. Preview or apply it below.':'Tap at least 3 points to make a polygon.'}</div>
+  </div>`;
+  h += `<div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:10px">
+    <button class="btn btn-sec" onclick="${_c(()=>startCustomBoundaryDraw())}">${qparams._drawingBoundary?'✏️ Drawing…':'✏️ Draw On Map'}</button>
+    <button class="btn btn-ghost" onclick="${_c(()=>undoCustomBoundaryPoint())}" ${pts.length?'':'disabled'}>↶ Undo</button>
+    <button class="btn btn-ghost" onclick="${_c(()=>clearCustomBoundary())}" ${pts.length?'':'disabled'}>✕ Clear</button>
+  </div>`;
+  h += '<div class="sec">Apply Mode</div><div class="axrow">';
+  h += `<div class="axbtn ${mode==='include'?'on':''}" onclick="${_c(()=>setCustomBoundaryMode('include'))}">Include</div>`;
+  h += `<div class="axbtn ${mode==='exclude'?'on':''}" onclick="${_c(()=>setCustomBoundaryMode('exclude'))}">Exclude</div>`;
+  h += '</div>';
+  if(ready){
+    h += `<div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:10px">
+      <button class="btn btn-red" onclick="${_c(()=>applyCustomBoundary())}" ${mode?'':'disabled'}>Apply To Zone</button>
+    </div>`;
+  }
+  return h;
+}
+
 // Helpers for param rendering
 function setParam(k,v){ qparams[k]=v; }
 function tryGenerate(){ if(qtype&&QDEFS[qtype]&&QDEFS[qtype].isReady(qparams)) generateJSON(); }
+
+function startCustomBoundaryDraw(){
+  qparams._drawingBoundary = true;
+  qparams.custom_boundary_points = qparams.custom_boundary_points || [];
+  showBanner('TAP THE MAP — add boundary vertices');
+  document.getElementById('panel').classList.add('collapsed');
+  renderBoundaryBody();
+}
+
+function undoCustomBoundaryPoint(){
+  if(!qparams.custom_boundary_points?.length) return;
+  qparams.custom_boundary_points.pop();
+  const marker = seekerPinMarkers.pop();
+  if(marker) marker.remove();
+  qparams.custom_boundary_geojson = buildCustomBoundaryFeature(qparams.custom_boundary_points);
+  syncCustomBoundaryPreview();
+  updatePreview();
+  renderBoundaryBody();
+}
+
+function clearCustomBoundary(){
+  qparams.custom_boundary_points = [];
+  qparams.custom_boundary_geojson = null;
+  qparams.custom_boundary_mode = null;
+  qparams._drawingBoundary = false;
+  clearMarkers();
+  previewLayer.clearLayers();
+  simulLayer.clearLayers();
+  simulMaskLayer.clearLayers();
+  setPreviewMapMode(false);
+  document.getElementById('map-simul-bar').classList.remove('visible');
+  const hint = document.getElementById('simul-hint');
+  if(hint) hint.className = 'simul-result-hint';
+  hideBanner();
+  renderBoundaryBody();
+}
+
+function setCustomBoundaryMode(mode){
+  qparams.custom_boundary_mode = mode;
+  syncCustomBoundaryPreview();
+  renderBoundaryBody();
+}
+
+function syncCustomBoundaryPreview(){
+  if(qtype !== 'custom_boundary') return;
+  const poly = qparams.custom_boundary_geojson || buildCustomBoundaryFeature(qparams.custom_boundary_points || []);
+  qparams.custom_boundary_geojson = poly;
+  const ready = !!poly && !!qparams.custom_boundary_mode;
+  if(!ready){
+    clearZonePreview();
+    document.getElementById('map-simul-bar').classList.remove('visible');
+    const hint = document.getElementById('simul-hint');
+    if(hint){
+      hint.innerHTML = '';
+      hint.className = 'simul-result-hint';
+    }
+    const msb = document.getElementById('msb-area');
+    if(msb) msb.innerHTML = 'green stays · red goes';
+    return;
+  }
+  previewCustomBoundary(qparams.custom_boundary_mode);
+}
 
 // ── Category data — Overpass tags ──
 // Each entry has: icon, label, and an overpass() fn that returns the Overpass query body
@@ -1035,6 +1131,7 @@ function updatePreview(){
     if(qtype==='thermo'&&qparams.center&&qparams.travel_miles) previewLayer.addData(makeCircle(qparams.center,qparams.travel_miles,'miles'));
     if(qtype==='measure'&&qparams.measure_seeker_nearest&&qparams.measure_seeker_dist) previewLayer.addData(makeCircle(qparams.measure_seeker_nearest,qparams.measure_seeker_dist,'miles'));
     if(qtype==='tentacles'&&qparams.center&&qparams.radius_miles) previewLayer.addData(makeCircle(qparams.center,qparams.radius_miles,'miles'));
+    if(qtype==='custom_boundary'&&qparams.custom_boundary_geojson) previewLayer.addData(qparams.custom_boundary_geojson);
   }catch(e){}
 }
 
@@ -1089,11 +1186,43 @@ function setPreviewMapMode(active){
   }
 }
 
-function renderSimulBtns(json){
-  _simulActive = null;
+function clearZonePreview(){
   simulLayer.clearLayers();
   simulMaskLayer.clearLayers();
   setPreviewMapMode(false);
+}
+
+function renderZonePreviewResult(result, label, color){
+  if(!result) return;
+  const hint = document.getElementById('simul-hint');
+  const eliminated = safeDiff(validZone, result);
+  setPreviewMapMode(true);
+  simulLayer.clearLayers();
+  simulMaskLayer.clearLayers();
+  simulLayer.options.style = {
+    color: '#4fe07c', weight: 3, fillColor: '#37c96b', fillOpacity: 0.30, interactive: false
+  };
+  simulMaskLayer.options.style = {
+    color: '#ff6b6b', weight: 2, fillColor: '#ff5a5a', fillOpacity: 0.30, interactive: false
+  };
+  simulLayer.addData(result);
+  if(eliminated) simulMaskLayer.addData(eliminated);
+  try{ map.fitBounds(L.geoJSON(result).getBounds().pad(0.12)); }catch(e){}
+  const area = (turf.area(result)/1e6).toFixed(1);
+  const pctRemain = validZone ? Math.round(turf.area(result)/turf.area(validZone)*100) : '?';
+  const pctElim = typeof pctRemain === 'number' ? 100 - pctRemain : '?';
+  if(hint){
+    hint.innerHTML = `<b>${label}:</b> ${area} km² remain <span style="color:${color}">(${pctElim}% eliminated)</span><br><span style="font-size:8px;color:var(--dim)">Green stays in play. Red is eliminated by this answer.</span>`;
+    hint.className = 'simul-result-hint visible';
+  }
+  const msb = document.getElementById('msb-area');
+  if(msb) msb.innerHTML = `<b style="color:var(--green)">${pctRemain}%</b> stays · <b style="color:#e84040">${pctElim}%</b> cut`;
+  document.getElementById('map-simul-bar').classList.add('visible');
+}
+
+function renderSimulBtns(json){
+  _simulActive = null;
+  clearZonePreview();
   const opts = SIMUL_OPTS[json.type];
   const container = document.getElementById('simul-btns');
   const hint      = document.getElementById('simul-hint');
@@ -1130,14 +1259,11 @@ function previewAnswer(val){
   const def = QDEFS[qtype];
   const opts = SIMUL_OPTS[qtype];
   const hint = document.getElementById('simul-hint');
-  const remainColor = '#18b050';
 
   // Toggle off if same button pressed twice
   if(_simulActive === val){
     _simulActive = null;
-    simulLayer.clearLayers();
-    simulMaskLayer.clearLayers();
-    setPreviewMapMode(false);
+    clearZonePreview();
     document.querySelectorAll('.simul-btn,.msb-btn').forEach(b=>b.classList.remove('active'));
     hint.className = 'simul-result-hint';
     document.getElementById('msb-area').innerHTML = 'green stays · red goes';
@@ -1158,32 +1284,46 @@ function previewAnswer(val){
     const q = {...JSON.parse(document.getElementById('json-out').value), answer: val};
     const result = def.applyToZone(validZone, q);
     if(!result){ toast('Nothing left in zone for this answer'); return; }
-    const eliminated = safeDiff(validZone, result);
-    setPreviewMapMode(true);
-
-    simulLayer.clearLayers();
-    simulMaskLayer.clearLayers();
-    simulLayer.options.style = {
-      color: '#4fe07c', weight: 3, fillColor: '#37c96b', fillOpacity: 0.30, interactive: false
-    };
-    simulMaskLayer.options.style = {
-      color: '#ff6b6b', weight: 2, fillColor: '#ff5a5a', fillOpacity: 0.30, interactive: false
-    };
-    simulLayer.addData(result);
-    if(eliminated) simulMaskLayer.addData(eliminated);
-
-    try{ map.fitBounds(L.geoJSON(result).getBounds().pad(0.12)); }catch(e){}
-
-    const area = (turf.area(result)/1e6).toFixed(1);
-    const pctRemain = validZone ? Math.round(turf.area(result)/turf.area(validZone)*100) : '?';
-    const pctElim   = typeof pctRemain === 'number' ? 100 - pctRemain : '?';
-    const hintHTML = `<b>${opt ? opt.icon+' '+opt.label : val}:</b> ${area} km² remain <span style="color:${col}">(${pctElim}% eliminated)</span><br><span style="font-size:8px;color:var(--dim)">Green stays in play. Red is eliminated by this answer.</span>`;
-    hint.innerHTML = hintHTML;
-    hint.className = 'simul-result-hint visible';
-    document.getElementById('msb-area').innerHTML = `<b style="color:var(--green)">${pctRemain}%</b> stays · <b style="color:#e84040">${pctElim}%</b> cut`;
+    renderZonePreviewResult(result, opt ? `${opt.icon} ${opt.label}` : val, col);
   } catch(e) {
     toast('Preview error: '+e.message);
   }
+}
+
+function previewCustomBoundary(mode){
+  const poly = qparams.custom_boundary_geojson || buildCustomBoundaryFeature(qparams.custom_boundary_points || []);
+  if(!poly){ toast('Draw at least 3 points first'); return; }
+  qparams.custom_boundary_geojson = poly;
+  qparams.custom_boundary_mode = mode;
+  qparams._drawingBoundary = false;
+  hideBanner();
+  const q = {type:'custom_boundary', boundary_geojson: poly, mode};
+  const result = QDEFS.custom_boundary.applyToZone(validZone, q);
+  if(!result){ toast('Nothing left in zone for this boundary'); return; }
+  renderZonePreviewResult(result, mode === 'include' ? '✅ Include' : '❌ Exclude', mode === 'include' ? '#18b050' : '#e84040');
+}
+
+function applyCustomBoundary(){
+  const poly = qparams.custom_boundary_geojson || buildCustomBoundaryFeature(qparams.custom_boundary_points || []);
+  if(!poly){ toast('Draw at least 3 points first'); return; }
+  if(!qparams.custom_boundary_mode){ toast('Choose include or exclude first'); return; }
+  qparams._drawingBoundary = false;
+  hideBanner();
+  const q = {
+    type:'custom_boundary',
+    boundary_geojson: poly,
+    mode: qparams.custom_boundary_mode,
+  };
+  const nz = QDEFS.custom_boundary.applyToZone(validZone, q);
+  if(!nz){ toast('Zone empty — contradiction?'); return; }
+  validZone = nz;
+  constraints.push(q);
+  renderZone();
+  renderLog();
+  saveGame();
+  toast(`Custom boundary ${q.mode === 'include' ? 'included' : 'excluded'} ✓`);
+  clearCustomBoundary();
+  switchTab('log');
 }
 
 function copyQ(){
@@ -1195,8 +1335,7 @@ function copyQ(){
 
 function resetBuild(){
   qtype=null;qparams={};pickStep=-1;pickStepDefs=[];
-  clearMarkers();previewLayer.clearLayers();simulLayer.clearLayers();simulMaskLayer.clearLayers();hideBanner();
-  setPreviewMapMode(false);
+  clearMarkers();previewLayer.clearLayers();clearZonePreview();hideBanner();
   clearBoundaryHighlight();
   _simulActive=null;
   document.querySelectorAll('.qbtn').forEach(b=>b.classList.remove('on'));
