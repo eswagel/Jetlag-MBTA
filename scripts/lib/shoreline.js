@@ -32,6 +32,24 @@ function dedupeCoords(coords){
   );
 }
 
+function simplifyCoords(coords, tolerance = 0.0035){
+  if(!Array.isArray(coords) || coords.length < 3) return coords || [];
+  const simplified = [coords[0]];
+  let last = coords[0];
+  for(let i = 1; i < coords.length - 1; i++){
+    const point = coords[i];
+    if(
+      Math.abs(point[0] - last[0]) >= tolerance ||
+      Math.abs(point[1] - last[1]) >= tolerance
+    ){
+      simplified.push(point);
+      last = point;
+    }
+  }
+  simplified.push(coords[coords.length - 1]);
+  return dedupeCoords(simplified);
+}
+
 async function fetchCoastlineWays(overpassRaw, bbox){
   const query = `[out:json][timeout:120];
     way["natural"="coastline"](${bbox.south},${bbox.west},${bbox.north},${bbox.east});
@@ -70,6 +88,55 @@ function densifyCoastlineWays(ways, stepMiles = 0.5, fallbackName = 'Coastline')
   return out;
 }
 
+function extractLineCoords(geometry){
+  if(!geometry) return [];
+  if(geometry.type === 'LineString') return [geometry.coordinates];
+  if(geometry.type === 'MultiLineString') return geometry.coordinates;
+  return [];
+}
+
+function coastlineWaysToMultiLineFeature(ways, fallbackName = 'Coastline', clipBbox = null, turf = null, tolerance = 0.0035){
+  const segments = [];
+  const seen = new Set();
+
+  for(const way of ways || []){
+    const coords = simplifyCoords(
+      dedupeCoords((way.geometry || []).map(p => [p.lon, p.lat])),
+      tolerance
+    );
+    if(coords.length < 2) continue;
+    const clippedGeometries = [];
+    if(clipBbox && turf){
+      try{
+        const clipped = turf.bboxClip(lineString(coords), clipBbox);
+        clippedGeometries.push(...extractLineCoords(clipped.geometry));
+      }catch(err){}
+    } else {
+      clippedGeometries.push(coords);
+    }
+
+    for(const geomCoords of clippedGeometries){
+      const simplifiedGeom = simplifyCoords(geomCoords, tolerance);
+      if(!Array.isArray(simplifiedGeom) || simplifiedGeom.length < 2) continue;
+      const key = simplifiedGeom
+        .map(([lng, lat]) => `${lng.toFixed(5)},${lat.toFixed(5)}`)
+        .join('|');
+      if(seen.has(key)) continue;
+      seen.add(key);
+      segments.push(simplifiedGeom);
+    }
+  }
+
+  if(!segments.length) return null;
+  return {
+    name: fallbackName,
+    geometry: {
+      type: 'MultiLineString',
+      coordinates: segments,
+    },
+  };
+}
+
 function buildLandFacesFromCoastlineWays(ways, bbox, stops){
   const coastLines = ways.map(way => lineString(
     dedupeCoords(way.geometry.map(p => [p.lon, p.lat])),
@@ -96,5 +163,6 @@ function buildLandFacesFromCoastlineWays(ways, bbox, stops){
 module.exports = {
   fetchCoastlineWays,
   densifyCoastlineWays,
+  coastlineWaysToMultiLineFeature,
   buildLandFacesFromCoastlineWays,
 };

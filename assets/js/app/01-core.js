@@ -43,6 +43,7 @@ let thermoHandleMarker = null;
 let validZone = cloneGeo(INIT_POLY);
 let constraints = [];
 let qtype=null, qparams={}, pickStep=-1, pickStepDefs=[];
+let currentBuiltQuestion = null;
 let hideRadiusMi = 0.25;   // set by setup screen
 let mbdataReady  = false;  // true once MBTA API load completes
 let gameMode = 'seeker';   // 'seeker' | 'hider' | 'dev'
@@ -273,6 +274,11 @@ function lookupLinearPoiCollection(keys, fallbackName='Line'){
   return items.flatMap(item => pointsFromFeatureGeometry(coerceFeature(item, item.name), item.name || fallbackName));
 }
 
+function lookupLinearPoiFeatures(keys){
+  const items = findFirstArray(preloadedData.pois, keys);
+  return Array.isArray(items) ? items : [];
+}
+
 function getNamedPoiCollection(label){
   const keyMap = {
     'Park': ['parks'],
@@ -311,9 +317,21 @@ function getNamedPoiCollection(label){
 function getNamedLinearCollection(label){
   const keyMap = {
     'An Amtrak Line': ['amtrakLines', 'amtrak_lines'],
+    'Sea Level': ['coastlineLines', 'coastline_lines'],
+    'A Coastline': ['coastlineLines', 'coastline_lines'],
   };
   const keys = keyMap[label];
   return keys ? lookupLinearPoiCollection(keys, label) : [];
+}
+
+function getNamedLinearFeatures(label){
+  const keyMap = {
+    'An Amtrak Line': ['amtrakLines', 'amtrak_lines'],
+    'Sea Level': ['coastlineLines', 'coastline_lines'],
+    'A Coastline': ['coastlineLines', 'coastline_lines'],
+  };
+  const keys = keyMap[label];
+  return keys ? lookupLinearPoiFeatures(keys) : [];
 }
 
 function getPreloadedBorderPoints(type){
@@ -471,28 +489,7 @@ const QDEFS = {
     }),
     applyToZone:(zone,q)=>{
       try{
-        let union = null;
-        if(q.linear_features?.length){
-          const buffered = q.linear_features
-            .map(item => coerceFeature(item, item.name))
-            .filter(Boolean)
-            .map(feature => {
-              try{ return turf.buffer(feature, q.seeker_dist, {units:'miles'}); }catch(e){ return null; }
-            })
-            .filter(Boolean);
-          union = buffered[0] || null;
-          for(let i=1;i<buffered.length;i++){
-            try{ union = turf.union(union, buffered[i]) || union; }catch(e){}
-          }
-        } else if(q.all_instances?.length){
-          // Zone = union of circles of radius seeker_dist around every instance
-          // "closer" = inside that union; "further" = outside
-          const circles = q.all_instances.map(p=>makeCircle(p, q.seeker_dist, 'miles'));
-          union = circles[0];
-          for(let i=1;i<circles.length;i++){
-            try{ union = turf.union(union, circles[i]) || union; }catch(e){}
-          }
-        }
+        const union = q._constraint_union || buildMeasureConstraintUnion(q);
         if(!union) return zone;
         if(q.answer==='closer') return safeIsect(zone, union);
         return safeDiff(zone, union);
@@ -689,6 +686,40 @@ function makeBand(a,b,axis){
   const BIG=40;
   if(axis==='lat'){const mn=Math.min(a.lat,b.lat),mx=Math.max(a.lat,b.lat);return turf.polygon([[[-BIG*4,mn],[BIG*4,mn],[BIG*4,mx],[-BIG*4,mx],[-BIG*4,mn]]]);}
   else{const mn=Math.min(a.lng,b.lng),mx=Math.max(a.lng,b.lng);return turf.polygon([[[mn,-BIG],[mx,-BIG],[mx,BIG],[mn,BIG],[mn,-BIG]]]);}
+}
+
+function buildMeasureConstraintUnion(q){
+  if(!q || !Number.isFinite(q.seeker_dist)) return null;
+  try{
+    let union = null;
+    if(q.linear_features?.length){
+      const buffered = q.linear_features
+        .map(item => coerceFeature(item, item.name))
+        .filter(Boolean)
+        .map(feature => {
+          try{ return turf.buffer(feature, q.seeker_dist, {units:'miles'}); }catch(e){ return null; }
+        })
+        .filter(Boolean);
+      union = buffered[0] || null;
+      for(let i=1;i<buffered.length;i++){
+        try{ union = turf.union(union, buffered[i]) || union; }catch(e){}
+      }
+    } else if(q.all_instances?.length){
+      const circles = q.all_instances.map(p=>makeCircle(p, q.seeker_dist, 'miles'));
+      union = circles[0] || null;
+      for(let i=1;i<circles.length;i++){
+        try{ union = turf.union(union, circles[i]) || union; }catch(e){}
+      }
+    }
+    if(!union) return null;
+    try{
+      return turf.simplify(union, {tolerance:0.0008, highQuality:false}) || union;
+    }catch(e){
+      return union;
+    }
+  }catch(e){
+    return null;
+  }
 }
 
 function buildCustomBoundaryFeature(points){

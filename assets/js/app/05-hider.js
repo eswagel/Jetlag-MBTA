@@ -237,11 +237,29 @@ async function hiderComputeAnswer(hiderLoc){
     explanation = `Using the travel direction from the seeker's current location, you are ${answer === 'closer' ? 'ahead of' : 'behind'} the divider line after a ${q.travel_miles}mi move → <b>${answer.toUpperCase()}</b>`;
 
   } else if(q.type === 'measure'){
-    // Find hider's nearest instance from all_instances
-    const instances = q.all_instances||[];
-    if(!instances.length){ toast('No instances in question data'); return; }
-    const nearest = instances.slice().sort((a,b)=>turfDist(hiderLoc,a)-turfDist(hiderLoc,b))[0];
-    const hiderDist = turfDist(hiderLoc, nearest);
+    let nearest = null;
+    let hiderDist = Infinity;
+    if(Array.isArray(q.linear_features) && q.linear_features.length){
+      const hiderPoint = turf.point([hiderLoc.lng, hiderLoc.lat]);
+      q.linear_features.forEach(item => {
+        const feature = coerceFeature(item, item.name);
+        if(!feature) return;
+        try{
+          const snapped = turf.nearestPointOnLine(feature, hiderPoint, {units:'miles'});
+          const dist = snapped?.properties?.dist;
+          if(!Number.isFinite(dist) || dist >= hiderDist) return;
+          const [lng, lat] = snapped.geometry.coordinates;
+          hiderDist = dist;
+          nearest = {name:item.name || q.category_label, lat, lng};
+        }catch(e){}
+      });
+    } else {
+      const instances = q.all_instances||[];
+      if(!instances.length){ toast('No instances in question data'); return; }
+      nearest = instances.slice().sort((a,b)=>turfDist(hiderLoc,a)-turfDist(hiderLoc,b))[0];
+      hiderDist = turfDist(hiderLoc, nearest);
+    }
+    if(!nearest || !Number.isFinite(hiderDist)){ toast('Could not determine nearest measure feature'); return; }
     const seekerDist = q.seeker_dist;
     answer = hiderDist <= seekerDist ? 'closer' : 'further';
     explanation = `Your nearest ${q.category_label}: <b>${nearest.name}</b> (${hiderDist.toFixed(2)}mi) / Seeker's: ${seekerDist.toFixed(2)}mi → <b>${answer.toUpperCase()}</b>`;

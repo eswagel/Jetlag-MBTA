@@ -1092,6 +1092,79 @@ function amtrakLineLabel(name){
   return 'NE Corridor';
 }
 
+function measureNearestPopup(categoryLabel, nearestName){
+  const what = /line|coast|sea level|border/i.test(categoryLabel) ? 'nearest point' : 'nearest';
+  return `<div class="stop-popup"><div class="stop-popup-name">${nearestName}</div><div style="font-size:9px;color:#f0a030">★ Your ${what} on ${categoryLabel}</div></div>`;
+}
+
+function simplifyLineCoords(coords, tolerance=0.0035){
+  if(!Array.isArray(coords) || coords.length < 3) return coords || [];
+  const simplified = [coords[0]];
+  let last = coords[0];
+  for(let i = 1; i < coords.length - 1; i++){
+    const point = coords[i];
+    if(
+      Math.abs(point[0] - last[0]) >= tolerance ||
+      Math.abs(point[1] - last[1]) >= tolerance
+    ){
+      simplified.push(point);
+      last = point;
+    }
+  }
+  simplified.push(coords[coords.length - 1]);
+  return simplified;
+}
+
+function coastlineLineFeaturesFromOverpass(data, fallbackName='Coastline'){
+  const clipBox = [
+    T_BBOX.minLng - 0.08,
+    T_BBOX.minLat - 0.08,
+    T_BBOX.maxLng + 0.08,
+    T_BBOX.maxLat + 0.08,
+  ];
+  const coords = [];
+  (data?.elements || [])
+    .filter(el => el.type === 'way' && Array.isArray(el.geometry) && el.geometry.length >= 2)
+    .forEach(el => {
+      const line = simplifyLineCoords((el.geometry || []).map(p => [p.lon, p.lat]));
+      if(line.length < 2) return;
+      try{
+        const clipped = turf.bboxClip(turf.lineString(line), clipBox);
+        if(clipped?.geometry?.type === 'LineString' && clipped.geometry.coordinates.length >= 2){
+          coords.push(simplifyLineCoords(clipped.geometry.coordinates));
+        } else if(clipped?.geometry?.type === 'MultiLineString'){
+          clipped.geometry.coordinates
+            .filter(segment => Array.isArray(segment) && segment.length >= 2)
+            .forEach(segment => coords.push(simplifyLineCoords(segment)));
+        }
+      }catch(e){}
+    });
+  if(!coords.length) return [];
+  return [{
+    name: fallbackName,
+    geometry: {
+      type: 'MultiLineString',
+      coordinates: coords,
+    },
+  }];
+}
+
+async function getMeasureLinearFeatures(catObj, center){
+  await loadPoiData();
+  if(catObj.label === 'An Amtrak Line'){
+    return getNamedLinearFeatures(catObj.label);
+  }
+  if(catObj.label === 'Sea Level' || catObj.label === 'A Coastline'){
+    const preloaded = getNamedLinearFeatures(catObj.label);
+    if(preloaded.length) return preloaded;
+    const r = 50000;
+    const q = `[out:json][timeout:25];way["natural"="coastline"](around:${r},${center.lat},${center.lng});out geom 300;`;
+    const data = await overpassRaw(q);
+    return coastlineLineFeaturesFromOverpass(data, 'Coastline');
+  }
+  return [];
+}
+
 function renderAmtrakMeasureLines(center, nearestName){
   const raw = Array.isArray(preloadedData.pois?.amtrakLines) ? preloadedData.pois.amtrakLines : [];
   if(!raw.length) return;
@@ -1144,20 +1217,18 @@ async function selectMeasureCat(catObj){
   if(!qparams.center){toast('Set your location first');return;}
   qparams._mcat=catObj.label; qparams._mcatlabel=catObj.label; qparams._msearching=true;
   qparams.measure_cat=catObj.label; qparams.measure_cat_label=catObj.label;
-  qparams.measure_seeker_nearest=null; qparams.measure_seeker_dist=null; qparams.measure_all_instances=null; qparams.measure_linear_features=null;
+  qparams.measure_seeker_nearest=null; qparams.measure_seeker_dist=null; qparams.measure_all_instances=null; qparams.measure_linear_features=null; qparams.measure_constraint_union=null;
   if(catObj.label==='A County Border') highlightBoundary('county');
   else if(catObj.label==='A City Border') highlightBoundary('city');
   else clearBoundaryHighlight();
   renderBuildBody();
   try{
-    if(catObj.label === 'An Amtrak Line'){
-      await loadPoiData();
-      const rawLines = Array.isArray(preloadedData.pois?.amtrakLines) ? preloadedData.pois.amtrakLines : [];
-      const lineFeatures = rawLines
+    if(['An Amtrak Line','Sea Level','A Coastline'].includes(catObj.label)){
+      const lineFeatures = (await getMeasureLinearFeatures(catObj, qparams.center))
         .map(item => ({name:item.name, feature:coerceFeature(item, item.name)}))
         .filter(item => item.feature);
       if(!lineFeatures.length){
-        toast('No Amtrak lines found in local data');
+        toast(`No ${catObj.label} geometry found`);
         qparams._msearching=false;
         renderBuildBody();
         return;
@@ -1193,9 +1264,11 @@ async function selectMeasureCat(catObj){
       qparams.measure_all_instances=[{lat:best.lat,lng:best.lng,name:best.name}];
 
       clearPoiMarkers();
-      renderAmtrakMeasureLines(qparams.center, best.name);
+      if(catObj.label === 'An Amtrak Line'){
+        renderAmtrakMeasureLines(qparams.center, best.name);
+      }
       const m=L.marker([best.lat,best.lng],{icon:measurePin(),zIndexOffset:1500}).addTo(map);
-      m.bindPopup(`<div class="stop-popup"><div class="stop-popup-name">${best.name}</div><div style="font-size:9px;color:#f0a030">★ Your nearest point on this line</div></div>`,{offset:[0,-12],maxWidth:220});
+      m.bindPopup(measureNearestPopup(catObj.label, best.name),{offset:[0,-12],maxWidth:220});
       pickedMarkers.push(m);
       const bounds = L.latLngBounds([[best.lat,best.lng],[qparams.center.lat,qparams.center.lng]]).pad(0.3);
       map.fitBounds(bounds);
@@ -1226,7 +1299,7 @@ async function selectMeasureCat(catObj){
       }
       // For linear/edge categories, show a single teal diamond at the nearest point
       const m=L.marker([nearest.lat,nearest.lng],{icon:measurePin(),zIndexOffset:1500}).addTo(map);
-      m.bindPopup(`<div class="stop-popup"><div class="stop-popup-name">${nearest.name}</div><div style="font-size:9px;color:#f0a030">★ Your nearest point on this line</div></div>`,{offset:[0,-12],maxWidth:220});
+      m.bindPopup(measureNearestPopup(catObj.label, nearest.name),{offset:[0,-12],maxWidth:220});
       pickedMarkers.push(m);
     } else {
       // For POI categories, show numbered teardrop pins
@@ -1338,6 +1411,10 @@ function generateJSON(){
   const def=QDEFS[qtype];
   const json=def.toJSON(qparams);
   json.id='q'+Date.now().toString(36);
+  currentBuiltQuestion = {
+    ...json,
+    _constraint_union: qtype === 'measure' ? qparams.measure_constraint_union || null : null,
+  };
   // Yield to UI thread before heavy stringify (prevents freeze on mobile)
   setTimeout(()=>{
     document.getElementById('json-out').value=JSON.stringify(json,null,2);
@@ -1346,6 +1423,35 @@ function generateJSON(){
     renderSimulBtns(json);
     renderDirectApplyBtns(json);
   },0);
+}
+
+function ensureMeasureConstraint(question){
+  if(!question || question.type !== 'measure' || question._constraint_union) return question;
+  const union = buildMeasureConstraintUnion(question);
+  if(!union) return question;
+  question._constraint_union = union;
+  if(currentBuiltQuestion && currentBuiltQuestion.id === question.id){
+    currentBuiltQuestion._constraint_union = union;
+  }
+  return question;
+}
+
+function shouldWarnSlowMeasure(question){
+  return !!(
+    question &&
+    question.type === 'measure' &&
+    !question._constraint_union &&
+    /coast|sea level/i.test(question.category_label || question.category || '')
+  );
+}
+
+function runSlowMeasureAction(question, work){
+  if(!shouldWarnSlowMeasure(question)){
+    work();
+    return;
+  }
+  toast('Coastline measure can take a bit the first time');
+  setTimeout(work, 0);
 }
 
 // ── per-type answer option definitions ──
@@ -1464,9 +1570,13 @@ function renderZonePreviewResult(result, label, color, shouldFit=true){
 }
 
 function getLivePreviewQuestion(){
+  if(currentBuiltQuestion && currentBuiltQuestion.type === qtype) return currentBuiltQuestion;
   if(!qtype || !QDEFS[qtype] || !QDEFS[qtype].isReady(qparams)) return null;
   try{
-    return QDEFS[qtype].toJSON(qparams);
+    return {
+      ...QDEFS[qtype].toJSON(qparams),
+      _constraint_union: qtype === 'measure' ? qparams.measure_constraint_union || null : null,
+    };
   }catch(e){
     return null;
   }
@@ -1482,6 +1592,7 @@ function refreshActiveAnswerPreview(){
   const liveQ = getLivePreviewQuestion();
   if(!liveQ) return;
   try{
+    ensureMeasureConstraint(liveQ);
     const q = {...liveQ, answer:_simulActive};
     const result = def.applyToZone(validZone, q);
     if(!result) return;
@@ -1561,10 +1672,17 @@ function previewAnswer(val){
   try {
     const liveQ = getLivePreviewQuestion();
     const baseQ = liveQ || JSON.parse(document.getElementById('json-out').value);
-    const q = {...baseQ, answer: val};
-    const result = def.applyToZone(validZone, q);
-    if(!result){ toast('Nothing left in zone for this answer'); return; }
-    renderZonePreviewResult(result, opt ? `${opt.icon} ${opt.label}` : val, col);
+    runSlowMeasureAction(baseQ, () => {
+      try{
+        ensureMeasureConstraint(baseQ);
+        const q = {...baseQ, answer: val};
+        const result = def.applyToZone(validZone, q);
+        if(!result){ toast('Nothing left in zone for this answer'); return; }
+        renderZonePreviewResult(result, opt ? `${opt.icon} ${opt.label}` : val, col);
+      }catch(e){
+        toast('Preview error: '+e.message);
+      }
+    });
   } catch(e) {
     toast('Preview error: '+e.message);
   }
@@ -1574,11 +1692,20 @@ function applyBuiltAnswer(val){
   const raw = document.getElementById('json-out').value.trim();
   if(!raw){ toast('Generate a question first'); return; }
   try{
-    const q = JSON.parse(raw);
-    q.answer = val;
-    applyAnswerFromRaw(JSON.stringify(q), ()=>{
-      resetBuild();
-      switchTab('log');
+    const parsed = JSON.parse(raw);
+    const q = currentBuiltQuestion && currentBuiltQuestion.id === parsed.id
+      ? {...currentBuiltQuestion, answer: val}
+      : {...parsed, answer: val};
+    runSlowMeasureAction(q, () => {
+      try{
+        ensureMeasureConstraint(q);
+        applyAnswerObject(q, ()=>{
+          resetBuild();
+          switchTab('log');
+        });
+      }catch(e){
+        toast('Could not apply built answer');
+      }
     });
   }catch(e){
     toast('Could not apply built answer');
@@ -1630,6 +1757,7 @@ function copyQ(){
 
 function resetBuild(){
   qtype=null;qparams={};pickStep=-1;pickStepDefs=[];
+  currentBuiltQuestion = null;
   clearMarkers();previewLayer.clearLayers();clearZonePreview();hideBanner();
   clearBoundaryHighlight();
   _simulActive=null;

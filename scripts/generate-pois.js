@@ -2,11 +2,12 @@
 
 const fs = require('fs/promises');
 const path = require('path');
-const {fetchCoastlineWays, densifyCoastlineWays} = require('./lib/shoreline');
+const {fetchCoastlineWays, densifyCoastlineWays, coastlineWaysToMultiLineFeature} = require('./lib/shoreline');
 
 const OUTPUT = path.resolve(__dirname, '..', 'data', 'pois.json');
 const BBOX = {south: 42.18, west: -71.55, north: 42.67, east: -70.85};
 const AMTRAK_CLIP_BBOX = [BBOX.west - 0.08, BBOX.south - 0.08, BBOX.east + 0.08, BBOX.north + 0.08];
+const COASTLINE_CLIP_BBOX = [BBOX.west - 0.08, BBOX.south - 0.08, BBOX.east + 0.08, BBOX.north + 0.08];
 const OVERPASS_ENDPOINTS = [
   'https://overpass-api.de/api/interpreter',
   'https://overpass.kumi.systems/api/interpreter',
@@ -224,10 +225,17 @@ async function main(){
   }
 
   if(!requested.size || requested.has('coastline')){
-    if(!Array.isArray(payload.coastline) || !payload.coastline.length || requested.has('coastline')){
+    if(
+      !Array.isArray(payload.coastline) || !payload.coastline.length ||
+      !Array.isArray(payload.coastlineLines) || !payload.coastlineLines.length ||
+      requested.has('coastline')
+    ){
       console.log('Fetching coastline...');
       const coastlineWays = await fetchCoastlineWays(overpassRaw, BBOX);
+      const turf = await import('@turf/turf');
+      const coastlineLineFeature = coastlineWaysToMultiLineFeature(coastlineWays, 'Coastline', COASTLINE_CLIP_BBOX, turf);
       payload.coastline = densifyCoastlineWays(coastlineWays, 0.5, 'Coastline');
+      payload.coastlineLines = coastlineLineFeature ? [coastlineLineFeature] : [];
       await writePayload(payload);
     } else {
       console.log('Skipping coastline (cached)');

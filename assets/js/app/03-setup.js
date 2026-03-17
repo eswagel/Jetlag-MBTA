@@ -214,6 +214,7 @@ function useMyLocation(key, stepIndex){
 function selectQType(type){
   qtype=type;
   qparams={radius_miles:1, travel_miles:0.5};
+  currentBuiltQuestion = null;
   pickStep=-1; pickStepDefs=QDEFS[type].pickSteps;
   clearMarkers(); previewLayer.clearLayers(); simulLayer.clearLayers(); simulMaskLayer.clearLayers();
   if(typeof setPreviewMapMode === 'function') setPreviewMapMode(false);
