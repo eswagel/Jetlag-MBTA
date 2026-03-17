@@ -216,7 +216,15 @@ function renderBoundaryBody(){
 }
 
 function renderRadarParams(){
-  const presets=[{r:0.25,l:'¼ mi'},{r:0.5,l:'½ mi'},{r:2,l:'2 mi'},{r:3,l:'3 mi'},{r:5,l:'5 mi'}];
+  const presets=[
+    {r:0.25,l:'¼ mi'},
+    {r:0.5,l:'½ mi'},
+    {r:1,l:'1 mi'},
+    {r:3,l:'3 mi'},
+    {r:5,l:'5 mi'},
+    {r:10,l:'10 mi'},
+    {r:25,l:'25 mi'},
+  ];
   const isCustom = qparams.radius_miles && !presets.find(p=>p.r===qparams.radius_miles);
   let h='<div class="sec">Radar Radius</div><div class="axrow" style="flex-wrap:wrap;gap:5px">';
   presets.forEach(p=>{
