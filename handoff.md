@@ -4,45 +4,27 @@
 
 This repository contains a static browser app for a Boston MBTA version of Jet Lag hide-and-seek.
 
-It is no longer a single giant HTML file:
-
 - `jetlag-mbta.html` is the document shell
 - `assets/css/app.css` contains styles
 - `assets/js/app/` contains the application JS split by responsibility
 - `data/` contains precomputed runtime datasets
 - `scripts/` contains generators for those datasets
 
-The app is still build-free at runtime. It can be hosted as plain static files, including on GitHub Pages, as long as the final generated files in `data/` are committed.
+The app is build-free at runtime. It must be served over HTTP (not opened directly as a `file://` URL) because all data files are loaded via `fetch()`. Use `py -m http.server 8080` or `npx serve .` for local development.
 
 ## Current Repository State
 
-### Last committed state
+### Committed state
 
-Latest commit on `main`:
+Latest commit on `main`: `3386c6d` — `Update project handoff`
 
-- `b53729a` — `Add offline data generators and datasets`
+### Uncommitted working tree
 
-That commit added:
+Three files are modified:
 
-- `data/mbta-data.json`
-- `data/pois.json`
-- `data/boundaries.json`
-- `data/landmasses.json`
-- generator scripts under `scripts/`
-- `.gitignore`
-- `package.json` / `package-lock.json`
-
-### Current uncommitted working tree
-
-There are currently local modifications in:
-
-- `assets/js/app/02-map.js`
-- `assets/js/app/04-build.js`
-
-Those changes do two things:
-
-1. add `Landmass` as a visible `MATCHING_CATS` option
-2. load `landmasses.json` eagerly at startup and change the stale UI wording from "precomputing" to "loading"
+- `scripts/generate-landmasses.py` — fully rewritten (see below)
+- `data/landmasses.json` — regenerated from the new script
+- `assets/js/app/02-map.js` — one-line fix: `loadLandmassData()` now calls `renderBuildBody()` after the async load completes so the ⏳ loading badge clears automatically
 
 These changes are not yet committed.
 
@@ -56,32 +38,18 @@ These changes are not yet committed.
 
 ## Runtime Data Model
 
-The app now prefers precomputed local files first and only falls back live when a file or category is missing.
-
 Runtime files in `data/`:
 
-- `mbta-data.json`
-  - full rapid transit line shapes and stops
-  - commuter rail stop list
-- `pois.json`
-  - measure / nearest / tentacle POI categories
-  - coastline points
-  - Amtrak line geometry
-- `boundaries.json`
-  - counties
-  - cities / towns
-  - limited postcode coverage
-  - currently no useful neighborhood coverage
-- `landmasses.json`
-  - currently generated landmass polygons and stop-to-piece assignment
+- `mbta-data.json` — full rapid transit line shapes and stops; commuter rail stop list
+- `pois.json` — measure / nearest / tentacle POI categories; coastline points; Amtrak line geometry
+- `boundaries.json` — counties; cities / towns; limited postcode coverage
+- `landmasses.json` — gameplay landmass polygons and stop-to-region assignment
 
 Ignored local-only files:
 
-- `data/_cache/`
+- `data/_cache/` — generation-only checkpoint data, should not be committed
 - `node_modules/`
 - `scripts/__pycache__/`
-
-`data/_cache/` is generation-only checkpoint data and should not be committed.
 
 ## What Works
 
@@ -101,7 +69,7 @@ Ignored local-only files:
 - Thermometer
 - Measure
 - Tentacles
-- Matching
+- Matching (including Landmass — wired and loading correctly)
 - Nearest
 - Photo
 
@@ -125,48 +93,69 @@ There is also a shared shoreline helper used by the JS coastline path:
 
 ## Landmass Status
 
-Landmass work has changed significantly from the original handoff.
+### What was done this session
 
-### What is true now
+The old landmass generator (hydrology-based, fetching coastline and water ways from Overpass and subtracting them) was thrown out and replaced with a rules-driven approach:
 
-- landmasses are no longer live-generated in the browser
-- the browser loads `data/landmasses.json`
-- there is now a Python landmass generator using `shapely`
-- the generator uses checkpointed cache files in `data/_cache/landmasses-v1/`
-- the JS/Turf-based landmass generator was kept in the repo but is no longer the preferred path
+1. Load city polygons from `boundaries.json`
+2. Union city polygons per gameplay region
+3. Assign stops by point-in-polygon
+4. Apply a hardcoded `STOP_OVERRIDES` table for stops whose city doesn't match their intended region
 
-### Why Python was introduced
+The new generator is `scripts/generate-landmasses.py`. The config lives at the top of the file and is easy to edit.
 
-The Turf/browser-style approach was too brittle and too slow for:
+### Desired gameplay regions
 
-- coastline polygonization
-- splitting by buffered river geometry
-- subtracting large sets of water geometry
+The four intended regions are:
 
-The Python + Shapely version completes successfully and is materially more reliable.
+| ID | Name | Cities | Key overrides |
+|---|---|---|---|
+| 0 | Cambridge / Somerville / Charlestown | Cambridge, Somerville | Community College, Sullivan Square, Medford/Tufts, Ball Square |
+| 1 | Everett / East Boston / Revere / Malden | Malden, Medford, Revere | Suffolk Downs, Orient Heights, Wood Island, Airport, Maverick → 1; Community College, Sullivan Square, Medford/Tufts → 0 |
+| 2 | Boston / Brookline / Newton | Boston, Brookline, Newton, Milton | — |
+| 3 | Quincy / Braintree | Quincy, Braintree | — |
 
-### Current limitation
+### Current stop assignments
 
-The current landmass output is still not semantically correct for the desired gameplay regions.
+Region 0 (16 stops): Alewife, Assembly, Ball Square, Central, Community College, Davis, East Somerville, Gilman Square, Harvard, Kendall/MIT, Lechmere, Magoun Square, Medford/Tufts, Porter, Sullivan Square, Union Square
 
-The current generated `landmasses.json` produces 3 landmasses:
+Region 1 (11 stops): Airport, Beachmont, Malden Center, Maverick, Oak Grove, Orient Heights, Revere Beach, Suffolk Downs, Wellington, Wonderland, Wood Island
 
-- `North Side / East Boston`
-- `Boston / Brookline`
-- `Quincy / Braintree`
+Region 2 (93 stops): all core Boston/Brookline/Newton network
 
-This is not the desired design.
+Region 3 (5 stops): Braintree, North Quincy, Quincy Adams, Quincy Center, Wollaston
 
-The desired gameplay landmasses are closer to:
+### Known remaining problem
 
-- Cambridge / Somerville
-- Everett / East Boston / Revere / Malden
-- Boston / Brookline / Newton
-- Quincy / Braintree
+The stop assignments are correct but the **display polygons are wrong**.
 
-The user explicitly wants the landmass identity to be reasoned by city / neighborhood, with care for split municipalities such as Boston and Medford, and with important river separators including the Charles, Mystic, and Neponset handled correctly.
+The region geometry for region 0 is the union of the Cambridge and Somerville city polygons from `boundaries.json`. Charlestown is not a separate city in that dataset — it is part of the Boston city polygon. So the displayed region 0 polygon does not include Charlestown geographically, even though Community College and Sullivan Square are assigned to it.
 
-This is the biggest current unresolved design issue.
+Concretely: if a seeker clicks near Community College, the app finds the nearest stop (Community College, region 0), then draws the Cambridge/Somerville polygon as the highlighted region. That polygon does not visually cover Charlestown. The answer logic is correct; the visual is wrong.
+
+The same structural issue affects region 1: the displayed polygon is the union of Malden + Medford + Revere city polygons. It correctly covers the Orange Line north of the Mystic and most of the Blue Line corridor, but it does not include the East Boston portion of Boston geographically — only the stop assignments put those stops in region 1.
+
+### Why this is hard to fix cleanly
+
+`boundaries.json` does not have neighborhood-level polygons for Boston. The Boston entry is one large city polygon covering all Boston neighborhoods including Charlestown, East Boston, Dorchester, Roxbury, etc. There is no Charlestown polygon or East Boston polygon to union into the correct region.
+
+### Recommended next step
+
+The display polygons need to be defined explicitly, not inferred from city unions. Two options:
+
+**Option A — Hand-define region polygons as GeoJSON**
+
+Draw four polygons in geojson.io (or similar) that cover the intended regions. Store them in the generator config. Use them as the display geometry directly; still use point-in-polygon + stop overrides for stop assignment.
+
+This is the most straightforward path. The polygons do not need to be precise administrative boundaries — they just need to cover the right stops for visual purposes.
+
+**Option B — Clip Boston polygon by river geometry**
+
+Fetch the Mystic River and Inner Harbor geometries and use them to cut the Boston city polygon into Charlestown, East Boston, and remaining Boston sub-polygons. Then reassign those sub-polygons to the correct regions.
+
+This is more automated but reintroduces the complexity of the old hydrology approach, just more targeted.
+
+Option A is recommended. The regions are stable and the polygon shapes are simple enough to draw by hand in under 10 minutes.
 
 ## Boundary Status
 
@@ -183,126 +172,43 @@ This is the biggest current unresolved design issue.
 - neighborhood coverage is effectively missing
 - postcode / ZIP coverage is thin and not trustworthy enough
 
-So:
-
-- county matching is mostly offline
-- city / town matching is mostly offline
-- neighborhood matching still effectively depends on fallback behavior
-- ZIP code matching is not production-ready offline
-
 ## POI Status
 
 `pois.json` is generated and currently includes:
 
-- parks
-- golf courses
-- libraries
-- hospitals
-- medical sites
-- museums
-- movie theaters
-- zoo / aquarium
-- foreign consulates
-- amusement parks
-- Dunkin'
-- Starbucks
-- CVS
-- McDonald's
-- gas stations
-- bodies of water
-- coastline
-- Amtrak lines
-
-This is sufficient for the current measure / nearest / tentacle offline-first flows.
+- parks, golf courses, libraries, hospitals, medical sites, museums, movie theaters
+- zoo / aquarium, foreign consulates, amusement parks
+- Dunkin', Starbucks, CVS, McDonald's, gas stations
+- bodies of water, coastline, Amtrak lines
 
 ## Known Issues
 
-### 1. Landmass grouping is still wrong
+### 1. Landmass display polygons do not cover all assigned stops
 
-This is the most important unresolved correctness issue.
+This is the current most important open issue. Described in detail above.
 
-The current generated groups are not the intended gameplay groups. The next implementation should likely stop trying to infer landmasses only from hydrology and instead encode the intended city / neighborhood splits directly.
+### 2. Old in-browser landmass precompute code still exists
 
-### 2. Landmass loading feels heavier than it should
-
-Even though the browser is only loading a file now, `landmasses.json` is still larger and more detailed than it needs to be.
-
-Reasons:
-
-- current polygons are still geometry-heavy
-- the generator was aimed at "true land pieces" rather than minimal gameplay regions
-
-If landmasses are rewritten as explicit gameplay regions, the final asset can be much smaller and feel instant.
+`assets/js/app/04-build.js` still contains `precomputeLandmasses()`, which was the original live Overpass-based generator. It is dead code — nothing calls it. It should be removed to avoid confusion.
 
 ### 3. Neighborhood matching is not solved
 
-The current boundary pipeline does not yet produce a reliable neighborhood dataset.
+The current boundary pipeline does not produce a reliable neighborhood dataset.
 
 ### 4. ZIP / postcode matching is not solved
 
 The current postcode output is not strong enough to rely on.
 
-### 5. Old landmass code still exists in browser JS
-
-`assets/js/app/04-build.js` still contains the old in-browser `precomputeLandmasses()` implementation, even though the runtime now loads `landmasses.json`.
-
-It is effectively obsolete and should either be removed or clearly quarantined so it does not confuse future work.
-
-### 6. Landmass matching implementation is mid-transition
-
-There are uncommitted changes that expose landmass matching in the UI and load `landmasses.json` eagerly at startup, but the underlying landmass semantics are still wrong.
-
-That means the feature is wired, but not yet final.
-
-## Recommended Next Development Directions
-
-### Highest priority
-
-1. Replace current generated landmasses with explicit gameplay landmasses.
-2. Define landmass identity by city / neighborhood rules, with manual exceptions where needed.
-3. Regenerate a much smaller `landmasses.json`.
-
-This should likely be done as a rules-driven generator, not another "let hydrology decide everything" pass.
-
-### Likely implementation direction for landmasses
-
-Use:
-
-- city polygons from `boundaries.json`
-- explicit Boston sub-area rules
-- explicit Medford split rules
-- explicit river-based separators for the Charles / Mystic / Neponset where they matter
-
-The goal is not perfect physical geography. The goal is stable and intuitive gameplay regions.
-
-### After that
-
-4. finish neighborhood matching or remove / de-emphasize it if the data remains unreliable
-5. improve ZIP handling or remove / de-emphasize it similarly
-6. compact final data formats once the logical datasets are stable
-
 ## Desired Feature Additions
 
 ### Custom boundary drawing
 
-This should be added.
-
-The app should support drawing a custom boundary or region and then applying:
+The app should support drawing a custom boundary or region and applying:
 
 - include only inside the custom boundary
 - exclude the custom boundary
 
-This would be useful both as a gameplay / dev tool and as a way to express constraints that do not map cleanly onto the existing canned question types.
-
-This should be called out explicitly in future development planning.
-
-### Landmass UX
-
-Once landmasses are corrected:
-
-- the matching landmass question should remain enabled
-- the app should treat landmass data as a normal startup asset
-- there should be no "precomputing" language anywhere
+Useful both as a gameplay/dev tool and for expressing constraints not covered by canned question types.
 
 ## Useful Commands
 
@@ -321,7 +227,14 @@ Generator commands:
 node scripts/generate-mbta-data.js
 node scripts/generate-pois.js
 node scripts/generate-boundaries.js
-python3 scripts/generate-landmasses.py
+py -3 scripts/generate-landmasses.py   # note: python3 alias may not exist on Windows
+```
+
+Local development server (required — app does not work over file://):
+
+```bash
+py -m http.server 8080
+# open http://localhost:8080/jetlag-mbta.html
 ```
 
 Package script:
@@ -332,13 +245,6 @@ npm run generate:landmasses
 
 ## Bottom Line
 
-This repo is much further along than the original handoff:
+The landmass question is wired and loading correctly. Stop assignments match the intended gameplay regions. The remaining problem is purely visual: the displayed region polygons are city unions that don't cover Charlestown or East Boston because those are sub-areas of the Boston city polygon, not separate cities in `boundaries.json`.
 
-- the app is modularized
-- offline datasets exist
-- runtime no longer depends entirely on live APIs
-- the landmass pipeline has been moved to Python
-
-The main remaining correctness problem is that landmass regions are still inferred the wrong way.
-
-The next person should treat landmass generation as a rules / gameplay-definition problem, not just a geometry problem.
+The next person should implement Option A above: hand-define four simple display polygons in the generator config and use those instead of city unions. Stop assignment logic (point-in-polygon + overrides) can stay as-is or be simplified further once the display polygons are correct.
