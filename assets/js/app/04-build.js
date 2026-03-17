@@ -841,14 +841,10 @@ const MEASURE_CATS = [
 ];
 
 const TENTACLES_CATS = [
-  {icon:'🍩', label:"Dunkin'",      overpass:(c,r)=>`nwr["name"~"Dunkin",i](around:${r},${c.lat},${c.lng});`},
-  {icon:'☕', label:'Starbucks',    overpass:(c,r)=>`nwr["name"~"Starbucks",i](around:${r},${c.lat},${c.lng});`},
-  {icon:'💊', label:'CVS',          overpass:(c,r)=>`nwr["name"~"CVS",i](around:${r},${c.lat},${c.lng});`},
-  {icon:'🍟', label:"McDonald's",   overpass:(c,r)=>`nwr["name"~"McDonald",i](around:${r},${c.lat},${c.lng});`},
   {icon:'🏥', label:'Hospitals',    overpass:(c,r)=>`nwr["amenity"~"hospital|clinic"](around:${r},${c.lat},${c.lng});`},
   {icon:'📚', label:'Libraries',    overpass:(c,r)=>`nwr["amenity"="library"](around:${r},${c.lat},${c.lng});`},
-  {icon:'🌳', label:'Parks',        overpass:(c,r)=>`nwr["leisure"="park"]["name"](around:${r},${c.lat},${c.lng});`},
-  {icon:'⛽', label:'Gas station',  overpass:(c,r)=>`nwr["amenity"="fuel"](around:${r},${c.lat},${c.lng});`},
+  {icon:'🏛️', label:'Museums',     overpass:(c,r)=>`nwr["tourism"="museum"](around:${r},${c.lat},${c.lng});`},
+  {icon:'🎬', label:'Movie Theaters', overpass:(c,r)=>`nwr["amenity"="cinema"](around:${r},${c.lat},${c.lng});`},
 ];
 
 // ── Overpass API search ──
