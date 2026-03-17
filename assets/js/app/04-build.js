@@ -1145,6 +1145,7 @@ function generateJSON(){
     document.getElementById('json-out-section').style.display='block';
     updatePreview();
     renderSimulBtns(json);
+    renderDirectApplyBtns(json);
   },0);
 }
 
@@ -1159,6 +1160,47 @@ const SIMUL_OPTS = {
 };
 
 let _simulActive = null; // currently previewed answer val
+
+function getLocalApplyOptions(json){
+  if(!json) return [];
+  if(SIMUL_OPTS[json.type]) return SIMUL_OPTS[json.type];
+  if(json.type === 'tentacles'){
+    const opts = [{val:'no', icon:'❌', label:'Not nearby', color:'#e84040'}];
+    (json.options || []).forEach((opt, i) => {
+      opts.push({
+        val: opt.name,
+        icon: String(i + 1),
+        label: opt.name,
+        color: '#20c8b0',
+      });
+    });
+    return opts;
+  }
+  if(json.type === 'photo'){
+    return [{val:'sent', icon:'📸', label:'Photo sent', color:'#18b050'}];
+  }
+  return (json.answer_opts || []).map(val => ({
+    val,
+    icon:'•',
+    label:String(val),
+    color:'#20c8b0',
+  }));
+}
+
+function renderDirectApplyBtns(json){
+  const container = document.getElementById('direct-apply-btns');
+  if(!container) return;
+  const opts = getLocalApplyOptions(json);
+  if(!opts.length){
+    container.innerHTML = '';
+    return;
+  }
+  container.innerHTML = opts.map(o =>
+    `<button class="simul-btn" style="--simul-col:${o.color}" onclick="${_c(()=>applyBuiltAnswer(o.val))}">
+      <span class="s-icon">${o.icon}</span>${o.label}
+    </button>`
+  ).join('');
+}
 
 function setPreviewMapMode(active){
   if(maskLayer?.setStyle){
@@ -1290,6 +1332,21 @@ function previewAnswer(val){
   }
 }
 
+function applyBuiltAnswer(val){
+  const raw = document.getElementById('json-out').value.trim();
+  if(!raw){ toast('Generate a question first'); return; }
+  try{
+    const q = JSON.parse(raw);
+    q.answer = val;
+    applyAnswerFromRaw(JSON.stringify(q), ()=>{
+      resetBuild();
+      switchTab('log');
+    });
+  }catch(e){
+    toast('Could not apply built answer');
+  }
+}
+
 function previewCustomBoundary(mode){
   const poly = qparams.custom_boundary_geojson || buildCustomBoundaryFeature(qparams.custom_boundary_points || []);
   if(!poly){ toast('Draw at least 3 points first'); return; }
@@ -1341,5 +1398,7 @@ function resetBuild(){
   document.querySelectorAll('.qbtn').forEach(b=>b.classList.remove('on'));
   document.getElementById('json-out-section').style.display='none';
   document.getElementById('map-simul-bar').classList.remove('visible');
+  const direct = document.getElementById('direct-apply-btns');
+  if(direct) direct.innerHTML = '';
   renderBuildBody();
 }
