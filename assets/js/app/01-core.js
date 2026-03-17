@@ -489,7 +489,7 @@ const QDEFS = {
     }),
     applyToZone:(zone,q)=>{
       try{
-        const union = q._constraint_union || buildMeasureConstraintUnion(q);
+        const union = q._constraint_union || buildMeasureConstraintUnion(q, zone);
         if(!union) return zone;
         if(q.answer==='closer') return safeIsect(zone, union);
         return safeDiff(zone, union);
@@ -688,7 +688,41 @@ function makeBand(a,b,axis){
   else{const mn=Math.min(a.lng,b.lng),mx=Math.max(a.lng,b.lng);return turf.polygon([[[mn,-BIG],[mx,-BIG],[mx,BIG],[mn,BIG],[mn,-BIG]]]);}
 }
 
-function buildMeasureConstraintUnion(q){
+function expandBboxMiles(bbox, miles){
+  if(!Array.isArray(bbox) || bbox.length !== 4 || !Number.isFinite(miles)) return bbox;
+  const midLat = ((bbox[1] + bbox[3]) / 2) * Math.PI / 180;
+  const latDelta = miles / 69;
+  const lngDelta = miles / (69 * Math.max(0.2, Math.cos(midLat)));
+  return [
+    bbox[0] - lngDelta,
+    bbox[1] - latDelta,
+    bbox[2] + lngDelta,
+    bbox[3] + latDelta,
+  ];
+}
+
+function clipFeatureToZone(feature, zone, miles){
+  if(!feature || !zone) return feature;
+  try{
+    const bbox = expandBboxMiles(turf.bbox(zone), miles + 0.5);
+    const clipped = turf.bboxClip(feature, bbox);
+    if(clipped?.geometry) return clipped;
+  }catch(e){}
+  return feature;
+}
+
+function simplifyMeasureFeature(feature, q){
+  if(!feature) return feature;
+  const isCoast = /coast|sea level/i.test(q?.category_label || q?.category || '');
+  if(!isCoast) return feature;
+  try{
+    return turf.simplify(feature, {tolerance:0.005, highQuality:false}) || feature;
+  }catch(e){
+    return feature;
+  }
+}
+
+function buildMeasureConstraintUnion(q, zone=null){
   if(!q || !Number.isFinite(q.seeker_dist)) return null;
   try{
     let union = null;
@@ -697,7 +731,11 @@ function buildMeasureConstraintUnion(q){
         .map(item => coerceFeature(item, item.name))
         .filter(Boolean)
         .map(feature => {
-          try{ return turf.buffer(feature, q.seeker_dist, {units:'miles'}); }catch(e){ return null; }
+          try{
+            const clipped = clipFeatureToZone(feature, zone, q.seeker_dist);
+            const simplified = simplifyMeasureFeature(clipped, q);
+            return turf.buffer(simplified, q.seeker_dist, {units:'miles'});
+          }catch(e){ return null; }
         })
         .filter(Boolean);
       union = buffered[0] || null;

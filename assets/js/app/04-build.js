@@ -1427,7 +1427,7 @@ function generateJSON(){
 
 function ensureMeasureConstraint(question){
   if(!question || question.type !== 'measure' || question._constraint_union) return question;
-  const union = buildMeasureConstraintUnion(question);
+  const union = buildMeasureConstraintUnion(question, validZone);
   if(!union) return question;
   question._constraint_union = union;
   if(currentBuiltQuestion && currentBuiltQuestion.id === question.id){
