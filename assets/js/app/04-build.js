@@ -75,6 +75,15 @@ const MATCHING_CATS = [
   },
 ];
 
+const PHOTO_PROMPTS = [
+  {icon:'TREE', text:'A Tree'},
+  {icon:'SKY', text:'The Sky'},
+  {icon:'SELF', text:'You (Selfie)'},
+  {icon:'ROAD', text:'Widest Street'},
+  {icon:'VIEW', text:'Tallest Structure in Your Sightline'},
+  {icon:'BLDG', text:'Any Building Visible from Station'},
+];
+
 // ── Nearest categories — "Is the nearest ___ to me the same as to you?" ──
 const NEAREST_CATS = [
   { icon:'🌳', label:'Park',             instances: async()=>{ await loadPoiData(); return getNamedPoiCollection('Park'); }, overpass:(c,r)=>`nwr["leisure"="park"]["name"](around:${r},${c.lat},${c.lng});` },
@@ -159,19 +168,6 @@ function landmassForPoint(latLng){
 async function resolveSeekersLandmass(center){
   return landmassForPoint(center);
 }
-
-const PHOTO_PROMPTS = [
-  {icon:'🤳', text:'A selfie of yourself'},
-  {icon:'🌤️', text:'The sky directly above you'},
-  {icon:'🛤️', text:'The widest street you can see'},
-  {icon:'🚉', text:'Your train platform or stop'},
-  {icon:'🏙️', text:'The tallest building in view'},
-  {icon:'🏪', text:'The nearest shop sign'},
-  {icon:'🌳', text:'A tree near your location'},
-  {icon:'🌉', text:'The nearest bridge or overpass'},
-  {icon:'🗺️', text:'A street sign showing your location'},
-  {icon:'🚪', text:'A door to a nearby building'},
-];
 
 function renderBuildBody(){
   _clearClicks();
