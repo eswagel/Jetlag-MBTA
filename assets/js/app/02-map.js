@@ -61,7 +61,7 @@ function decodePolyline(str){
 // ══════════════════════════════════════════════════════
 //  MBTA API — load shapes + stops per game line
 // ══════════════════════════════════════════════════════
-async function loadMBTAData(){
+async function loadMBTADataLegacy(){
   const BASE = 'https://api-v3.mbta.com';
   const legStatus = document.getElementById('leg-status');
   const allStops = {};
@@ -189,6 +189,142 @@ async function loadMBTAData(){
   drawStopMarkers(allStops);
   finalizeMBTALoad(legStatus);
   await loadLandmassData();
+}
+
+async function fetchMBTAJson(url){
+  const res = await fetch(url, {headers:{Accept:'application/json'}});
+  if(!res.ok) throw new Error(`HTTP ${res.status} for ${url}`);
+  return res.json();
+}
+
+async function fetchLiveMBTASnapshot(legStatus){
+  const BASE = 'https://api-v3.mbta.com';
+  const ASHMONT_ONLY = new Set(['place-shmnl','place-fldcr','place-smmnl','place-asmnl']);
+  const BRAINTREE_ONLY = new Set(['place-nqncy','place-wlsta','place-qnctr','place-qamnl','place-brntn']);
+  let loaded = 0;
+
+  const linePromises = GAME_LINES.map(async line => {
+    const [shapeData, stopData] = await Promise.all([
+      fetchMBTAJson(`${BASE}/shapes?filter[route]=${line.routeId}&fields[shape]=polyline`),
+      fetchMBTAJson(`${BASE}/stops?filter[route]=${line.routeId}&fields[stop]=name,latitude,longitude`),
+    ]);
+
+    let shapePath = [];
+    if(line.branchKeyword){
+      const keyword = line.branchKeyword.toLowerCase();
+      const allDecoded = (shapeData.data || [])
+        .map(s => ({id: s.id, coords: decodePolyline(s.attributes.polyline)}))
+        .filter(s => s.coords.length > 1);
+      let match = allDecoded.find(s => s.id.toLowerCase().includes(keyword));
+      if(!match){
+        const termLat = line.branchKeyword === 'Ashmont' ? 42.284 : 42.207;
+        match = allDecoded.reduce((best, s) => {
+          const endLat = s.coords[s.coords.length - 1][0];
+          const score = -Math.abs(endLat - termLat);
+          return (!best || score > best.score) ? {...s, score} : best;
+        }, null);
+      }
+      shapePath = match ? match.coords : [];
+    } else {
+      const sorted = (shapeData.data || [])
+        .map(s => decodePolyline(s.attributes.polyline))
+        .filter(coords => coords.length > 1)
+        .sort((a, b) => b.length - a.length);
+      shapePath = sorted[0] || [];
+    }
+
+    const stops = (stopData.data || [])
+      .map(s => ({
+        id: s.id,
+        name: s.attributes?.name,
+        lat: s.attributes?.latitude,
+        lng: s.attributes?.longitude,
+      }))
+      .filter(stop => Number.isFinite(stop.lat) && Number.isFinite(stop.lng))
+      .filter(stop => {
+        if(line.branchKeyword === 'Ashmont') return !BRAINTREE_ONLY.has(stop.id);
+        if(line.branchKeyword === 'Braintree') return !ASHMONT_ONLY.has(stop.id);
+        return true;
+      });
+
+    loaded++;
+    if(legStatus) legStatus.textContent = `⟳ ${loaded}/${GAME_LINES.length} loaded`;
+
+    return {
+      id: line.id,
+      label: line.label,
+      color: line.color,
+      weight: line.weight,
+      routeId: line.routeId,
+      branchKeyword: line.branchKeyword || null,
+      shapePath,
+      stops,
+    };
+  });
+
+  const commuterRailPromise = fetchMBTAJson(`${BASE}/stops?filter[route_type]=2&fields[stop]=name,latitude,longitude&page[size]=500&include=parent_station`)
+    .then(data => {
+      const seen = new Set();
+      return (data.data || [])
+        .map(stop => ({
+          id: stop.id,
+          parentId: stop.relationships?.parent_station?.data?.id || null,
+          name: stop.attributes?.name,
+          lat: stop.attributes?.latitude,
+          lng: stop.attributes?.longitude,
+        }))
+        .filter(stop =>
+          stop.name &&
+          Number.isFinite(stop.lat) &&
+          Number.isFinite(stop.lng) &&
+          stop.lat >= T_BBOX.minLat &&
+          stop.lat <= T_BBOX.maxLat &&
+          stop.lng >= T_BBOX.minLng &&
+          stop.lng <= T_BBOX.maxLng &&
+          (!seen.has(stop.name) && seen.add(stop.name))
+        );
+    });
+
+  const [lines, commuterRail] = await Promise.all([
+    Promise.all(linePromises),
+    commuterRailPromise,
+  ]);
+
+  return {
+    generatedAt: new Date().toISOString(),
+    bbox: {south: T_BBOX.minLat, north: T_BBOX.maxLat, west: T_BBOX.minLng, east: T_BBOX.maxLng},
+    lines,
+    commuterRail,
+  };
+}
+
+async function loadMBTAData(){
+  const legStatus = document.getElementById('leg-status');
+
+  try{
+    const liveData = await fetchLiveMBTASnapshot(legStatus);
+    if(liveData?.lines?.length){
+      preloadedData.mbta = liveData;
+      hydrateMBTAFromStatic(liveData, legStatus);
+      await loadLandmassData();
+      return;
+    }
+  }catch(e){
+    console.warn('Live MBTA load failed, falling back to local snapshot:', e);
+  }
+
+  const staticData = preloadedData.mbta || await fetchOptionalJSON(DATA_FILES.mbta, 'MBTA snapshot');
+  if(staticData?.lines?.length){
+    preloadedData.mbta = staticData;
+    hydrateMBTAFromStatic(staticData, legStatus);
+    await loadLandmassData();
+    return;
+  }
+
+  console.warn('MBTA live load and local snapshot load both failed');
+  if(legStatus) legStatus.textContent = '⚠ 0 stops — check MBTA data';
+  const txt = document.getElementById('setup-status-text');
+  if(txt) txt.textContent = '⚠ MBTA data failed to load';
 }
 
 function hydrateMBTAFromStatic(data, legStatus){

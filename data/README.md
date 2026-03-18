@@ -9,8 +9,9 @@ Current generated files:
 
 Current runtime behavior in `assets/js/app/`:
 
-- The app tries these local files first.
-- If a file is missing, it falls back to the live MBTA / Overpass / Nominatim requests.
+- MBTA data tries the live MBTA API first and falls back to `mbta-data.json`.
+- Other generated files are loaded locally first.
+- If a file is missing, the app may fall back to live Overpass / Nominatim requests.
 - `landmasses.json` is optional but supported; when present it enables cached landmass lookup state.
 
 Current offline coverage:

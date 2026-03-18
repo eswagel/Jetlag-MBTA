@@ -46,7 +46,7 @@ let constraints = [];
 let qtype=null, qparams={}, pickStep=-1, pickStepDefs=[];
 let currentBuiltQuestion = null;
 let hideRadiusMi = 0.25;   // set by setup screen
-let mbdataReady  = false;  // true once MBTA API load completes
+let mbdataReady  = false;  // true once MBTA data load completes
 let gameMode = 'seeker';   // 'seeker' | 'hider' | 'dev'
 let hiderStation = null;   // {name, lat, lng, lines:[...]} set when hider taps their station
 let _pickingHiderStation = false;
