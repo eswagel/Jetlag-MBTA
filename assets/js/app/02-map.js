@@ -273,7 +273,7 @@ function drawStopMarkers(allStops){
       }).join('')}${isCR?`<span class="stop-line-badge" style="background:#7a4f9a"><span class="stop-line-dot"></span>CR</span>`:''}</div>
     </div>`;
 
-    const icon = makeStopIcon(uniqueColors, isCR);
+    const icon = makeStopIcon(uniqueColors);
     L.marker([lat, lng], {icon, zIndexOffset: isCR ? 200 : (uniqueColors.length > 1 ? 100 : 0)})
       .bindPopup(popupHTML, {offset:[0,-2], maxWidth:240})
       .on('click', function(){

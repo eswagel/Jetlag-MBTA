@@ -976,14 +976,10 @@ async function shortLabel(name, lat, lng){
 // ══════════════════════════════════════════════════════
 
 // Seeker "you are here" — bold red crosshair pin with pulsing ring
-function makeStopIcon(colors, isCR){
+function makeStopIcon(colors){
   const n = colors.length;
 
-  // Sizing: CR stops get larger to accommodate the outer ring
-  const rInner = n > 1 ? 6 : 5;       // inner filled circle
-  const gap    = 2;                     // white gap between rings
-  const rOuter = rInner + gap + 2;     // outer ring (only for CR)
-  const r      = isCR ? rOuter : rInner;
+  const r = n > 1 ? 6 : 5;
 
   const pad  = 2;
   const size = (r + pad) * 2;
@@ -992,7 +988,7 @@ function makeStopIcon(colors, isCR){
   // ── Inner circle / pie ──
   let innerSVG = '';
   if(n === 1){
-    innerSVG = `<circle cx="${cx}" cy="${cy}" r="${rInner}" fill="${colors[0]}" stroke="white" stroke-width="1.5"/>`;
+    innerSVG = `<circle cx="${cx}" cy="${cy}" r="${r}" fill="${colors[0]}" stroke="white" stroke-width="1.5"/>`;
   } else {
     const TAU = 2 * Math.PI;
     const startAngle = -Math.PI / 2;
@@ -1000,41 +996,17 @@ function makeStopIcon(colors, isCR){
     colors.forEach((col, i) => {
       const a0 = startAngle + (i / n) * TAU;
       const a1 = startAngle + ((i + 1) / n) * TAU;
-      const x0 = cx + rInner * Math.cos(a0), y0 = cy + rInner * Math.sin(a0);
-      const x1 = cx + rInner * Math.cos(a1), y1 = cy + rInner * Math.sin(a1);
+      const x0 = cx + r * Math.cos(a0), y0 = cy + r * Math.sin(a0);
+      const x1 = cx + r * Math.cos(a1), y1 = cy + r * Math.sin(a1);
       const large = (a1 - a0) > Math.PI ? 1 : 0;
-      paths += `<path d="M${cx},${cy} L${x0.toFixed(2)},${y0.toFixed(2)} A${rInner},${rInner} 0 ${large},1 ${x1.toFixed(2)},${y1.toFixed(2)} Z" fill="${col}"/>`;
+      paths += `<path d="M${cx},${cy} L${x0.toFixed(2)},${y0.toFixed(2)} A${r},${r} 0 ${large},1 ${x1.toFixed(2)},${y1.toFixed(2)} Z" fill="${col}"/>`;
     });
-    innerSVG = paths + `<circle cx="${cx}" cy="${cy}" r="${rInner}" fill="none" stroke="white" stroke-width="1.5"/>`;
+    innerSVG = paths + `<circle cx="${cx}" cy="${cy}" r="${r}" fill="none" stroke="white" stroke-width="1.5"/>`;
   }
 
-  // ── Drop shadow ──
-  const shadowR = isCR ? rOuter : rInner;
-  const shadow = `<circle cx="${cx+1}" cy="${cy+1}" r="${shadowR+1}" fill="rgba(0,0,0,0.3)"/>`;
-
-  // ── CR concentric rings ──
-  // White gap ring, then outer colored ring — matches MBTA printed map style
-  let crRings = '';
-  if(isCR){
-    // White gap ring fills the space between inner circle and outer ring
-    const rMid = rInner + gap / 2;
-    crRings =
-      // White donut filling the gap
-      `<circle cx="${cx}" cy="${cy}" r="${rInner + gap}" fill="white"/>` +
-      // Outer ring: stroke in line color(s)
-      // For single-color: one ring in that color
-      // For multi-color: stroke in the first color (most prominent line)
-      `<circle cx="${cx}" cy="${cy}" r="${rOuter}" fill="white" stroke="${colors[0]}" stroke-width="2"/>`;
-
-    // If multi-line, split the outer ring with a dashed second color
-    if(n === 2){
-      crRings +=
-        `<circle cx="${cx}" cy="${cy}" r="${rOuter}" fill="none" stroke="${colors[1]}" stroke-width="2" stroke-dasharray="${Math.PI*rOuter/2} ${Math.PI*rOuter/2}" stroke-dashoffset="${Math.PI*rOuter/4}"/>`;
-    }
-  }
-
+  const shadow = `<circle cx="${cx+1}" cy="${cy+1}" r="${r+1}" fill="rgba(0,0,0,0.3)"/>`;
   const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${size}" height="${size}" viewBox="0 0 ${size} ${size}">
-    ${shadow}${crRings}${innerSVG}
+    ${shadow}${innerSVG}
   </svg>`;
 
   return L.divIcon({
