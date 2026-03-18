@@ -98,6 +98,20 @@
     }
     #pick-banner.visible { transform: translateY(0); }
 
+    #back-to-map-btn {
+      position: fixed;
+      top: calc(12px + var(--safe-top));
+      right: 12px;
+      z-index: 950;
+      display: none;
+      padding: 9px 12px;
+      font-size: 9px;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      box-shadow: 0 8px 28px rgba(0,0,0,0.55);
+    }
+    #back-to-map-btn.visible { display: inline-flex; }
+
     /* ── Floating map answer-preview bar ── */
     #map-simul-bar {
       position: fixed; bottom: calc(64px + var(--safe-bottom)); left: 50%; transform: translateX(-50%) translateY(20px);
@@ -116,6 +130,7 @@
     }
     @media (min-width: 640px) {
       #map-simul-bar { bottom: 24px; }
+      #back-to-map-btn { display: none !important; }
     }
     .msb-label {
       font-size: 8px; letter-spacing: 0.1em; text-transform: uppercase;
