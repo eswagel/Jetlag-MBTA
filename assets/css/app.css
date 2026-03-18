@@ -128,9 +128,31 @@
       opacity: 1; pointer-events: auto;
       transform: translateX(-50%) translateY(0);
     }
+    #msb-btns { display: inline-flex; align-items: center; gap: 6px; }
     @media (min-width: 640px) {
       #map-simul-bar { bottom: 24px; }
       #back-to-map-btn { display: none !important; }
+    }
+    @media (max-width: 639px) {
+      #map-simul-bar {
+        left: 12px;
+        right: 12px;
+        bottom: calc(72px + var(--safe-bottom));
+        transform: translateY(20px);
+        border-radius: 14px;
+        padding: 8px;
+        justify-content: center;
+      }
+      #map-simul-bar.visible { transform: translateY(0); }
+      .msb-label, .msb-divider, .msb-key, .msb-area { display: none; }
+      #msb-btns { display: flex; width: 100%; }
+      .msb-btn {
+        flex: 1;
+        min-width: 0;
+        justify-content: center;
+        padding: 8px 10px;
+        font-size: 10px;
+      }
     }
     .msb-label {
       font-size: 8px; letter-spacing: 0.1em; text-transform: uppercase;
