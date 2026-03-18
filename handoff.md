@@ -4,7 +4,7 @@
 
 This repository contains a static browser app for a Boston MBTA version of Jet Lag hide-and-seek.
 
-- `jetlag-mbta.html` is the document shell
+- `index.html` is the document shell
 - `assets/css/app.css` contains styles
 - `assets/js/app/` contains the application JS split by responsibility
 - `data/` contains precomputed runtime datasets
@@ -234,7 +234,7 @@ Local development server (required — app does not work over file://):
 
 ```bash
 py -m http.server 8080
-# open http://localhost:8080/jetlag-mbta.html
+# open http://localhost:8080/
 ```
 
 Package script:
