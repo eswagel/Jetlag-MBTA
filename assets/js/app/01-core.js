@@ -29,6 +29,7 @@ const DATA_FILES = {
   pois: 'data/pois.json',
   boundaries: 'data/boundaries.json',
   landmasses: 'data/landmasses.json',
+  elevation: 'data/elevation-grid.json',
 };
 const INIT_POLY = turf.polygon([[
   [-71.70,41.85],[-70.40,41.85],[-70.40,42.80],[-71.70,42.80],[-71.70,41.85]
@@ -54,7 +55,9 @@ const preloadedData = {
   pois: null,
   boundaries: null,
   landmasses: null,
+  elevation: null,
 };
+const elevationPointCache = new Map();
 
 // ══════════════════════════════════════════════════════
 //  GAME MODE
@@ -114,7 +117,10 @@ function saveGame(){
       hideRadiusMi,
       hiderStation: hiderStation || null,
       validZone: cloneGeo(validZone),
-      constraints: constraints.map(c => JSON.parse(JSON.stringify(c, (k,v)=>v instanceof Set?[...v]:v)))
+      constraints: constraints.map(c => JSON.parse(JSON.stringify(c, (k,v)=>{
+        if(k === '_constraint_union') return undefined;
+        return v instanceof Set ? [...v] : v;
+      })))
     };
     localStorage.setItem(SAVE_KEY, JSON.stringify(save));
   }catch(e){ console.warn('Save failed', e); }
@@ -157,6 +163,34 @@ async function loadBoundaryData(){
   if(preloadedData.boundaries) return preloadedData.boundaries;
   preloadedData.boundaries = await fetchOptionalJSON(DATA_FILES.boundaries, 'boundaries');
   return preloadedData.boundaries;
+}
+
+async function loadElevationData(){
+  if(preloadedData.elevation) return preloadedData.elevation;
+  preloadedData.elevation = await fetchOptionalJSON(DATA_FILES.elevation, 'elevation grid');
+  return preloadedData.elevation;
+}
+
+async function fetchPointElevation(lat, lng){
+  const key = `${Number(lat).toFixed(5)},${Number(lng).toFixed(5)}`;
+  if(elevationPointCache.has(key)) return elevationPointCache.get(key);
+  const url = `https://epqs.nationalmap.gov/v1/json?x=${lng}&y=${lat}&units=Feet&wkid=4326&includeDate=false`;
+  const promise = fetch(url, {headers:{'Accept':'application/json'}})
+    .then(res => {
+      if(!res.ok) throw new Error(`Elevation lookup failed (${res.status})`);
+      return res.json();
+    })
+    .then(data => {
+      const feet = Number(data?.value);
+      if(!Number.isFinite(feet)) throw new Error('Invalid elevation response');
+      return {
+        feet,
+        meters: feet * 0.3048,
+        resolution: Number(data?.resolution) || null,
+      };
+    });
+  elevationPointCache.set(key, promise);
+  return promise;
 }
 
 function normKey(value){
@@ -474,28 +508,39 @@ const QDEFS = {
   measure:{
     label:'Measure', colorTag:'tag-measure',
     pickSteps:[{key:'center', label:'Tap map — your location'}],
-    isReady:p=>p.center&&p.measure_cat&&p.measure_seeker_dist!=null,
+    isReady:p=>p.center&&p.measure_cat&&(
+      p.measure_mode === 'elevation'
+        ? Number.isFinite(p.measure_seeker_elevation_ft)
+        : p.measure_seeker_dist!=null
+    ),
     toJSON:p=>({
       type:'measure',
       center:p.center,
+      mode:p.measure_mode || 'distance',
       category:p.measure_cat,
       category_label:p.measure_cat_label,
       seeker_nearest:p.measure_seeker_nearest,   // {lat,lng,name} — seeker's nearest instance
       seeker_dist:p.measure_seeker_dist,          // seeker's distance to their nearest
+      seeker_elevation_ft:p.measure_seeker_elevation_ft ?? null,
+      seeker_elevation_m:p.measure_seeker_elevation_m ?? null,
       all_instances:p.measure_all_instances||[],  // all known instances for zone geometry
       linear_features:p.measure_linear_features||[],
-      question:`Compared to me, are you closer to or further from your nearest ${p.measure_cat_label}? I am ${p.measure_seeker_dist.toFixed(2)} mi from mine.`,
-      answer_opts:['closer','further']
+      question:(p.measure_mode === 'elevation')
+        ? `Are you at a higher or lower elevation than me? I am ${p.measure_seeker_elevation_ft.toFixed(0)} ft above sea level.`
+        : `Compared to me, are you closer to or further from your nearest ${p.measure_cat_label}? I am ${p.measure_seeker_dist.toFixed(2)} mi from mine.`,
+      answer_opts:(p.measure_mode === 'elevation') ? ['higher','lower'] : ['closer','further']
     }),
     applyToZone:(zone,q)=>{
       try{
         const union = q._constraint_union || buildMeasureConstraintUnion(q, zone);
         if(!union) return zone;
-        if(q.answer==='closer') return safeIsect(zone, union);
+        if(q.answer==='closer' || q.answer==='higher') return safeIsect(zone, union);
         return safeDiff(zone, union);
       }catch(e){ return zone; }
     },
-    describe:q=>`<b>${q.answer==='closer'?'CLOSER':'FURTHER'}</b> than seeker (${q.seeker_dist?.toFixed(2)}mi) from nearest ${q.category_label}`
+    describe:q=>(q.mode === 'elevation')
+      ? `<b>${q.answer==='higher'?'HIGHER':'LOWER'}</b> than seeker (${Number(q.seeker_elevation_ft).toFixed(0)} ft above sea level)`
+      : `<b>${q.answer==='closer'?'CLOSER':'FURTHER'}</b> than seeker (${q.seeker_dist?.toFixed(2)}mi) from nearest ${q.category_label}`
   },
   tentacles:{
     label:'Tentacles', colorTag:'tag-tentacles',
@@ -722,9 +767,64 @@ function simplifyMeasureFeature(feature, q){
   }
 }
 
+function buildElevationConstraintFeature(q, zone=null){
+  const data = preloadedData.elevation;
+  const thresholdFt = Number(q?.seeker_elevation_ft);
+  const latitudes = data?.latitudes;
+  const longitudes = data?.longitudes;
+  const values = data?.values;
+  if(!Number.isFinite(thresholdFt) || !Array.isArray(latitudes) || latitudes.length < 2 || !Array.isArray(longitudes) || longitudes.length < 2 || !Array.isArray(values)) return null;
+
+  const zoneBbox = zone ? turf.bbox(zone) : [data.bbox?.west ?? longitudes[0], data.bbox?.south ?? latitudes[0], data.bbox?.east ?? longitudes[longitudes.length - 1], data.bbox?.north ?? latitudes[latitudes.length - 1]];
+  const polys = [];
+
+  for(let row = 0; row < latitudes.length - 1; row++){
+    const south = latitudes[row];
+    const north = latitudes[row + 1];
+    if(north < zoneBbox[1] || south > zoneBbox[3]) continue;
+    for(let col = 0; col < longitudes.length - 1; col++){
+      const west = longitudes[col];
+      const east = longitudes[col + 1];
+      if(east < zoneBbox[0] || west > zoneBbox[2]) continue;
+
+      const cellValues = [
+        Number(values?.[row]?.[col]),
+        Number(values?.[row]?.[col + 1]),
+        Number(values?.[row + 1]?.[col]),
+        Number(values?.[row + 1]?.[col + 1]),
+      ].filter(Number.isFinite);
+      if(cellValues.length < 3) continue;
+      const avgFt = cellValues.reduce((sum, value) => sum + value, 0) / cellValues.length;
+      if(avgFt < thresholdFt) continue;
+
+      polys.push([[
+        [west, south],
+        [east, south],
+        [east, north],
+        [west, north],
+        [west, south],
+      ]]);
+    }
+  }
+
+  if(!polys.length) return null;
+  return turf.multiPolygon(polys);
+}
+
 function buildMeasureConstraintUnion(q, zone=null){
-  if(!q || !Number.isFinite(q.seeker_dist)) return null;
+  if(!q) return null;
   try{
+    if(q.mode === 'elevation'){
+      const feature = buildElevationConstraintFeature(q, zone);
+      if(!feature) return null;
+      try{
+        return turf.simplify(feature, {tolerance:0.0008, highQuality:false}) || feature;
+      }catch(e){
+        return feature;
+      }
+    }
+
+    if(!Number.isFinite(q.seeker_dist)) return null;
     let union = null;
     if(q.linear_features?.length){
       const buffered = q.linear_features

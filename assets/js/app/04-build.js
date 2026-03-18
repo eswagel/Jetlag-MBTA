@@ -336,7 +336,13 @@ function renderMeasureParams(){
     h += '</div>';
   });
 
-  if(qparams._msearching) h+='<div style="font-size:9px;color:var(--dim);margin-top:8px">⏳ Finding nearest…</div>';
+  if(qparams._msearching) h+=`<div style="font-size:9px;color:var(--dim);margin-top:8px">${isSeaLevelMeasure(qparams.measure_cat_label) ? '⏳ Looking up elevation…' : '⏳ Finding nearest…'}</div>`;
+  else if(qparams.measure_mode === 'elevation' && Number.isFinite(qparams.measure_seeker_elevation_ft))
+    h+=`<div class="found-result" style="margin-top:8px">
+      ⛰️ <b>${qparams.measure_seeker_elevation_ft.toFixed(0)} ft above sea level</b><br>
+      <span style="color:var(--dim)">${qparams.measure_seeker_elevation_m.toFixed(1)} m above sea level</span><br>
+      <span style="font-size:8px;color:var(--dim)">USGS point elevation estimate for your selected location</span>
+    </div>`;
   else if(qparams.measure_seeker_nearest)
     h+=`<div class="found-result" style="margin-top:8px">
       📍 <b>${qparams.measure_seeker_nearest.name}</b><br>
@@ -1097,6 +1103,20 @@ function measureNearestPopup(categoryLabel, nearestName){
   return `<div class="stop-popup"><div class="stop-popup-name">${nearestName}</div><div style="font-size:9px;color:#f0a030">★ Your ${what} on ${categoryLabel}</div></div>`;
 }
 
+function isSeaLevelMeasure(label){
+  return String(label || '').toLowerCase() === 'sea level';
+}
+
+function measureAnswerOptions(question){
+  if(question?.type === 'measure' && question.mode === 'elevation'){
+    return [
+      {val:'higher', icon:'⬆️', label:'Higher', color:'#f0a030'},
+      {val:'lower', icon:'⬇️', label:'Lower', color:'#3a8eff'},
+    ];
+  }
+  return SIMUL_OPTS.measure;
+}
+
 function simplifyLineCoords(coords, tolerance=0.0035){
   if(!Array.isArray(coords) || coords.length < 3) return coords || [];
   const simplified = [coords[0]];
@@ -1154,7 +1174,7 @@ async function getMeasureLinearFeatures(catObj, center){
   if(catObj.label === 'An Amtrak Line'){
     return getNamedLinearFeatures(catObj.label);
   }
-  if(catObj.label === 'Sea Level' || catObj.label === 'A Coastline'){
+  if(catObj.label === 'A Coastline'){
     const preloaded = getNamedLinearFeatures(catObj.label);
     if(preloaded.length) return preloaded;
     const r = 50000;
@@ -1217,13 +1237,32 @@ async function selectMeasureCat(catObj){
   if(!qparams.center){toast('Set your location first');return;}
   qparams._mcat=catObj.label; qparams._mcatlabel=catObj.label; qparams._msearching=true;
   qparams.measure_cat=catObj.label; qparams.measure_cat_label=catObj.label;
-  qparams.measure_seeker_nearest=null; qparams.measure_seeker_dist=null; qparams.measure_all_instances=null; qparams.measure_linear_features=null; qparams.measure_constraint_union=null;
+  qparams.measure_mode='distance';
+  qparams.measure_seeker_nearest=null; qparams.measure_seeker_dist=null; qparams.measure_seeker_elevation_ft=null; qparams.measure_seeker_elevation_m=null; qparams.measure_all_instances=null; qparams.measure_linear_features=null; qparams.measure_constraint_union=null;
   if(catObj.label==='A County Border') highlightBoundary('county');
   else if(catObj.label==='A City Border') highlightBoundary('city');
   else clearBoundaryHighlight();
   renderBuildBody();
   try{
-    if(['An Amtrak Line','Sea Level','A Coastline'].includes(catObj.label)){
+    if(isSeaLevelMeasure(catObj.label)){
+      const grid = await loadElevationData();
+      if(!grid?.values?.length){
+        toast('No elevation grid data available');
+        qparams._msearching=false;
+        renderBuildBody();
+        return;
+      }
+      const elevation = await fetchPointElevation(qparams.center.lat, qparams.center.lng);
+      qparams._msearching=false;
+      qparams.measure_mode='elevation';
+      qparams.measure_seeker_elevation_ft=elevation.feet;
+      qparams.measure_seeker_elevation_m=elevation.meters;
+      clearPoiMarkers();
+      renderBuildBody(); updatePreview(); tryGenerate();
+      return;
+    }
+
+    if(['An Amtrak Line','A Coastline'].includes(catObj.label)){
       const lineFeatures = (await getMeasureLinearFeatures(catObj, qparams.center))
         .map(item => ({name:item.name, feature:coerceFeature(item, item.name)}))
         .filter(item => item.feature);
@@ -1398,7 +1437,7 @@ function updatePreview(){
         previewLayer.addData(thermoDividerLine(qparams.center, qparams.thermo_dest));
       }
     }
-    if(qtype==='measure'&&qparams.measure_seeker_nearest&&qparams.measure_seeker_dist) previewLayer.addData(makeCircle(qparams.measure_seeker_nearest,qparams.measure_seeker_dist,'miles'));
+    if(qtype==='measure'&&qparams.measure_mode!=='elevation'&&qparams.measure_seeker_nearest&&qparams.measure_seeker_dist) previewLayer.addData(makeCircle(qparams.measure_seeker_nearest,qparams.measure_seeker_dist,'miles'));
     if(qtype==='tentacles'&&qparams.center&&qparams.radius_miles) previewLayer.addData(makeCircle(qparams.center,qparams.radius_miles,'miles'));
     if(qtype==='custom_boundary'&&qparams.custom_boundary_geojson) previewLayer.addData(qparams.custom_boundary_geojson);
   }catch(e){}
@@ -1441,7 +1480,7 @@ function shouldWarnSlowMeasure(question){
     question &&
     question.type === 'measure' &&
     !question._constraint_union &&
-    /coast|sea level/i.test(question.category_label || question.category || '')
+    /coast/i.test(question.category_label || question.category || '')
   );
 }
 
@@ -1468,6 +1507,7 @@ let _simulActive = null; // currently previewed answer val
 
 function getLocalApplyOptions(json){
   if(!json) return [];
+  if(json.type === 'measure') return measureAnswerOptions(json);
   if(SIMUL_OPTS[json.type]) return SIMUL_OPTS[json.type];
   if(json.type === 'tentacles'){
     const opts = [{val:'no', icon:'❌', label:'Not nearby', color:'#e84040'}];
@@ -1585,11 +1625,11 @@ function getLivePreviewQuestion(){
 function refreshActiveAnswerPreview(){
   if(!_simulActive || !qtype) return;
   const def = QDEFS[qtype];
-  const opts = SIMUL_OPTS[qtype];
+  const liveQ = getLivePreviewQuestion();
+  const opts = getLocalApplyOptions(liveQ);
   if(!def || !opts) return;
   const opt = opts.find(o=>o.val===_simulActive);
   if(!opt) return;
-  const liveQ = getLivePreviewQuestion();
   if(!liveQ) return;
   try{
     ensureMeasureConstraint(liveQ);
@@ -1601,7 +1641,7 @@ function refreshActiveAnswerPreview(){
 }
 
 function renderSimulBtns(json){
-  const opts = SIMUL_OPTS[json.type];
+  const opts = getLocalApplyOptions(json);
   const container = document.getElementById('simul-btns');
   const hint      = document.getElementById('simul-hint');
   const bar       = document.getElementById('map-simul-bar');
@@ -1646,7 +1686,8 @@ function renderSimulBtns(json){
 
 function previewAnswer(val){
   const def = QDEFS[qtype];
-  const opts = SIMUL_OPTS[qtype];
+  const baseQuestion = getLivePreviewQuestion() || currentBuiltQuestion;
+  const opts = getLocalApplyOptions(baseQuestion);
   const hint = document.getElementById('simul-hint');
 
   // Toggle off if same button pressed twice

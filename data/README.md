@@ -5,6 +5,7 @@ Current generated files:
 - `mbta-data.json`
 - `pois.json`
 - `boundaries.json`
+- `elevation-grid.json`
 
 Current runtime behavior in `assets/js/app/`:
 
@@ -17,6 +18,7 @@ Current offline coverage:
 - `mbta-data.json` covers the full rapid transit network snapshot plus commuter rail stop points.
 - `boundaries.json` currently covers counties and cities/towns that contain at least one playable MBTA stop.
 - `pois.json` currently covers the preloaded measure/nearest/tentacle categories, including chain POIs and Amtrak line geometry.
+- `elevation-grid.json` stores a coarse cached elevation grid over the playable MBTA area for sea-level questions.
 - `landmasses.json` is generated from a Python + Shapely pipeline with cached shoreline/water checkpoints under `data/_cache/` during local generation.
 
 Current live fallbacks that still remain:

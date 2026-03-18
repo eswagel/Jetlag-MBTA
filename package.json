@@ -7,7 +7,8 @@
     "generate:mbta": "node scripts/generate-mbta-data.js",
     "generate:boundaries": "node scripts/generate-boundaries.js",
     "generate:pois": "node scripts/generate-pois.js",
-    "generate:landmasses": "python3 scripts/generate-landmasses.py"
+    "generate:landmasses": "python3 scripts/generate-landmasses.py",
+    "generate:elevation": "node scripts/generate-elevation-grid.js"
   },
   "dependencies": {
     "@turf/turf": "^7.3.4"

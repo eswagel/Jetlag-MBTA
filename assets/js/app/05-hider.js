@@ -237,6 +237,16 @@ async function hiderComputeAnswer(hiderLoc){
     explanation = `Using the travel direction from the seeker's current location, you are ${answer === 'closer' ? 'ahead of' : 'behind'} the divider line after a ${q.travel_miles}mi move → <b>${answer.toUpperCase()}</b>`;
 
   } else if(q.type === 'measure'){
+    if(q.mode === 'elevation'){
+      const elevation = await fetchPointElevation(hiderLoc.lat, hiderLoc.lng);
+      const hiderFt = elevation.feet;
+      const seekerFt = Number(q.seeker_elevation_ft);
+      answer = hiderFt >= seekerFt ? 'higher' : 'lower';
+      explanation = `Your elevation: <b>${hiderFt.toFixed(0)} ft</b> / Seeker's: ${seekerFt.toFixed(0)} ft above sea level → <b>${answer.toUpperCase()}</b>`;
+      hiderPickAnswer(answer, explanation);
+      return;
+    }
+
     let nearest = null;
     let hiderDist = Infinity;
     if(Array.isArray(q.linear_features) && q.linear_features.length){
@@ -339,7 +349,9 @@ function describeQuestion(q, def){
   const m = {
     radar:     ()=>`Is the hider within <b>${q.radius_miles} mile${q.radius_miles!==1?'s':''}</b> of the seeker's location?`,
     thermo:    ()=>`After the seekers move <b>${q.travel_miles} mile${q.travel_miles!==1?'s':''}</b> in the chosen direction, are you on the <b>closer</b> side or the <b>further</b> side of the divider through their current location?`,
-    measure:   ()=>`Are you closer or further from your nearest <b>${q.category_label}</b> than the seeker? (Seeker is <b>${q.seeker_dist?.toFixed(2)}mi</b> from theirs)`,
+    measure:   ()=>q.mode === 'elevation'
+      ? `Are you at a <b>higher</b> or <b>lower</b> elevation than the seeker? (Seeker is <b>${Number(q.seeker_elevation_ft).toFixed(0)} ft</b> above sea level)`
+      : `Are you closer or further from your nearest <b>${q.category_label}</b> than the seeker? (Seeker is <b>${q.seeker_dist?.toFixed(2)}mi</b> from theirs)`,
     tentacles: ()=>`Are you within <b>${q.radius_miles||1} mile</b> of the seeker? If yes — which of these are you closest to?<br><br>${(q.options||[]).map((o,i)=>`<b>${i+1}.</b> ${o.name}`).join('<br>')}`,
     matching:   ()=>`Are you in the same <b>${q.category_label}</b> as the seeker? (Seeker's: <b>${q.seeker_val}</b>)`,
     nearest:    ()=>`Is the nearest <b>${q.category_label}</b> to you the same as mine?<br>Mine is <b>${q.seeker_poi?.name}</b>.`,
