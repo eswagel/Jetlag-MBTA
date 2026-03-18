@@ -281,6 +281,11 @@ function drawStopMarkers(allStops){
           setHiderStation({name, lat, lng, lines:[...new Set(lines)]});
           return;
         }
+        const activeStep = pickStep >= 0 && pickStep < pickStepDefs.length ? pickStepDefs[pickStep] : null;
+        if(activeStep?.key === 'center' && typeof applyPickedPoint === 'function'){
+          applyPickedPoint(lat, lng);
+          return;
+        }
         this.openPopup();
       })
       .addTo(map);

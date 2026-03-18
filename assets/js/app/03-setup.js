@@ -124,6 +124,26 @@ function resetZone(){
 // ══════════════════════════════════════════════════════
 //  MAP CLICK
 // ══════════════════════════════════════════════════════
+function applyPickedPoint(lat, lng, zIndexOffset=2000){
+  if(pickStep < 0 || pickStep >= pickStepDefs.length) return false;
+  qparams[pickStepDefs[pickStep].key] = {lat, lng};
+  const cols = ['#e84040', '#f0a030', '#a060ff', '#20c8b0'];
+  const m = L.marker([lat, lng], {icon: seekerPin(cols[pickStep % cols.length]), zIndexOffset}).addTo(map);
+  seekerPinMarkers.push(m);
+  pickStep++;
+  if(pickStep >= pickStepDefs.length){
+    hideBanner();
+    document.getElementById('panel').classList.remove('collapsed');
+    if(QDEFS[qtype].isReady(qparams)) generateJSON();
+  } else {
+    showBanner(pickStepDefs[pickStep].label);
+  }
+  renderBuildBody();
+  updatePreview();
+  if(qtype === 'thermo') tryGenerate();
+  return true;
+}
+
 function onMapClick(e){
   if(_hiderPickingLocation){
     hiderSetLocation(e.latlng.lat, e.latlng.lng, 'map tap');
@@ -143,21 +163,7 @@ function onMapClick(e){
   }
   if(pickStep<0||pickStep>=pickStepDefs.length) return;
   const {lat,lng}=e.latlng;
-  qparams[pickStepDefs[pickStep].key]={lat,lng};
-  const cols=['#e84040','#f0a030','#a060ff','#20c8b0'];
-  const m=L.marker([lat,lng],{icon:seekerPin(cols[pickStep%cols.length]),zIndexOffset:2000}).addTo(map);
-  seekerPinMarkers.push(m);
-  pickStep++;
-  if(pickStep>=pickStepDefs.length){
-    hideBanner();
-    document.getElementById('panel').classList.remove('collapsed');
-    if(QDEFS[qtype].isReady(qparams)) generateJSON();
-  } else {
-    showBanner(pickStepDefs[pickStep].label);
-  }
-  renderBuildBody();
-  updatePreview();
-  if(qtype === 'thermo') tryGenerate();
+  applyPickedPoint(lat, lng);
 }
 
 // ══════════════════════════════════════════════════════
