@@ -570,7 +570,7 @@ function confirmCard(){
 }
 
 function doRandomize(){
-  const preset = chooseRandomizedQuestionPreset();
+  const preset = chooseRandomizedQuestionPreset(_hiderQ);
   if(!preset){
     toast('Could not build a randomized question');
     return;

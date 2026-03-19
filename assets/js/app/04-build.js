@@ -1069,10 +1069,15 @@ function getRandomizeQuestionCatalog(){
   return items;
 }
 
-function chooseRandomizedQuestionPreset(){
+function chooseRandomizedQuestionPreset(sourceQuestion=null){
   const catalog = getRandomizeQuestionCatalog();
   if(!catalog.length) return null;
-  return cloneForStorage(catalog[Math.floor(Math.random() * catalog.length)]);
+  const sourceType = sourceQuestion?.type || null;
+  const pool = sourceType
+    ? catalog.filter(item => item.question_type === sourceType)
+    : catalog;
+  const choices = pool.length ? pool : catalog;
+  return cloneForStorage(choices[Math.floor(Math.random() * choices.length)]);
 }
 
 async function overpassSearch(overpassBody, near, radiusM=5000){
