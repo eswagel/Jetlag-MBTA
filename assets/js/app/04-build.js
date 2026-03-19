@@ -973,6 +973,7 @@ const TENTACLES_CATS = [
   {icon:'📚', label:'Libraries',    overpass:(c,r)=>`nwr["amenity"="library"](around:${r},${c.lat},${c.lng});`},
   {icon:'🏛️', label:'Museums',     overpass:(c,r)=>`nwr["tourism"="museum"](around:${r},${c.lat},${c.lng});`},
   {icon:'🎬', label:'Movie Theaters', overpass:(c,r)=>`nwr["amenity"="cinema"](around:${r},${c.lat},${c.lng});`},
+  {icon:'☕', label:"Dunkin'",      overpass:(c,r)=>`nwr["name"~"Dunkin",i](around:${r},${c.lat},${c.lng});`},
 ];
 
 // ── Overpass API search ──
