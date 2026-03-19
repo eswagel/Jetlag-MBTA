@@ -136,7 +136,16 @@ async function hiderLoadQuestion(){
 
   if(!isGeo){
     if(q.type === 'matching'){
-      document.getElementById('hider-manual-btns').innerHTML = `
+      document.getElementById('hider-manual-btns').innerHTML = q.category === 'line' ? `
+        <p style="font-size:9px;color:var(--dim);margin-bottom:10px;font-family:'IBM Plex Mono',monospace">
+          Is your station on the <b>${q.seeker_val || q.matching_line_label || q.category_label}</b>?
+          Use your saved station to auto-answer, or answer manually.
+        </p>
+        <button class="btn btn-red" style="margin-bottom:8px" onclick="hiderAutoLineLookup()">🚇 Auto-answer from Station</button>
+        <div style="display:flex;gap:8px">
+          <button class="ans-btn yes" style="flex:1" onclick="_amDispatch('Yes')"><span class="ans-ico">✅</span>Yes — same</button>
+          <button class="ans-btn no"  style="flex:1" onclick="_amDispatch('No')"><span class="ans-ico">❌</span>No — different</button>
+        </div>` : `
         <p style="font-size:9px;color:var(--dim);margin-bottom:10px;font-family:'IBM Plex Mono',monospace">
           Are you in the same <b>${q.category_label}</b> as the seeker?
           Use your GPS to auto-answer, or answer manually.
@@ -239,6 +248,22 @@ async function hiderAutoMatchLookup(){
     (err) => toast(err.code===1?'Location permission denied':'Location unavailable'),
     {enableHighAccuracy:true, timeout:10000, maximumAge:30000}
   );
+}
+
+function hiderAutoLineLookup(){
+  const q = _hiderQ;
+  if(!q || q.type !== 'matching' || q.category !== 'line') return;
+  if(!hiderStation?.lines?.length){
+    toast('Set your station first');
+    promptHiderStationPick();
+    return;
+  }
+  const targetLineId = q.line_id || null;
+  const targetLabel = q.seeker_val || q.matching_line_label || q.category_label || 'Unknown line';
+  const same = targetLineId ? hiderStation.lines.includes(targetLineId) : false;
+  const answer = same ? 'Yes' : 'No';
+  const expl = `Your station: <b>${hiderStation.name}</b> / Selected line: <b>${targetLabel}</b> → <b>${answer.toUpperCase()}</b>`;
+  hiderPickAnswer(answer, expl);
 }
 
 async function hiderAutoNearestLookup(){
@@ -446,7 +471,9 @@ function describeQuestion(q, def){
       ? `Are you at a <b>higher</b> or <b>lower</b> elevation than the seeker?`
       : `Are you closer or further from your nearest <b>${q.category_label}</b> than the seeker?`,
     tentacles: ()=>`Are you within <b>${q.radius_miles||1} mile</b> of the seeker? If yes — which of these are you closest to?<br><br>${(q.options||[]).map((o,i)=>`<b>${i+1}.</b> ${o.name}`).join('<br>')}`,
-    matching:   ()=>`Are you in the same <b>${q.category_label}</b> as the seeker?`,
+    matching:   ()=>q.category === 'line'
+      ? `Is your station on the same <b>${q.category_label}</b> as the seeker? Mine is <b>${q.seeker_val || 'Unknown'}</b>.`
+      : `Are you in the same <b>${q.category_label}</b> as the seeker?`,
     nearest:    ()=>`Is the nearest <b>${q.category_label}</b> to you the same as the seeker's?`,
     photo:     ()=>`📸 Please send a photo of: <b>${q.prompt}</b>`,
   };

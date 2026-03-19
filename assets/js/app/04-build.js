@@ -9,6 +9,19 @@ function _clearClicks(){ _clicks.length=0; }
 // resolve(latLng) returns { val: string, boundary: GeoJSON polygon | null }
 const MATCHING_CATS = [
   {
+    icon:'🚇', label:'T Line', cat:'line',
+    resolve: async (_c, opts={}) => {
+      const lineId = opts.lineId || null;
+      const line = GAME_LINES.find(gl => gl.id === lineId);
+      if(!line) return {val:null, boundary:null, line_id:null};
+      return {
+        val: line.label,
+        boundary: buildLineMatchingBoundary(line.id, opts.hideRadiusMiles),
+        line_id: line.id,
+      };
+    }
+  },
+  {
     icon:'🏝️', label:'Landmass', cat:'landmass',
     resolve: async (c) => {
       await loadLandmassData();
@@ -162,6 +175,25 @@ function landmassForPoint(latLng){
   const fallback = findNearestStopLandmass(latLng);
   if(fallback) return fallback;
   return null;
+}
+
+function stopHasGameLine(stop, lineId){
+  if(!stop || !lineId) return false;
+  if(stop.lines instanceof Set) return stop.lines.has(lineId);
+  if(Array.isArray(stop.lines)) return stop.lines.includes(lineId);
+  return false;
+}
+
+function buildLineMatchingBoundary(lineId, radiusMiles=hideRadiusMi){
+  const stops = Object.values(stopLineMap).filter(stop => stopHasGameLine(stop, lineId));
+  if(!stops.length) return null;
+  let union = makeCircle(stops[0], radiusMiles, 'miles');
+  for(let i = 1; i < stops.length; i++){
+    try{
+      union = turf.union(union, makeCircle(stops[i], radiusMiles, 'miles')) || union;
+    }catch(e){}
+  }
+  return safeIsect(INIT_POLY, union) || union;
 }
 
 // Old per-question async resolver — now just a fast lookup
@@ -394,6 +426,19 @@ function renderMatchingParams(){
   h += '</div>';
   if(qparams._matching_searching)
     h += '<div style="font-size:9px;color:var(--dim);margin-top:8px">⏳ Looking up your location and boundary…</div>';
+  else if(qparams.matching_cat === 'line'){
+    h += '<div class="sec" style="margin-top:10px">Choose Line</div>';
+    h += '<div style="display:flex;flex-direction:column;gap:5px">';
+    GAME_LINES.forEach(line=>{
+      const sel = qparams.matching_line_id === line.id;
+      h += `<div class="sitem${sel?' active-row':''}" style="${sel?'border-color:var(--purple);background:rgba(160,96,255,0.08);color:var(--text)':''}" onclick="${_c(()=>selectMatchingLine(line.id))}">
+        <span style="display:inline-block;width:9px;height:9px;border-radius:50%;background:${line.color};margin-right:8px;vertical-align:middle"></span>
+        <span style="vertical-align:middle">${line.label}</span>
+        ${sel?'<span style="float:right;color:var(--purple);font-size:9px">✓</span>':''}
+      </div>`;
+    });
+    h += '</div>';
+  }
   else if(qparams.matching_seeker_val){
     const hasBoundary = !!qparams.matching_boundary;
     h += `<div class="found-result" style="margin-top:8px">
@@ -441,6 +486,11 @@ async function selectMatchingCat(catObj){
   qparams._matching_mode = 'matching';
   qparams.matching_cat = catObj.cat;
   qparams.matching_cat_label = catObj.label;
+  if(catObj.cat !== 'line'){
+    qparams.matching_line_id = null;
+    qparams.matching_line_label = null;
+    qparams.matching_hide_radius_miles = null;
+  }
   qparams.matching_seeker_val = null;
   qparams.matching_boundary = null;
   qparams.nearest_cat = null;
@@ -448,17 +498,30 @@ async function selectMatchingCat(catObj){
   qparams.nearest_seeker_poi = null;
   qparams.nearest_all_pois = null;
   qparams.nearest_voronoi = null;
-  qparams._matching_searching = true;
   highlightBoundary(catObj.cat);
+  if(catObj.cat === 'line' && !qparams.matching_line_id){
+    qparams._matching_searching = false;
+    renderBuildBody();
+    return;
+  }
+  qparams._matching_searching = true;
   renderBuildBody();
   try{
-    const result = await catObj.resolve(qparams.center);
+    const result = await catObj.resolve(qparams.center, {
+      lineId: qparams.matching_line_id,
+      hideRadiusMiles: hideRadiusMi,
+    });
     qparams._matching_searching = false;
     if(!result.val){ toast('Could not determine your '+catObj.label+' — try a different location'); renderBuildBody(); return; }
     qparams.matching_seeker_val = result.val;
+    if(result.line_id){
+      qparams.matching_line_id = result.line_id;
+      qparams.matching_line_label = result.val;
+      qparams.matching_hide_radius_miles = hideRadiusMi;
+    }
     // Normalize: ensure seeker's point is INSIDE the polygon, flip if not
     let boundary = result.boundary || null;
-    if(boundary){
+    if(boundary && catObj.cat !== 'line'){
       try{
         const pt = turf.point([qparams.center.lng, qparams.center.lat]);
         if(!turf.booleanPointInPolygon(pt, boundary)){
@@ -487,6 +550,15 @@ async function selectMatchingCat(catObj){
     toast('Lookup failed: '+e.message);
     renderBuildBody();
   }
+}
+
+async function selectMatchingLine(lineId){
+  const catObj = MATCHING_CATS.find(c => c.cat === 'line');
+  const line = GAME_LINES.find(gl => gl.id === lineId);
+  if(!catObj || !line){ toast('Unknown line'); return; }
+  qparams.matching_line_id = line.id;
+  qparams.matching_line_label = line.label;
+  await selectMatchingCat(catObj);
 }
 
 async function selectNearestCat(catObj){
@@ -1039,6 +1111,22 @@ function getRandomizeQuestionCatalog(){
     });
   });
   MATCHING_CATS.forEach(cat => {
+    if(cat.cat === 'line'){
+      GAME_LINES.forEach(line => {
+        items.push({
+          build_qtype:'matching',
+          question_type:'matching',
+          mode:'matching',
+          label:`Matching · ${cat.label} · ${line.label}`,
+          category:cat.cat,
+          category_label:cat.label,
+          line_id:line.id,
+          seeker_val:line.label,
+          hide_radius_miles:hideRadiusMi,
+        });
+      });
+      return;
+    }
     items.push({
       build_qtype:'matching',
       question_type:'matching',
@@ -1608,7 +1696,20 @@ function buildQuestionPacket(question){
     };
   }
   if(question.type === 'matching'){
-    return {id:question.id, type:question.type, center:question.center, category:question.category, category_label:question.category_label};
+    return {
+      id:question.id,
+      type:question.type,
+      center:question.center,
+      category:question.category,
+      category_label:question.category_label,
+      ...(question.category === 'line'
+        ? {
+            seeker_val:question.seeker_val,
+            line_id:question.line_id || null,
+            hide_radius_miles:question.hide_radius_miles ?? hideRadiusMi,
+          }
+        : {}),
+    };
   }
   if(question.type === 'nearest'){
     return {id:question.id, type:question.type, center:question.center, category:question.category, category_label:question.category_label};

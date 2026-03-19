@@ -94,8 +94,11 @@ function buildStoredMatchingQuestion(payload){
   const category = payload.category || payload.category_label;
   const categoryLabel = payload.category_label || category;
   if(!center || !category) throw new Error('Matching question is missing center or category');
+  if(category === 'line' && !payload.boundary_geojson) return null;
   if(!payload.seeker_val && !('boundary_geojson' in payload)) return null;
-  const boundary = normalizeMatchingBoundaryForCenter(payload.boundary_geojson || null, center);
+  const boundary = category === 'line'
+    ? (payload.boundary_geojson || null)
+    : normalizeMatchingBoundaryForCenter(payload.boundary_geojson || null, center);
   return {
     id:payload.id,
     ...QDEFS.matching.toJSON({
@@ -103,6 +106,8 @@ function buildStoredMatchingQuestion(payload){
       matching_cat:category,
       matching_cat_label:categoryLabel,
       matching_seeker_val:payload.seeker_val || 'Unknown',
+      matching_line_id:payload.line_id || null,
+      matching_hide_radius_miles:Number(payload.hide_radius_miles || hideRadiusMi),
       matching_boundary:boundary,
       _matching_boundary_simplified:boundary,
     }),
@@ -115,9 +120,15 @@ async function rebuildMatchingQuestion(payload){
   const category = payload.category || payload.category_label;
   const catObj = MATCHING_CATS.find(c => c.cat === category);
   if(!center || !catObj) throw new Error('Unknown matching category');
-  const result = await catObj.resolve(center);
+  if(category === 'line' && !payload.line_id) throw new Error('Line matching question is missing line id');
+  const result = await catObj.resolve(center, {
+    lineId: payload.line_id || null,
+    hideRadiusMiles: Number(payload.hide_radius_miles || hideRadiusMi),
+  });
   if(!result?.val) throw new Error(`Could not resolve ${payload.category_label || catObj.label}`);
-  const boundary = normalizeMatchingBoundaryForCenter(result.boundary || null, center);
+  const boundary = category === 'line'
+    ? (result.boundary || null)
+    : normalizeMatchingBoundaryForCenter(result.boundary || null, center);
   return {
     id:payload.id,
     ...QDEFS.matching.toJSON({
@@ -125,6 +136,8 @@ async function rebuildMatchingQuestion(payload){
       matching_cat:catObj.cat,
       matching_cat_label:payload.category_label || catObj.label,
       matching_seeker_val:result.val,
+      matching_line_id:payload.line_id || result.line_id || null,
+      matching_hide_radius_miles:Number(payload.hide_radius_miles || hideRadiusMi),
       matching_boundary:boundary,
       _matching_boundary_simplified:boundary,
     }),
@@ -431,6 +444,9 @@ function questionToBuildParams(question){
         matching_cat:question.category,
         matching_cat_label:question.category_label,
         matching_seeker_val:question.seeker_val,
+        matching_line_id:question.line_id || null,
+        matching_line_label:question.seeker_val || null,
+        matching_hide_radius_miles:question.hide_radius_miles ?? hideRadiusMi,
         matching_boundary:question.boundary_geojson || null,
         _matching_boundary_simplified:question.boundary_geojson || null,
       };
@@ -498,6 +514,9 @@ function presetToBuildParams(preset){
         _matching_mode:'matching',
         matching_cat:preset.category,
         matching_cat_label:preset.category_label,
+        matching_line_id:preset.line_id || null,
+        matching_line_label:preset.seeker_val || null,
+        matching_hide_radius_miles:preset.hide_radius_miles ?? hideRadiusMi,
       };
     case 'photo':
       return {

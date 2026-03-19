@@ -671,8 +671,12 @@ const QDEFS = {
       category:p.matching_cat,
       category_label:p.matching_cat_label,
       seeker_val:p.matching_seeker_val,
+      line_id:p.matching_cat === 'line' ? (p.matching_line_id || null) : null,
+      hide_radius_miles:p.matching_cat === 'line' ? (p.matching_hide_radius_miles ?? hideRadiusMi) : null,
       boundary_geojson: p._matching_boundary_simplified || p.matching_boundary || null,
-      question:`Are we in the same ${p.matching_cat_label}? Mine is "${p.matching_seeker_val}".`,
+      question:(p.matching_cat === 'line')
+        ? `Is your station on the same ${p.matching_cat_label}? Mine is "${p.matching_seeker_val}".`
+        : `Are we in the same ${p.matching_cat_label}? Mine is "${p.matching_seeker_val}".`,
       answer_opts:['Yes','No']
     }),
     applyToZone:(zone,q)=>{
