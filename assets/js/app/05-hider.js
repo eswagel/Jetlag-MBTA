@@ -16,6 +16,74 @@ const ANS_OPTS = {
   // tentacles: built dynamically in openAnswerModal
 };
 
+function findMatchingCategory(cat){
+  return MATCHING_CATS.find(c => c.cat === cat);
+}
+
+function findNearestCategory(label){
+  return NEAREST_CATS.find(c => c.label === label);
+}
+
+function findMeasureCategory(label){
+  return MEASURE_CATS.find(c => c.label === label);
+}
+
+async function resolveMatchingValue(cat, loc){
+  const catObj = findMatchingCategory(cat);
+  if(!catObj) throw new Error(`Unknown matching category: ${cat}`);
+  return catObj.resolve(loc);
+}
+
+async function resolveNearestValue(categoryLabel, loc){
+  const catObj = findNearestCategory(categoryLabel);
+  if(!catObj) throw new Error(`Unknown nearest category: ${categoryLabel}`);
+  const items = await getCategoryInstances(catObj, loc, 35000);
+  if(!items.length) return null;
+  return items.sort((a,b)=>turfDist(loc,a)-turfDist(loc,b))[0];
+}
+
+async function resolveMeasureValue(question, loc){
+  if(question.mode === 'elevation'){
+    const elevation = await fetchPointElevation(loc.lat, loc.lng);
+    return {
+      kind:'elevation',
+      feet:elevation.feet,
+      meters:elevation.meters,
+    };
+  }
+
+  const catObj = findMeasureCategory(question.category);
+  if(!catObj) throw new Error(`Unknown measure category: ${question.category}`);
+
+  if(['An Amtrak Line','A Coastline'].includes(question.category)){
+    const lineFeatures = (await getMeasureLinearFeatures(catObj, loc))
+      .map(item => ({name:item.name, feature:coerceFeature(item, item.name)}))
+      .filter(item => item.feature);
+    if(!lineFeatures.length) return null;
+
+    const point = turf.point([loc.lng, loc.lat]);
+    let best = null;
+    lineFeatures.forEach(item => {
+      try{
+        const snapped = turf.nearestPointOnLine(item.feature, point, {units:'miles'});
+        const dist = snapped?.properties?.dist;
+        if(!Number.isFinite(dist) || (best && dist >= best.dist)) return;
+        best = {name:item.name || question.category_label, dist};
+      }catch(e){}
+    });
+    return best ? {kind:'distance', name:best.name, dist:best.dist} : null;
+  }
+
+  const items = await getCategoryInstances(catObj, loc, 35000);
+  if(!items.length) return null;
+  const nearest = items.sort((a,b)=>turfDist(loc,a)-turfDist(loc,b))[0];
+  return {
+    kind:'distance',
+    name:nearest.name,
+    dist:turfDist(loc, nearest),
+  };
+}
+
 function hiderLoadQuestion(){
   const raw = document.getElementById('hider-json-in').value.trim();
   if(!raw){ toast('Paste a question JSON first'); return; }
@@ -43,7 +111,7 @@ function hiderLoadQuestion(){
     if(q.type === 'matching'){
       document.getElementById('hider-manual-btns').innerHTML = `
         <p style="font-size:9px;color:var(--dim);margin-bottom:10px;font-family:'IBM Plex Mono',monospace">
-          Are you in the same <b>${q.category_label}</b> as the seeker (${q.seeker_val})?
+          Are you in the same <b>${q.category_label}</b> as the seeker?
           Use your GPS to auto-answer, or answer manually.
         </p>
         <button class="btn btn-red" style="margin-bottom:8px" onclick="hiderAutoMatchLookup()">📡 Auto-answer with GPS</button>
@@ -54,7 +122,7 @@ function hiderLoadQuestion(){
     } else if(q.type === 'nearest'){
       document.getElementById('hider-manual-btns').innerHTML = `
         <p style="font-size:9px;color:var(--dim);margin-bottom:10px;font-family:'IBM Plex Mono',monospace">
-          Is the nearest <b>${q.category_label}</b> to you also <b>${q.seeker_poi?.name}</b>?
+          Is the nearest <b>${q.category_label}</b> to you the same as the seeker's?
           Use your GPS to auto-answer, or answer manually.
         </p>
         <button class="btn btn-red" style="margin-bottom:8px" onclick="hiderAutoNearestLookup()">📡 Auto-answer with GPS</button>
@@ -118,7 +186,7 @@ function renderHiderStationBadge(){
 async function hiderAutoMatchLookup(){
   const q = _hiderQ;
   if(!q || q.type !== 'matching') return;
-  const cat = MATCHING_CATS.find(c=>c.cat === q.category);
+  const cat = findMatchingCategory(q.category);
   if(!cat){ toast('Unknown category'); return; }
 
   const btns = document.getElementById('hider-manual-btns');
@@ -128,10 +196,14 @@ async function hiderAutoMatchLookup(){
   navigator.geolocation.getCurrentPosition(
     async (pos) => {
       try{
-        const resolved = await cat.resolve({lat:pos.coords.latitude, lng:pos.coords.longitude});
-        const hiderVal = resolved?.val;
-        if(!hiderVal){ toast('Could not determine your '+q.category_label); return; }
-        const match = normKey(hiderVal) === normKey(q.seeker_val);
+        const hiderResolved = await cat.resolve({lat:pos.coords.latitude, lng:pos.coords.longitude});
+        const seekerResolved = q._seeker_match || await resolveMatchingValue(q.category, q.center);
+        q._seeker_match = seekerResolved;
+        const hiderVal = hiderResolved?.val;
+        const seekerVal = seekerResolved?.val;
+        if(!hiderVal || !seekerVal){ toast('Could not determine '+q.category_label); return; }
+        q.seeker_val = seekerVal;
+        const match = normKey(hiderVal) === normKey(seekerVal);
         const answer = match ? 'Yes' : 'No';
         const expl = `Your ${q.category_label}: <b>${hiderVal}</b> / Seeker's: <b>${q.seeker_val}</b> → <b>${answer.toUpperCase()}</b>`;
         hiderPickAnswer(answer, expl);
@@ -145,7 +217,7 @@ async function hiderAutoMatchLookup(){
 async function hiderAutoNearestLookup(){
   const q = _hiderQ;
   if(!q || q.type !== 'nearest') return;
-  const cat = NEAREST_CATS.find(c=>c.label === q.category);
+  const cat = findNearestCategory(q.category);
   if(!cat){ toast('Unknown category'); return; }
 
   const btns = document.getElementById('hider-manual-btns');
@@ -157,10 +229,12 @@ async function hiderAutoNearestLookup(){
       try{
         const loc = {lat:pos.coords.latitude, lng:pos.coords.longitude};
         if(btns) btns.innerHTML = '<div style="font-size:9px;color:var(--dim);margin-top:6px">🔍 Searching for nearest '+q.category_label+'…</div>';
-        const items = await getCategoryInstances(cat, loc, 35000);
-        if(!items.length){ toast('No '+q.category_label+' found near your location'); return; }
-        const nearest = items.sort((a,b)=>turfDist(loc,a)-turfDist(loc,b))[0];
-        const match = normKey(nearest.name) === normKey(q.seeker_poi.name);
+        const nearest = await resolveNearestValue(q.category, loc);
+        const seekerNearest = q._seeker_nearest || await resolveNearestValue(q.category, q.center);
+        q._seeker_nearest = seekerNearest;
+        if(!nearest || !seekerNearest){ toast('No '+q.category_label+' found'); return; }
+        q.seeker_poi = seekerNearest;
+        const match = normKey(nearest.name) === normKey(seekerNearest.name);
         const answer = match ? 'Yes' : 'No';
         const expl = `Your nearest ${q.category_label}: <b>${nearest.name}</b> / Seeker's: <b>${q.seeker_poi.name}</b> → <b>${answer.toUpperCase()}</b>`;
         hiderPickAnswer(answer, expl);
@@ -237,6 +311,25 @@ async function hiderComputeAnswer(hiderLoc){
     explanation = `Using the travel direction from the seeker's current location, you are ${answer === 'closer' ? 'ahead of' : 'behind'} the divider line after a ${q.travel_miles}mi move → <b>${answer.toUpperCase()}</b>`;
 
   } else if(q.type === 'measure'){
+    const seekerMeasure = q._seeker_measure || await resolveMeasureValue(q, q.center);
+    q._seeker_measure = seekerMeasure;
+    const hiderMeasure = await resolveMeasureValue(q, hiderLoc);
+    if(!seekerMeasure || !hiderMeasure){ toast('Could not determine nearest measure feature'); return; }
+
+    if(q.mode === 'elevation'){
+      const hiderFt = hiderMeasure.feet;
+      const seekerFt = seekerMeasure.feet;
+      answer = hiderFt >= seekerFt ? 'higher' : 'lower';
+      explanation = `Your elevation: <b>${hiderFt.toFixed(0)} ft</b> / Seeker's: ${seekerFt.toFixed(0)} ft above sea level -> <b>${answer.toUpperCase()}</b>`;
+      hiderPickAnswer(answer, explanation);
+      return;
+    }
+
+    answer = hiderMeasure.dist <= seekerMeasure.dist ? 'closer' : 'further';
+    explanation = `Your nearest ${q.category_label}: <b>${hiderMeasure.name}</b> (${hiderMeasure.dist.toFixed(2)}mi) / Seeker's: ${seekerMeasure.dist.toFixed(2)}mi -> <b>${answer.toUpperCase()}</b>`;
+    hiderPickAnswer(answer, explanation);
+    return;
+
     if(q.mode === 'elevation'){
       const elevation = await fetchPointElevation(hiderLoc.lat, hiderLoc.lng);
       const hiderFt = elevation.feet;
@@ -298,7 +391,7 @@ function _amDispatch(val){ hiderPickAnswer(val, null); }
 
 function hiderPickAnswer(val, explanation){
   if(!_hiderQ) return;
-  const answered = {..._hiderQ, answer: val};
+  const answered = _hiderQ.id ? {id:_hiderQ.id, answer: val} : {answer: val};
 
   // Show result state
   document.getElementById('hider-locate-state').style.display = 'none';
@@ -350,11 +443,11 @@ function describeQuestion(q, def){
     radar:     ()=>`Is the hider within <b>${q.radius_miles} mile${q.radius_miles!==1?'s':''}</b> of the seeker's location?`,
     thermo:    ()=>`After the seekers move <b>${q.travel_miles} mile${q.travel_miles!==1?'s':''}</b> in the chosen direction, are you on the <b>closer</b> side or the <b>further</b> side of the divider through their current location?`,
     measure:   ()=>q.mode === 'elevation'
-      ? `Are you at a <b>higher</b> or <b>lower</b> elevation than the seeker? (Seeker is <b>${Number(q.seeker_elevation_ft).toFixed(0)} ft</b> above sea level)`
-      : `Are you closer or further from your nearest <b>${q.category_label}</b> than the seeker? (Seeker is <b>${q.seeker_dist?.toFixed(2)}mi</b> from theirs)`,
+      ? `Are you at a <b>higher</b> or <b>lower</b> elevation than the seeker?`
+      : `Are you closer or further from your nearest <b>${q.category_label}</b> than the seeker?`,
     tentacles: ()=>`Are you within <b>${q.radius_miles||1} mile</b> of the seeker? If yes — which of these are you closest to?<br><br>${(q.options||[]).map((o,i)=>`<b>${i+1}.</b> ${o.name}`).join('<br>')}`,
-    matching:   ()=>`Are you in the same <b>${q.category_label}</b> as the seeker? (Seeker's: <b>${q.seeker_val}</b>)`,
-    nearest:    ()=>`Is the nearest <b>${q.category_label}</b> to you the same as mine?<br>Mine is <b>${q.seeker_poi?.name}</b>.`,
+    matching:   ()=>`Are you in the same <b>${q.category_label}</b> as the seeker?`,
+    nearest:    ()=>`Is the nearest <b>${q.category_label}</b> to you the same as the seeker's?`,
     photo:     ()=>`📸 Please send a photo of: <b>${q.prompt}</b>`,
   };
   return (m[q.type]&&m[q.type]()) || def.label;

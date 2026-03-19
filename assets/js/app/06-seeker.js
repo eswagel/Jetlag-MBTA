@@ -1,5 +1,21 @@
 //  SEEKER: APPLY ANSWER
 // ========================================================
+function resolveAnsweredQuestion(payload){
+  if(payload.type === 'veto' || payload.type === 'randomize_card') return payload;
+  if(!payload?.answer){ return null; }
+  if(payload.type){
+    const def = QDEFS[payload.type];
+    const extraKeys = Object.keys(payload).filter(k => !['id','type','answer'].includes(k));
+    if(def && extraKeys.length) return payload;
+  }
+  if(!payload.id) return null;
+  const base = (currentBuiltQuestion && currentBuiltQuestion.id === payload.id)
+    ? cloneForStorage(currentBuiltQuestion)
+    : getOutgoingQuestion(payload.id);
+  if(!base) return null;
+  return {...base, answer: payload.answer};
+}
+
 function applyAnswerObject(q, onSuccess){
   // Veto
   if(q.type === 'veto'){
@@ -45,6 +61,7 @@ function applyAnswerObject(q, onSuccess){
     if(!nz){ toast('Zone empty - contradiction?'); return; }
     validZone = nz;
     constraints.push(q);
+    forgetOutgoingQuestion(q.id);
     renderZone();
     renderLog();
     saveGame();
@@ -62,11 +79,18 @@ function applyAnswer(){
 }
 
 function applyAnswerFromRaw(raw, onSuccess){
-  let q;
+  let payload;
   try{
-    q = JSON.parse(raw);
+    payload = JSON.parse(raw);
   }catch(e){
     toast('Invalid JSON - check format');
+    return;
+  }
+  const q = resolveAnsweredQuestion(payload);
+  if(!q){
+    toast(payload?.id
+      ? 'Original question data not found on this device'
+      : 'Invalid answer JSON - missing question context');
     return;
   }
   applyAnswerObject(q, onSuccess);

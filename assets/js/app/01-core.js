@@ -45,6 +45,7 @@ let validZone = cloneGeo(INIT_POLY);
 let constraints = [];
 let qtype=null, qparams={}, pickStep=-1, pickStepDefs=[];
 let currentBuiltQuestion = null;
+let outgoingQuestions = {};
 let hideRadiusMi = 0.25;   // set by setup screen
 let mbdataReady  = false;  // true once MBTA data load completes
 let gameMode = 'seeker';   // 'seeker' | 'hider' | 'dev'
@@ -108,6 +109,28 @@ function applyGameMode(){
 }
 const SAVE_KEY = 'jetlag_mbta_save';
 
+function cloneForStorage(value){
+  return JSON.parse(JSON.stringify(value, (k,v)=>{
+    if(k === '_constraint_union') return undefined;
+    return v instanceof Set ? [...v] : v;
+  }));
+}
+
+function rememberOutgoingQuestion(question){
+  if(!question?.id) return;
+  outgoingQuestions[question.id] = cloneForStorage(question);
+}
+
+function getOutgoingQuestion(id){
+  if(!id || !outgoingQuestions[id]) return null;
+  return cloneForStorage(outgoingQuestions[id]);
+}
+
+function forgetOutgoingQuestion(id){
+  if(!id || !outgoingQuestions[id]) return;
+  delete outgoingQuestions[id];
+}
+
 function saveGame(){
   try{
     const save = {
@@ -117,10 +140,8 @@ function saveGame(){
       hideRadiusMi,
       hiderStation: hiderStation || null,
       validZone: cloneGeo(validZone),
-      constraints: constraints.map(c => JSON.parse(JSON.stringify(c, (k,v)=>{
-        if(k === '_constraint_union') return undefined;
-        return v instanceof Set ? [...v] : v;
-      })))
+      constraints: constraints.map(cloneForStorage),
+      outgoingQuestions: cloneForStorage(outgoingQuestions),
     };
     localStorage.setItem(SAVE_KEY, JSON.stringify(save));
   }catch(e){ console.warn('Save failed', e); }
@@ -137,6 +158,7 @@ function loadSave(){
 }
 
 function clearSave(){
+  outgoingQuestions = {};
   localStorage.removeItem(SAVE_KEY);
 }
 
@@ -420,6 +442,7 @@ function resumeGame(){
   hiderStation = save.hiderStation || null;
   validZone = save.validZone;
   constraints = save.constraints;
+  outgoingQuestions = save.outgoingQuestions || {};
 
   // Dismiss resume overlay and setup overlay
   document.getElementById('resume-overlay').classList.add('hidden');

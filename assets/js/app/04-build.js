@@ -1414,14 +1414,63 @@ function updatePreview(){
   refreshActiveAnswerPreview();
 }
 
+function buildQuestionPacket(question){
+  if(!question) return null;
+  if(question.type === 'radar'){
+    return {id:question.id, type:question.type, center:question.center, radius_miles:question.radius_miles};
+  }
+  if(question.type === 'thermo'){
+    return {
+      id:question.id,
+      type:question.type,
+      center:question.center,
+      thermo_dest:question.thermo_dest,
+      travel_miles:question.travel_miles,
+    };
+  }
+  if(question.type === 'measure'){
+    return {
+      id:question.id,
+      type:question.type,
+      center:question.center,
+      mode:question.mode || 'distance',
+      category:question.category,
+      category_label:question.category_label,
+    };
+  }
+  if(question.type === 'tentacles'){
+    return {
+      id:question.id,
+      type:question.type,
+      center:question.center,
+      radius_miles:question.radius_miles || 1,
+      options:(question.options || []).map(o => ({name:o.name, lat:o.lat, lng:o.lng})),
+    };
+  }
+  if(question.type === 'matching'){
+    return {id:question.id, type:question.type, center:question.center, category:question.category, category_label:question.category_label};
+  }
+  if(question.type === 'nearest'){
+    return {id:question.id, type:question.type, center:question.center, category:question.category, category_label:question.category_label};
+  }
+  if(question.type === 'photo'){
+    return {id:question.id, type:question.type, prompt:question.prompt};
+  }
+  return cloneForStorage(question);
+}
+
 function generateJSON(){
   const def=QDEFS[qtype];
-  const json=def.toJSON(qparams);
-  json.id='q'+Date.now().toString(36);
+  if(currentBuiltQuestion?.id) forgetOutgoingQuestion(currentBuiltQuestion.id);
+  const fullQuestion=def.toJSON(qparams);
+  fullQuestion.id='q'+Date.now().toString(36);
   currentBuiltQuestion = {
-    ...json,
+    ...fullQuestion,
     _constraint_union: qtype === 'measure' ? qparams.measure_constraint_union || null : null,
   };
+  rememberOutgoingQuestion(currentBuiltQuestion);
+  saveGame();
+  const json = buildQuestionPacket(currentBuiltQuestion);
   // Yield to UI thread before heavy stringify (prevents freeze on mobile)
   setTimeout(()=>{
     document.getElementById('json-out').value=JSON.stringify(json,null,2);
@@ -1702,9 +1751,10 @@ function applyBuiltAnswer(val){
   if(!raw){ toast('Generate a question first'); return; }
   try{
     const parsed = JSON.parse(raw);
-    const q = currentBuiltQuestion && currentBuiltQuestion.id === parsed.id
-      ? {...currentBuiltQuestion, answer: val}
-      : {...parsed, answer: val};
+    const base = currentBuiltQuestion && currentBuiltQuestion.id === parsed.id
+      ? currentBuiltQuestion
+      : getOutgoingQuestion(parsed.id);
+    const q = base ? {...base, answer: val} : {...parsed, answer: val};
     runSlowMeasureAction(q, () => {
       try{
         ensureMeasureConstraint(q);
