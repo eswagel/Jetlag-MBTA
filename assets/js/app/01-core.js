@@ -554,17 +554,7 @@ function timeSince(ts){
 
 // Draw radius circles without recomputing validZone (for resume)
 function applyHideRadiusVisuals(){
-  const stops = Object.values(stopLineMap);
-  if(!stops.length) return;
   radiusLayer.clearLayers();
-  const radiusMeters = hideRadiusMi * 1609.34;
-  stops.forEach(s=>{
-    L.circle([s.lat,s.lng],{
-      radius:radiusMeters, color:'#4ab8d4', weight:2,
-      opacity:0.8, fillColor:'#4ab8d4', fillOpacity:0.15,
-      dashArray:'6 4', interactive:false
-    }).addTo(radiusLayer);
-  });
 }
 
 // ══════════════════════════════════════════════════════
