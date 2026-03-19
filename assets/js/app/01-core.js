@@ -46,6 +46,7 @@ let constraints = [];
 let qtype=null, qparams={}, pickStep=-1, pickStepDefs=[];
 let currentBuiltQuestion = null;
 let outgoingQuestions = {};
+let _saveGameTimer = null;
 let hideRadiusMi = 0.25;   // set by setup screen
 let mbdataReady  = false;  // true once MBTA data load completes
 let gameMode = 'seeker';   // 'seeker' | 'hider' | 'dev'
@@ -142,9 +143,18 @@ function saveGame(){
       validZone: cloneGeo(validZone),
       constraints: constraints.map(cloneForStorage),
       outgoingQuestions: cloneForStorage(outgoingQuestions),
+      buildState: typeof getSerializableBuildState === 'function' ? getSerializableBuildState() : null,
     };
     localStorage.setItem(SAVE_KEY, JSON.stringify(save));
   }catch(e){ console.warn('Save failed', e); }
+}
+
+function scheduleSaveGame(delay=120){
+  clearTimeout(_saveGameTimer);
+  _saveGameTimer = setTimeout(()=>{
+    _saveGameTimer = null;
+    saveGame();
+  }, delay);
 }
 
 function loadSave(){
@@ -159,6 +169,8 @@ function loadSave(){
 
 function clearSave(){
   outgoingQuestions = {};
+  clearTimeout(_saveGameTimer);
+  _saveGameTimer = null;
   localStorage.removeItem(SAVE_KEY);
 }
 
@@ -464,11 +476,14 @@ function resumeGame(){
     }
     const km2 = (turf.area(validZone)/1e6).toFixed(1);
     toast(`Game resumed — ${km2} km² in play`);
+    if(save.buildState && typeof restoreSerializableBuildState === 'function'){
+      restoreSerializableBuildState(save.buildState);
+    }
     if(gameMode !== 'hider'){
       document.getElementById('panel').classList.remove('collapsed');
       setTimeout(()=>document.getElementById('panel').classList.add('collapsed'), 2000);
     }
-    switchTab(gameMode === 'hider' ? 'hider' : 'log');
+    switchTab(save.buildState?.qtype ? 'build' : (gameMode === 'hider' ? 'hider' : 'log'));
   };
   if(mbdataReady) restore();
   else { const iv = setInterval(()=>{ if(mbdataReady){ clearInterval(iv); restore(); }}, 200); }

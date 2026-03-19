@@ -203,12 +203,14 @@ function renderBuildBody(){
   else if(qtype==='custom_boundary') h += renderCustomBoundaryParams();
 
   el.innerHTML = h;
+  if(typeof scheduleSaveGame === 'function') scheduleSaveGame();
 }
 
 function renderBoundaryBody(){
   const el = document.getElementById('boundary-body');
   if(!el) return;
   el.innerHTML = renderCustomBoundaryParams();
+  if(typeof scheduleSaveGame === 'function') scheduleSaveGame();
 }
 
 function renderRadarParams(){
@@ -1562,6 +1564,7 @@ function updatePreview(){
   if(previewLayer?.bringToFront) previewLayer.bringToFront();
   if(thermoHandleMarker?.bringToFront) thermoHandleMarker.bringToFront();
   refreshActiveAnswerPreview();
+  if(typeof scheduleSaveGame === 'function') scheduleSaveGame();
 }
 
 function buildQuestionPacket(question){
@@ -1979,4 +1982,5 @@ function resetBuild(){
   const direct = document.getElementById('direct-apply-btns');
   if(direct) direct.innerHTML = '';
   renderBuildBody();
+  if(typeof scheduleSaveGame === 'function') scheduleSaveGame();
 }

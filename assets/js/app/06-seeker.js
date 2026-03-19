@@ -565,6 +565,70 @@ function loadRandomizedPresetIntoBuild(preset){
   tryGenerate();
 }
 
+function getSerializableBuildState(){
+  if(!qtype) return null;
+  return {
+    qtype,
+    qparams: cloneForStorage(qparams),
+    pickStep,
+    currentBuiltQuestion: currentBuiltQuestion ? cloneForStorage(currentBuiltQuestion) : null,
+  };
+}
+
+function syncRestoredBuildUi(){
+  document.querySelectorAll('.qbtn').forEach(b=>b.classList.toggle('on', b.dataset.q===qtype));
+  if(typeof syncLoadedQuestionHighlights === 'function'){
+    if(currentBuiltQuestion) syncLoadedQuestionHighlights(currentBuiltQuestion);
+    else if(qtype === 'matching' && qparams.matching_cat) highlightBoundary(qparams.matching_cat);
+    else if(qtype === 'measure'){
+      if(qparams.measure_cat_label === 'A County Border' || qparams.measure_cat === 'A County Border') highlightBoundary('county');
+      else if(qparams.measure_cat_label === 'A City Border' || qparams.measure_cat === 'A City Border') highlightBoundary('city');
+      else clearBoundaryHighlight();
+    } else {
+      clearBoundaryHighlight();
+    }
+  }
+
+  if(pickStep >= 0 && pickStep < pickStepDefs.length){
+    showBanner(pickStepDefs[pickStep].label);
+    document.getElementById('panel').classList.add('collapsed');
+  } else {
+    hideBanner();
+    document.getElementById('panel').classList.remove('collapsed');
+  }
+
+  renderBuildBody();
+  updatePreview();
+
+  if(currentBuiltQuestion){
+    const packet = buildQuestionPacket(currentBuiltQuestion);
+    document.getElementById('json-out').value = JSON.stringify(packet, null, 2);
+    document.getElementById('json-out-section').style.display = 'block';
+    renderSimulBtns(packet);
+    renderDirectApplyBtns(packet);
+  } else {
+    document.getElementById('json-out-section').style.display = 'none';
+    document.getElementById('map-simul-bar').classList.remove('visible');
+  }
+}
+
+function restoreSerializableBuildState(state){
+  if(!state?.qtype || !QDEFS[state.qtype]) return;
+  qtype = state.qtype;
+  qparams = state.qparams || {radius_miles:1, travel_miles:0.5};
+  pickStepDefs = QDEFS[qtype]?.pickSteps || [];
+  pickStep = Number.isInteger(state.pickStep) ? state.pickStep : -1;
+  currentBuiltQuestion = state.currentBuiltQuestion ? cloneForStorage(state.currentBuiltQuestion) : null;
+  _simulActive = null;
+  clearMarkers();
+  previewLayer.clearLayers();
+  simulLayer.clearLayers();
+  simulMaskLayer.clearLayers();
+  if(typeof setPreviewMapMode === 'function') setPreviewMapMode(false);
+  syncRestoredBuildUi();
+  if(typeof maybeAutoResolveBuildQuestion === 'function') maybeAutoResolveBuildQuestion();
+}
+
 function resolveAnsweredQuestion(payload){
   if(payload.type === 'veto' || payload.type === 'randomize_card') return payload;
   if(!payload?.answer){ return null; }
