@@ -84,10 +84,37 @@ async function resolveMeasureValue(question, loc){
   };
 }
 
-function hiderLoadQuestion(){
+async function hiderLoadQuestion(){
   const raw = document.getElementById('hider-json-in').value.trim();
   if(!raw){ toast('Paste a question JSON first'); return; }
   let q; try{ q=JSON.parse(raw); }catch(e){ toast('Invalid JSON'); return; }
+  if(q?.type === 'tentacles'){
+    const center = normalizeLatLng(q.center);
+    const radius = Number(q.radius_miles || 1);
+    const options = Array.isArray(q.options)
+      ? q.options.map((opt, i) => normalizeTentacleOption(opt, i)).filter(Boolean)
+      : [];
+    if(options.length >= 2){
+      q.options = options;
+    } else {
+      const categoryLabel = String(q.category_label || q.category || '').trim();
+      if(!center || !categoryLabel){
+        toast('Tentacles question is missing category or center');
+        return;
+      }
+      try{
+        toast('Loading tentacles options...', 2400);
+        q.options = await resolveTentacleQuestionOptions(categoryLabel, center, radius);
+      }catch(e){
+        toast(`Could not load tentacles options: ${e.message}`);
+        return;
+      }
+      if(!q.options.length){
+        toast(`No ${categoryLabel} found nearby`);
+        return;
+      }
+    }
+  }
   const def = QDEFS[q.type];
   if(!def){ toast(`Unknown question type: "${q.type}"`); return; }
   _hiderQ = q;

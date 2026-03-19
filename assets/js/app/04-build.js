@@ -1487,33 +1487,10 @@ async function selectTentacleCat(catObj){
   qparams.tentacle_options=null;
   renderBuildBody();
   try{
-    const rad = qparams.radius_miles||1;
-    const radiusM = Math.round(rad * 1609.34 * 1.5); // search 1.5x reach radius
-    await loadPoiData();
-    const preloaded = getNamedPoiCollection(catObj.label);
-    let items = preloaded;
-    if(items.length){
-      items = items
-        .filter(it => turfDist(qparams.center, it) <= radiusM)
-        .map(it => ({
-          ...it,
-          id: `${it.name}-${it.lat.toFixed(5)}-${it.lng.toFixed(5)}`,
-        }))
-        .sort((a,b)=>turfDist({lat:a.lat,lng:a.lng},qparams.center)-turfDist({lat:b.lat,lng:b.lng},qparams.center));
-    } else {
-      items = await overpassSearch(catObj.overpass(qparams.center, radiusM), qparams.center, radiusM);
-    }
-    if(items.length < 2){
-      toast(`Found ${items.length} ${catObj.label} nearby — try a larger radius`);
+    const opts = await resolveTentacleQuestionOptions(catObj.label, qparams.center, qparams.radius_miles || 1);
+    if(opts.length < 2){
+      toast(`Found fewer than 2 ${catObj.label} nearby — try a larger radius`);
       qparams._tsearching=false; renderBuildBody(); return;
-    }
-    const top = items.slice(0,8);
-    let opts;
-    if(preloaded.length){
-      opts = top.map((it, i) => normalizeTentacleOption(it, i)).filter(Boolean);
-    } else {
-      const labeled = await Promise.all(top.map(it=>shortLabel(it.name,it.lat,it.lng)));
-      opts = top.map((it,i)=>normalizeTentacleOption({name:labeled[i], lat:it.lat, lng:it.lng}, i)).filter(Boolean);
     }
     qparams._tsearching=false;
     qparams.tentacle_options=opts;
@@ -1531,6 +1508,29 @@ async function selectTentacleCat(catObj){
     }
     renderBuildBody(); updatePreview(); tryGenerate();
   }catch(e){qparams._tsearching=false;toast('Search failed: '+e.message);renderBuildBody();}
+}
+
+async function resolveTentacleQuestionOptions(categoryLabel, center, radiusMiles=1){
+  const catObj = TENTACLES_CATS.find(c => c.label === categoryLabel);
+  if(!catObj) throw new Error(`Unknown tentacles category: ${categoryLabel}`);
+  const radiusM = Math.round((radiusMiles || 1) * 1609.34 * 1.5); // search 1.5x reach radius
+  await loadPoiData();
+  const preloaded = getNamedPoiCollection(catObj.label);
+  let items = preloaded;
+  if(items.length){
+    items = items
+      .filter(it => turfDist(center, it) <= radiusM)
+      .sort((a,b)=>turfDist({lat:a.lat,lng:a.lng},center)-turfDist({lat:b.lat,lng:b.lng},center));
+  } else {
+    items = await overpassSearch(catObj.overpass(center, radiusM), center, radiusM);
+  }
+  if(items.length < 2) return [];
+  const top = items.slice(0,8);
+  if(preloaded.length){
+    return top.map((it, i) => normalizeTentacleOption(it, i)).filter(Boolean);
+  }
+  const labeled = await Promise.all(top.map(it=>shortLabel(it.name,it.lat,it.lng)));
+  return top.map((it,i)=>normalizeTentacleOption({name:labeled[i], lat:it.lat, lng:it.lng}, i)).filter(Boolean);
 }
 
 function restartPick(){
@@ -1598,7 +1598,8 @@ function buildQuestionPacket(question){
       type:question.type,
       center:question.center,
       radius_miles:question.radius_miles || 1,
-      options:(question.options || []).map((o, i) => normalizeTentacleOption(o, i)).filter(Boolean),
+      category:question.category || question.category_label || null,
+      category_label:question.category_label || question.category || null,
     };
   }
   if(question.type === 'matching'){

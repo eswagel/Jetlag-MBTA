@@ -51,18 +51,34 @@ function buildStoredThermoQuestion(payload){
   return {id:payload.id, ...QDEFS.thermo.toJSON({center, thermo_dest:dest, travel_miles:travelMiles})};
 }
 
-function buildStoredTentaclesQuestion(payload){
+async function buildStoredTentaclesQuestion(payload){
   buildStoredQuestionBase(payload, 'tentacles');
   const center = normalizeLatLng(payload.center);
   if(!center) throw new Error('Tentacles question is missing center');
   const radius = Number(payload.radius_miles || 1);
-  const options = Array.isArray(payload.options)
+  let options = Array.isArray(payload.options)
     ? payload.options
         .map((opt, i) => normalizeTentacleOption(opt, i))
         .filter(Boolean)
     : [];
+  if(options.length < 2){
+    const categoryLabel = String(payload.category_label || payload.category || '').trim();
+    if(!categoryLabel) throw new Error('Tentacles question is missing category');
+    options = await resolveTentacleQuestionOptions(categoryLabel, center, radius);
+  }
   if(options.length < 2) throw new Error('Tentacles question needs at least two options');
-  return {id:payload.id, ...QDEFS.tentacles.toJSON({center, radius_miles:radius, tentacle_options:options})};
+  const categoryLabel = payload.category_label || payload.category || null;
+  return {
+    id:payload.id,
+    ...QDEFS.tentacles.toJSON({
+      center,
+      radius_miles:radius,
+      tentacle_options:options,
+      _tcat:categoryLabel,
+      _tcatlabel:categoryLabel,
+      tentacles_cat_label:categoryLabel,
+    })
+  };
 }
 
 function buildStoredPhotoQuestion(payload){
@@ -326,7 +342,7 @@ async function hydrateOutgoingQuestion(payload){
   switch(payload.type){
     case 'radar': return buildStoredRadarQuestion(payload);
     case 'thermo': return buildStoredThermoQuestion(payload);
-    case 'tentacles': return buildStoredTentaclesQuestion(payload);
+    case 'tentacles': return await buildStoredTentaclesQuestion(payload);
     case 'photo': return buildStoredPhotoQuestion(payload);
     case 'matching': return buildStoredMatchingQuestion(payload) || await rebuildMatchingQuestion(payload);
     case 'nearest': return buildStoredNearestQuestion(payload) || await rebuildNearestQuestion(payload);
@@ -402,6 +418,9 @@ function questionToBuildParams(question){
         ...base,
         center:question.center,
         radius_miles:question.radius_miles || 1,
+        _tcat:question.category_label || question.category || null,
+        _tcatlabel:question.category_label || question.category || null,
+        tentacles_cat_label:question.category_label || question.category || null,
         tentacle_options:question.options || [],
       };
     case 'matching':
