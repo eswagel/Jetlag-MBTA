@@ -133,6 +133,8 @@ function forgetOutgoingQuestion(id){
 }
 
 function saveGame(){
+  const setupOverlay = document.getElementById('setup-overlay');
+  if(setupOverlay && !setupOverlay.classList.contains('hidden')) return;
   try{
     const save = {
       v: 1,
@@ -150,6 +152,8 @@ function saveGame(){
 }
 
 function scheduleSaveGame(delay=120){
+  const setupOverlay = document.getElementById('setup-overlay');
+  if(setupOverlay && !setupOverlay.classList.contains('hidden')) return;
   clearTimeout(_saveGameTimer);
   _saveGameTimer = setTimeout(()=>{
     _saveGameTimer = null;
@@ -427,6 +431,8 @@ async function getCategoryInstances(catObj, center, radiusM){
 function checkForResume(){
   const save = loadSave();
   if(!save) return;
+  clearTimeout(_saveGameTimer);
+  _saveGameTimer = null;
   // Don't prompt if the game hasn't really started (only setup constraint)
   const realConstraints = save.constraints.filter(c=>!['_setup'].includes(c.type));
   if(!realConstraints.length) return;
@@ -448,6 +454,8 @@ function checkForResume(){
 function resumeGame(){
   const save = loadSave();
   if(!save){ discardAndNew(); return; }
+  clearTimeout(_saveGameTimer);
+  _saveGameTimer = null;
 
   hideRadiusMi = save.hideRadiusMi || 0.25;
   gameMode = save.gameMode || 'seeker';
