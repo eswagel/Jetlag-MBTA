@@ -58,10 +58,7 @@ function buildStoredTentaclesQuestion(payload){
   const radius = Number(payload.radius_miles || 1);
   const options = Array.isArray(payload.options)
     ? payload.options
-        .map(opt => {
-          const point = normalizeLatLng(opt);
-          return point ? {name:String(opt?.name || 'Option'), ...point} : null;
-        })
+        .map((opt, i) => normalizeTentacleOption(opt, i))
         .filter(Boolean)
     : [];
   if(options.length < 2) throw new Error('Tentacles question needs at least two options');
@@ -634,7 +631,7 @@ function resolveAnsweredQuestion(payload){
   if(!payload?.answer){ return null; }
   if(payload.type){
     const def = QDEFS[payload.type];
-    const extraKeys = Object.keys(payload).filter(k => !['id','type','answer'].includes(k));
+    const extraKeys = Object.keys(payload).filter(k => !['id','type','answer','answer_label'].includes(k));
     if(def && extraKeys.length) return payload;
   }
   if(!payload.id) return null;
@@ -642,7 +639,10 @@ function resolveAnsweredQuestion(payload){
     ? cloneForStorage(currentBuiltQuestion)
     : getOutgoingQuestion(payload.id);
   if(!base) return null;
-  return {...base, answer: payload.answer};
+  const extras = {...payload};
+  delete extras.id;
+  delete extras.answer;
+  return {...base, answer: payload.answer, ...extras};
 }
 
 function applyAnswerObject(q, onSuccess){

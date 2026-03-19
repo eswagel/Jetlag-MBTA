@@ -1510,10 +1510,10 @@ async function selectTentacleCat(catObj){
     const top = items.slice(0,8);
     let opts;
     if(preloaded.length){
-      opts = top.map(it => ({name: it.name, lat: it.lat, lng: it.lng}));
+      opts = top.map((it, i) => normalizeTentacleOption(it, i)).filter(Boolean);
     } else {
       const labeled = await Promise.all(top.map(it=>shortLabel(it.name,it.lat,it.lng)));
-      opts = top.map((it,i)=>({name:labeled[i], lat:it.lat, lng:it.lng}));
+      opts = top.map((it,i)=>normalizeTentacleOption({name:labeled[i], lat:it.lat, lng:it.lng}, i)).filter(Boolean);
     }
     qparams._tsearching=false;
     qparams.tentacle_options=opts;
@@ -1598,7 +1598,7 @@ function buildQuestionPacket(question){
       type:question.type,
       center:question.center,
       radius_miles:question.radius_miles || 1,
-      options:(question.options || []).map(o => ({name:o.name, lat:o.lat, lng:o.lng})),
+      options:(question.options || []).map((o, i) => normalizeTentacleOption(o, i)).filter(Boolean),
     };
   }
   if(question.type === 'matching'){
@@ -1680,12 +1680,11 @@ let _simulActive = null; // currently previewed answer val
 function getLocalApplyOptions(json){
   if(!json) return [];
   if(json.type === 'measure') return measureAnswerOptions(json);
-  if(SIMUL_OPTS[json.type]) return SIMUL_OPTS[json.type];
   if(json.type === 'tentacles'){
     const opts = [{val:'no', icon:'❌', label:'Not nearby', color:'#e84040'}];
     (json.options || []).forEach((opt, i) => {
       opts.push({
-        val: opt.name,
+        val: opt.id || buildTentacleOptionId(opt, i),
         icon: String(i + 1),
         label: opt.name,
         color: '#20c8b0',
@@ -1693,6 +1692,7 @@ function getLocalApplyOptions(json){
     });
     return opts;
   }
+  if(SIMUL_OPTS[json.type]) return SIMUL_OPTS[json.type];
   if(json.type === 'photo'){
     return [{val:'sent', icon:'📸', label:'Photo sent', color:'#18b050'}];
   }
@@ -1754,6 +1754,7 @@ function clearZonePreview(){
 function renderZonePreviewResult(result, label, color, shouldFit=true){
   if(!result) return;
   const hint = document.getElementById('simul-hint');
+  const previewQuestion = getLivePreviewQuestion() || currentBuiltQuestion;
   const eliminated = safeDiff(validZone, result);
   setPreviewMapMode(true);
   simulLayer.clearLayers();
@@ -1778,7 +1779,8 @@ function renderZonePreviewResult(result, label, color, shouldFit=true){
   }
   const msb = document.getElementById('msb-area');
   if(msb) msb.innerHTML = `<b style="color:var(--green)">${pctRemain}%</b> stays · <b style="color:#e84040">${pctElim}%</b> cut`;
-  document.getElementById('map-simul-bar').classList.add('visible');
+  if(previewQuestion?.type === 'tentacles') document.getElementById('map-simul-bar').classList.remove('visible');
+  else document.getElementById('map-simul-bar').classList.add('visible');
 }
 
 function getLivePreviewQuestion(){
@@ -1806,11 +1808,20 @@ function refreshActiveAnswerPreview(){
   if(!liveQ) return;
   try{
     ensureMeasureConstraint(liveQ);
-    const q = {...liveQ, answer:_simulActive};
+    const q = {...liveQ, answer:_simulActive, answer_label: opt.label};
     const result = def.applyToZone(validZone, q);
     if(!result) return;
     renderZonePreviewResult(result, `${opt.icon} ${opt.label}`, opt.color, false);
   }catch(e){}
+}
+
+function escapePreviewOptionLabel(text){
+  return String(text || '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
 }
 
 function renderSimulBtns(json){
@@ -1827,6 +1838,25 @@ function renderSimulBtns(json){
     container.innerHTML='';
     msbBtns.innerHTML='';
     bar.classList.remove('visible');
+    return;
+  }
+  if(json?.type === 'tentacles'){
+    const selectOptions = [
+      '<option value="">Choose a tentacles answer…</option>',
+      ...opts.map(o => `<option value="${escapePreviewOptionLabel(o.val)}"${o.val===_simulActive?' selected':''}>${escapePreviewOptionLabel(`${o.icon} ${o.label}`)}</option>`)
+    ];
+    container.innerHTML = `
+      <div class="simul-select-wrap">
+        <select id="tentacle-simul-select" class="simul-select" onchange="previewAnswer(this.value)">
+          ${selectOptions.join('')}
+        </select>
+        <button class="simul-clear-btn" type="button" onclick="previewAnswer('')">Clear</button>
+      </div>
+    `;
+    msbBtns.innerHTML = '';
+    bar.classList.remove('visible');
+    if(_simulActive) refreshActiveAnswerPreview();
+    else document.getElementById('msb-area').innerHTML = 'green stays · red goes';
     return;
   }
   // Panel buttons
@@ -1862,9 +1892,20 @@ function previewAnswer(val){
   const def = baseQuestion ? QDEFS[baseQuestion.type] : QDEFS[getActiveBuildQType()];
   const opts = getLocalApplyOptions(baseQuestion);
   const hint = document.getElementById('simul-hint');
+  const tentacleSelect = document.getElementById('tentacle-simul-select');
+
+  if(!val){
+    _simulActive = null;
+    clearZonePreview();
+    document.querySelectorAll('.simul-btn,.msb-btn').forEach(b=>b.classList.remove('active'));
+    hint.className = 'simul-result-hint';
+    document.getElementById('msb-area').innerHTML = 'green stays · red goes';
+    if(tentacleSelect) tentacleSelect.value = '';
+    return;
+  }
 
   // Toggle off if same button pressed twice
-  if(_simulActive === val){
+  if(_simulActive === val && !tentacleSelect){
     _simulActive = null;
     clearZonePreview();
     document.querySelectorAll('.simul-btn,.msb-btn').forEach(b=>b.classList.remove('active'));
@@ -1879,6 +1920,7 @@ function previewAnswer(val){
   const mbtn = document.getElementById(`msb-${val}`);
   if(btn)  btn.classList.add('active');
   if(mbtn) mbtn.classList.add('active');
+  if(tentacleSelect) tentacleSelect.value = val;
 
   const opt = opts.find(o=>o.val===val);
   const col = opt ? opt.color : '#20c8b0';
@@ -1889,7 +1931,7 @@ function previewAnswer(val){
     runSlowMeasureAction(baseQ, () => {
       try{
         ensureMeasureConstraint(baseQ);
-        const q = {...baseQ, answer: val};
+        const q = opt ? {...baseQ, answer: val, answer_label: opt.label} : {...baseQ, answer: val};
         const result = def.applyToZone(validZone, q);
         if(!result){ toast('Nothing left in zone for this answer'); return; }
         renderZonePreviewResult(result, opt ? `${opt.icon} ${opt.label}` : val, col);
@@ -1910,7 +1952,10 @@ function applyBuiltAnswer(val){
     const base = currentBuiltQuestion && currentBuiltQuestion.id === parsed.id
       ? currentBuiltQuestion
       : getOutgoingQuestion(parsed.id);
-    const q = base ? {...base, answer: val} : {...parsed, answer: val};
+    const opt = getLocalApplyOptions(base || parsed).find(o => o.val === val);
+    const q = base
+      ? {...base, answer: val, ...(opt ? {answer_label: opt.label} : {})}
+      : {...parsed, answer: val, ...(opt ? {answer_label: opt.label} : {})};
     runSlowMeasureAction(q, () => {
       try{
         ensureMeasureConstraint(q);

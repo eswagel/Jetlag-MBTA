@@ -335,34 +335,39 @@ async function hiderComputeAnswer(hiderLoc){
     if(distToSeeker > (q.radius_miles||1)){
       answer = 'no';
       explanation = `You are ${distToSeeker.toFixed(2)}mi from the seeker (radius: ${q.radius_miles||1}mi) → <b>NOT WITHIN RANGE</b>`;
+      hiderPickAnswer(answer, explanation, 'Not within range');
     } else {
       // Find which option you're closest to
       let minDist = Infinity, closest = null;
       (q.options||[]).forEach(o => {
         const d = turfDist(hiderLoc, o);
-        if(d < minDist){ minDist = d; closest = o.name; }
+        if(d < minDist){ minDist = d; closest = o; }
       });
-      answer = closest;
-      explanation = `You are within range (${distToSeeker.toFixed(2)}mi). Closest option: <b>${closest}</b> (${minDist.toFixed(2)}mi away)`;
+      answer = closest?.id || closest?.name;
+      explanation = `You are within range (${distToSeeker.toFixed(2)}mi). Closest option: <b>${closest?.name || 'Option'}</b> (${minDist.toFixed(2)}mi away)`;
+      hiderPickAnswer(answer, explanation, closest?.name || answer);
     }
+    return;
   }
 
   hiderPickAnswer(answer, explanation);
 }
 
-function _amDispatch(val){ hiderPickAnswer(val, null); }
+function _amDispatch(val, label=null){ hiderPickAnswer(val, null, label); }
 
-function hiderPickAnswer(val, explanation){
+function hiderPickAnswer(val, explanation, answerLabel=null){
   if(!_hiderQ) return;
   const answered = _hiderQ.id ? {id:_hiderQ.id, answer: val} : {answer: val};
+  if(answerLabel) answered.answer_label = answerLabel;
 
   // Show result state
   document.getElementById('hider-locate-state').style.display = 'none';
 
   const def = QDEFS[_hiderQ.type];
   const banner = document.getElementById('hider-result-banner');
+  const displayVal = String(answerLabel || val);
   document.getElementById('hrb-icon').textContent = '✅';
-  document.getElementById('hrb-title').textContent = `Answer: ${String(val).toUpperCase()}`;
+  document.getElementById('hrb-title').textContent = `Answer: ${displayVal.toUpperCase()}`;
   document.getElementById('hrb-title').style.color = 'var(--green)';
   if(explanation){
     document.getElementById('hrb-sub').innerHTML = explanation;
@@ -384,7 +389,12 @@ function openAnswerModal(q, def, isRandom=false){
   let opts = ANS_OPTS[q.type];
   if(q.type === 'tentacles'){
     opts = [{val:'no', label:'Not within range', icon:'❌', cls:'no'}];
-    (q.options||[]).forEach(o => opts.push({val:o.name, label:o.name, icon:'📍', cls:'opt'}));
+    (q.options||[]).forEach((o, i) => opts.push({
+      val:o.id || buildTentacleOptionId(o, i),
+      label:o.name,
+      icon:'📍',
+      cls:'opt'
+    }));
   }
   if(q.type === 'matching'){
     const clss=['yes','opt','no','opt'];
@@ -394,7 +404,7 @@ function openAnswerModal(q, def, isRandom=false){
 
   document.getElementById('am-answers').innerHTML = opts.map(o => {
     const val = o.val;
-    return `<button class="ans-btn ${o.cls}" onclick="_amDispatch(${JSON.stringify(val)})">
+    return `<button class="ans-btn ${o.cls}" onclick="_amDispatch(${JSON.stringify(val)}, ${JSON.stringify(o.label)})">
        <span class="ans-ico">${o.icon}</span><span>${o.label}</span>
      </button>`;
   }).join('');

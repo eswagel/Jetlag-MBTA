@@ -301,6 +301,39 @@
     .simul-section { margin-top: 14px; padding-top: 14px; border-top: 1px solid var(--border); }
     .simul-label { font-size: 8px; letter-spacing: 0.12em; text-transform: uppercase; color: var(--dim); margin-bottom: 8px; }
     .simul-btns { display: flex; gap: 6px; flex-wrap: wrap; }
+    .simul-select-wrap { display: flex; gap: 8px; width: 100%; }
+    .simul-select {
+      flex: 1;
+      min-width: 0;
+      padding: 10px 12px;
+      border-radius: 9px;
+      border: 1.5px solid var(--border);
+      background: var(--panel2);
+      color: var(--text);
+      font-family: 'Space Mono', monospace;
+      font-size: 9px;
+      cursor: pointer;
+    }
+    .simul-select:focus {
+      outline: none;
+      border-color: var(--teal);
+      box-shadow: 0 0 0 1px rgba(32,200,176,0.2) inset;
+    }
+    .simul-clear-btn {
+      padding: 10px 12px;
+      border-radius: 9px;
+      border: 1.5px solid var(--border);
+      background: transparent;
+      color: var(--dim);
+      font-family: 'Space Mono', monospace;
+      font-size: 9px;
+      font-weight: 700;
+      cursor: pointer;
+      transition: all 0.15s;
+      flex-shrink: 0;
+    }
+    .simul-clear-btn:active { transform: scale(0.97); }
+    .simul-clear-btn:hover { color: var(--text); border-color: var(--teal); }
     .simul-btn {
       flex: 1; min-width: 0;
       padding: 10px 8px; border-radius: 9px;

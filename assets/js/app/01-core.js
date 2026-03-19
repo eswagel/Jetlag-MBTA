@@ -117,6 +117,44 @@ function cloneForStorage(value){
   }));
 }
 
+function buildTentacleOptionId(option, fallbackIndex=0){
+  const existing = String(option?.id || '').trim();
+  if(existing) return existing;
+  const slug = String(option?.name || 'option')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '') || 'option';
+  const lat = Number(option?.lat);
+  const lng = Number(option?.lng);
+  const coords = Number.isFinite(lat) && Number.isFinite(lng)
+    ? `${lat.toFixed(5)}_${lng.toFixed(5)}`.replace(/[^0-9._-]+/g, '_')
+    : `idx_${fallbackIndex}`;
+  return `tent_${slug}_${coords}`;
+}
+
+function normalizeTentacleOption(option, fallbackIndex=0){
+  const lat = Number(option?.lat);
+  const lng = Number(option?.lng);
+  if(!Number.isFinite(lat) || !Number.isFinite(lng)) return null;
+  return {
+    id: buildTentacleOptionId(option, fallbackIndex),
+    name: String(option?.name || `Option ${fallbackIndex + 1}`),
+    lat,
+    lng,
+  };
+}
+
+function findTentacleOption(question, answer){
+  const options = Array.isArray(question?.options) ? question.options : [];
+  if(answer == null) return null;
+  return options.find(opt => opt?.id === answer) || options.find(opt => opt?.name === answer) || null;
+}
+
+function getTentacleAnswerLabel(question, answer){
+  if(answer === 'no') return 'Not within range';
+  return findTentacleOption(question, answer)?.name || String(answer || '');
+}
+
 function rememberOutgoingQuestion(question){
   if(!question?.id) return;
   outgoingQuestions[question.id] = cloneForStorage(question);
@@ -592,12 +630,20 @@ const QDEFS = {
     label:'Tentacles', colorTag:'tag-tentacles',
     pickSteps:[{key:'center', label:'Tap map — your location'}],
     isReady:p=>p.center&&p.tentacle_options&&p.tentacle_options.length>=2,
-    toJSON:p=>({type:'tentacles',center:p.center,radius_miles:p.radius_miles||1,options:p.tentacle_options}),
+    toJSON:p=>({
+      type:'tentacles',
+      center:p.center,
+      radius_miles:p.radius_miles||1,
+      options:(p.tentacle_options || []).map((opt, i)=>normalizeTentacleOption(opt, i)).filter(Boolean),
+    }),
     applyToZone:(zone,q)=>{
       const circle=makeCircle(q.center,q.radius_miles||1,'miles');
       if(q.answer==='no') return safeDiff(zone,circle);
       const inCircle=safeIsect(zone,circle);
-      const optIdx=q.options?q.options.findIndex(o=>o.name===q.answer):-1;
+      const option = findTentacleOption(q, q.answer);
+      const optIdx=q.options
+        ? q.options.findIndex(o => option?.id ? o.id === option.id : o.name === option?.name)
+        : -1;
       if(optIdx>=0&&q.options.length>=2){
         try{
           const pts=turf.featureCollection(q.options.map(o=>turf.point([o.lng,o.lat])));
@@ -607,7 +653,9 @@ const QDEFS = {
       }
       return inCircle;
     },
-    describe:q=>q.answer==='no'?`<b>NOT WITHIN</b> ${q.radius_miles||1}mi of seeker`:`<b>CLOSEST TO</b> ${q.answer}`
+    describe:q=>q.answer==='no'
+      ? `<b>NOT WITHIN</b> ${q.radius_miles||1}mi of seeker`
+      : `<b>CLOSEST TO</b> ${q.answer_label || getTentacleAnswerLabel(q, q.answer)}`
   },
   matching:{
     label:'Matching', colorTag:'tag-matching',
