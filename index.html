@@ -152,6 +152,14 @@
         <div class="qbtn" data-q="photo">     <span class="ico">📸</span><span class="lbl">Photo</span></div>
       </div>
       <div id="build-body"></div>
+      <div style="margin-top:16px;padding-top:14px;border-top:1px solid var(--border)">
+        <button class="btn btn-sec" id="load-question-toggle" type="button" onclick="toggleLoadQuestionPanel()">Load Existing Question</button>
+        <div id="load-question-panel" style="display:none;margin-top:12px">
+          <p class="empty" style="margin-bottom:10px">Paste a question built on another device. This will load it into Ask as the active question so this device can preview it and apply the answer later.</p>
+          <textarea class="jarea" id="json-question-in-inline" rows="5" placeholder='{"id":"q...","type":"measure",...}'></textarea>
+          <button class="btn btn-sec" style="margin-top:8px" onclick="loadQuestionInline()">Load Into Ask</button>
+        </div>
+      </div>
       <div id="json-out-section" style="display:none">
         <!-- Preview What-If toggles -->
         <div class="simul-section">

@@ -226,6 +226,7 @@ function selectQType(type){
   if(typeof setPreviewMapMode === 'function') setPreviewMapMode(false);
   document.getElementById('json-out-section').style.display='none';
   document.getElementById('map-simul-bar').classList.remove('visible');
+  if(typeof setLoadQuestionPanelOpen === 'function') setLoadQuestionPanelOpen(false);
   document.querySelectorAll('.qbtn').forEach(b=>b.classList.toggle('on',b.dataset.q===type));
   document.getElementById('panel').classList.remove('collapsed');
   if(pickStepDefs.length > 0){

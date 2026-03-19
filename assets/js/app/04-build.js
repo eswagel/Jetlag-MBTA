@@ -1823,6 +1823,7 @@ function resetBuild(){
   document.querySelectorAll('.qbtn').forEach(b=>b.classList.remove('on'));
   document.getElementById('json-out-section').style.display='none';
   document.getElementById('map-simul-bar').classList.remove('visible');
+  if(typeof setLoadQuestionPanelOpen === 'function') setLoadQuestionPanelOpen(false);
   const direct = document.getElementById('direct-apply-btns');
   if(direct) direct.innerHTML = '';
   renderBuildBody();
