@@ -464,7 +464,7 @@ const QDESC  = {
   photo:     'Pick a photo prompt. Ask the hider to send you a specific photo.',
 };
 
-function showHiderResult(json, cardType, randomQType){
+function showHiderResult(json, cardType, randomPreset){
   document.getElementById('hider-json-out').value = json;
 
   // Set the result banner
@@ -481,7 +481,9 @@ function showHiderResult(json, cardType, randomQType){
     title.style.color = 'var(--accent)';
     sub.textContent   = 'This question is nullified. Send the JSON to seekers.';
   } else if(cardType === 'randomize'){
-    const def = QDEFS[randomQType];
+    const label = randomPreset?.label || (randomPreset?.question_type ? (QDEFS[randomPreset.question_type]?.label || randomPreset.question_type) : 'Random question');
+    const def = {label};
+    const randomQType = label;
     banner.style.borderColor = 'rgba(160,96,255,0.5)';
     banner.style.background  = 'rgba(160,96,255,0.08)';
     icon.textContent  = '🎲';
@@ -568,8 +570,17 @@ function confirmCard(){
 }
 
 function doRandomize(){
-  const types = ['radar','thermo','measure','tentacles','matching','photo'];
-  const type  = types[Math.floor(Math.random() * types.length)];
-  const payload = { type:'randomize_card', question_type: type, id:'rand'+Date.now().toString(36) };
-  showHiderResult(JSON.stringify(payload, null, 2), 'randomize', type);
+  const preset = chooseRandomizedQuestionPreset();
+  if(!preset){
+    toast('Could not build a randomized question');
+    return;
+  }
+  const payload = {
+    type:'randomize_card',
+    question_type:preset.question_type,
+    build_qtype:preset.build_qtype,
+    preset,
+    id:'rand'+Date.now().toString(36),
+  };
+  showHiderResult(JSON.stringify(payload, null, 2), 'randomize', preset);
 }

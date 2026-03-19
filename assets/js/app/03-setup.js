@@ -134,12 +134,14 @@ function applyPickedPoint(lat, lng, zIndexOffset=2000){
   if(pickStep >= pickStepDefs.length){
     hideBanner();
     document.getElementById('panel').classList.remove('collapsed');
-    if(QDEFS[qtype].isReady(qparams)) generateJSON();
+    const activeType = getActiveBuildQType();
+    if(QDEFS[activeType].isReady(qparams)) generateJSON();
   } else {
     showBanner(pickStepDefs[pickStep].label);
   }
   renderBuildBody();
   updatePreview();
+  if(typeof maybeAutoResolveBuildQuestion === 'function') maybeAutoResolveBuildQuestion();
   if(qtype === 'thermo') tryGenerate();
   return true;
 }
@@ -196,12 +198,14 @@ function useMyLocation(key, stepIndex){
       if(pickStep >= pickStepDefs.length){
         hideBanner();
         document.getElementById('panel').classList.remove('collapsed');
-        if(QDEFS[qtype].isReady(qparams)) generateJSON();
+        const activeType = getActiveBuildQType();
+        if(QDEFS[activeType].isReady(qparams)) generateJSON();
       } else {
         showBanner(pickStepDefs[pickStep].label);
       }
       renderBuildBody();
       updatePreview();
+      if(typeof maybeAutoResolveBuildQuestion === 'function') maybeAutoResolveBuildQuestion();
       if(qtype === 'thermo') tryGenerate();
       toast(`📡 Got your location (±${Math.round(pos.coords.accuracy)}m)`);
     },

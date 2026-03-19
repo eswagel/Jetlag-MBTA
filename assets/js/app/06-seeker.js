@@ -1,5 +1,7 @@
 //  SEEKER: APPLY ANSWER
 // ========================================================
+let _pendingResultAction = null;
+
 function isLatLngLike(value){
   return Number.isFinite(Number(value?.lat)) && Number.isFinite(Number(value?.lng));
 }
@@ -408,6 +410,7 @@ function questionToBuildParams(question){
     case 'matching':
       return {
         ...base,
+        _matching_mode:'matching',
         center:question.center,
         matching_cat:question.category,
         matching_cat_label:question.category_label,
@@ -418,6 +421,7 @@ function questionToBuildParams(question){
     case 'nearest':
       return {
         ...base,
+        _matching_mode:'nearest',
         center:question.center,
         nearest_cat:question.category_label || question.category,
         nearest_cat_label:question.category_label || question.category,
@@ -429,6 +433,60 @@ function questionToBuildParams(question){
       return {
         ...base,
         photo_prompt:question.prompt || '',
+      };
+    default:
+      return base;
+  }
+}
+
+function presetToBuildParams(preset){
+  const base = {radius_miles:1, travel_miles:0.5};
+  switch(preset?.build_qtype){
+    case 'radar':
+      return {
+        ...base,
+        radius_miles:preset.radius_miles,
+      };
+    case 'thermo':
+      return {
+        ...base,
+        travel_miles:preset.travel_miles,
+      };
+    case 'measure':
+      return {
+        ...base,
+        _mcat:preset.category_label,
+        _mcatlabel:preset.category_label,
+        measure_cat:preset.category,
+        measure_cat_label:preset.category_label,
+      };
+    case 'tentacles':
+      return {
+        ...base,
+        radius_miles:preset.radius_miles || 1,
+        _tcat:preset.category_label,
+        _tcatlabel:preset.category_label,
+        tentacles_cat_label:preset.category_label,
+      };
+    case 'matching':
+      if(preset.mode === 'nearest'){
+        return {
+          ...base,
+          _matching_mode:'nearest',
+          nearest_cat:preset.category,
+          nearest_cat_label:preset.category_label,
+        };
+      }
+      return {
+        ...base,
+        _matching_mode:'matching',
+        matching_cat:preset.category,
+        matching_cat_label:preset.category_label,
+      };
+    case 'photo':
+      return {
+        ...base,
+        photo_prompt:preset.prompt || '',
       };
     default:
       return base;
@@ -464,7 +522,7 @@ function toggleLoadQuestionPanel(){
 }
 
 function loadQuestionIntoBuild(question){
-  qtype = question.type;
+  qtype = question.type === 'nearest' ? 'matching' : question.type;
   qparams = questionToBuildParams(question);
   currentBuiltQuestion = cloneForStorage(question);
   pickStepDefs = QDEFS[qtype]?.pickSteps || [];
@@ -491,6 +549,20 @@ function loadQuestionIntoBuild(question){
   renderSimulBtns(packet);
   renderDirectApplyBtns(packet);
   setLoadQuestionPanelOpen(false);
+}
+
+function loadRandomizedPresetIntoBuild(preset){
+  if(!preset?.build_qtype) return;
+  selectQType(preset.build_qtype);
+  qparams = {
+    ...qparams,
+    ...presetToBuildParams(preset),
+  };
+  currentBuiltQuestion = null;
+  renderBuildBody();
+  updatePreview();
+  if(typeof maybeAutoResolveBuildQuestion === 'function') maybeAutoResolveBuildQuestion();
+  tryGenerate();
 }
 
 function resolveAnsweredQuestion(payload){
@@ -528,19 +600,25 @@ function applyAnswerObject(q, onSuccess){
 
   // Randomize card - seekers must now build the specified question type and send to hider
   if(q.type === 'randomize_card'){
-    const def = QDEFS[q.question_type];
-    if(!def){ toast(`Unknown question type: "${q.question_type}"`); return; }
-    constraints.push({type:'_randomize_card', _qtype: q.question_type, _label:`Randomize card - new question: ${def.label}`});
+    const preset = q.preset || null;
+    const label = preset?.label || (q.question_type ? (QDEFS[q.question_type]?.label || q.question_type) : 'Random question');
+    constraints.push({
+      type:'_randomize_card',
+      _qtype: preset?.question_type || q.question_type,
+      _preset_label: label,
+      _label:`Randomize card - preloaded question: ${label}`,
+    });
     renderLog();
     saveGame();
     onSuccess();
-    _pendingRandomizeType = q.question_type;
+    if(preset) loadRandomizedPresetIntoBuild(preset);
+    _pendingResultAction = () => switchTab('build');
     showResult(
       '🎲',
       'Randomize Card!',
-      'The hider played their Randomize card. Build the question type shown below on the map and send it to the hider to answer.',
-      null,
-      q.question_type
+      'The hider played their Randomize card. A randomized question has been preloaded in Ask and is ready for you to finish.',
+      `<div><b>${label}</b></div>`,
+      null
     );
     return;
   }
@@ -619,7 +697,11 @@ function showResult(emoji, title, sub, qboxHTML, autoSelectType=null){
 
 function closeResult(){
   document.getElementById('result-overlay').classList.add('hidden');
-  if(_pendingRandomizeType){
+  if(_pendingResultAction){
+    const action = _pendingResultAction;
+    _pendingResultAction = null;
+    action();
+  } else if(_pendingRandomizeType){
     const t = _pendingRandomizeType;
     _pendingRandomizeType = null;
     switchTab('build');
@@ -648,7 +730,7 @@ function renderLog(){
     }
     if(q.type === '_randomize_card'){
       const def = QDEFS[q._qtype];
-      return `<div class="citem"><span class="ctag" style="background:rgba(160,96,255,0.2);color:var(--purple)">RANDOM</span><div class="cdesc"><b>Randomize card played</b> - new question type: <b>${def ? def.label : q._qtype}</b></div>${delBtn}</div>`;
+      return `<div class="citem"><span class="ctag" style="background:rgba(160,96,255,0.2);color:var(--purple)">RANDOM</span><div class="cdesc"><b>Randomize card played</b> - preloaded question: <b>${q._preset_label || (def ? def.label : q._qtype)}</b></div>${delBtn}</div>`;
     }
     const def = QDEFS[q.type];
     return `<div class="citem"><span class="ctag ${def ? def.colorTag : 'tag-radar'}">${def ? def.label : q.type}</span><div class="cdesc">${def ? def.describe(q) : JSON.stringify(q)}</div>${delBtn}</div>`;

@@ -674,6 +674,13 @@ const QDEFS = {
 // ══════════════════════════════════════════════════════
 //  GEOMETRY
 // ══════════════════════════════════════════════════════
+function getActiveBuildQType(type=qtype, params=qparams){
+  if(type === 'matching'){
+    return params?._matching_mode === 'nearest' ? 'nearest' : 'matching';
+  }
+  return type;
+}
+
 function cloneGeo(g){return JSON.parse(JSON.stringify(g));}
 function fmt(p){return`${p.lat.toFixed(3)},${p.lng.toFixed(3)}`;}
 function toPt(p){return turf.point([p.lng,p.lat]);}

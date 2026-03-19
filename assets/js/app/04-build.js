@@ -436,10 +436,16 @@ async function selectMatchingCat(catObj){
   if(catObj.cat === 'landmass' && !_landmassCache.ready){
     toast('⏳ Still loading landmasses — try again in a moment'); return;
   }
+  qparams._matching_mode = 'matching';
   qparams.matching_cat = catObj.cat;
   qparams.matching_cat_label = catObj.label;
   qparams.matching_seeker_val = null;
   qparams.matching_boundary = null;
+  qparams.nearest_cat = null;
+  qparams.nearest_cat_label = null;
+  qparams.nearest_seeker_poi = null;
+  qparams.nearest_all_pois = null;
+  qparams.nearest_voronoi = null;
   qparams._matching_searching = true;
   highlightBoundary(catObj.cat);
   renderBuildBody();
@@ -483,6 +489,12 @@ async function selectMatchingCat(catObj){
 
 async function selectNearestCat(catObj){
   if(!qparams.center){ toast('Set your location first'); return; }
+  qparams._matching_mode = 'nearest';
+  qparams.matching_cat = null;
+  qparams.matching_cat_label = null;
+  qparams.matching_seeker_val = null;
+  qparams.matching_boundary = null;
+  qparams._matching_boundary_simplified = null;
   qparams.nearest_cat = catObj.label;
   qparams.nearest_cat_label = catObj.label;
   qparams.nearest_seeker_poi = null;
@@ -576,7 +588,47 @@ function renderCustomBoundaryParams(){
 
 // Helpers for param rendering
 function setParam(k,v){ qparams[k]=v; }
-function tryGenerate(){ if(qtype&&QDEFS[qtype]&&QDEFS[qtype].isReady(qparams)) generateJSON(); }
+function tryGenerate(){
+  const activeType = getActiveBuildQType();
+  if(qtype && QDEFS[activeType] && QDEFS[activeType].isReady(qparams)) generateJSON();
+}
+
+function maybeAutoResolveBuildQuestion(){
+  if(!qparams.center) return;
+
+  if(qtype === 'matching'){
+    if(qparams._matching_mode === 'nearest'){
+      if(qparams.nearest_cat && !qparams.nearest_seeker_poi && !qparams._nearest_searching){
+        const catObj = NEAREST_CATS.find(c => c.label === qparams.nearest_cat || c.label === qparams.nearest_cat_label);
+        if(catObj) selectNearestCat(catObj);
+      }
+      return;
+    }
+    if(qparams.matching_cat && !qparams.matching_seeker_val && !qparams._matching_searching){
+      const catObj = MATCHING_CATS.find(c => c.cat === qparams.matching_cat);
+      if(catObj) selectMatchingCat(catObj);
+    }
+    return;
+  }
+
+  if(qtype === 'measure'){
+    const ready = qparams.measure_mode === 'elevation'
+      ? Number.isFinite(qparams.measure_seeker_elevation_ft)
+      : qparams.measure_seeker_dist != null;
+    if(qparams.measure_cat && !ready && !qparams._msearching){
+      const catObj = MEASURE_CATS.find(c => c.label === qparams.measure_cat || c.label === qparams.measure_cat_label);
+      if(catObj) selectMeasureCat(catObj);
+    }
+    return;
+  }
+
+  if(qtype === 'tentacles'){
+    if(qparams._tcat && !(qparams.tentacle_options?.length) && !qparams._tsearching){
+      const catObj = TENTACLES_CATS.find(c => c.label === qparams._tcat || c.label === qparams.tentacles_cat_label);
+      if(catObj) selectTentacleCat(catObj);
+    }
+  }
+}
 
 function startCustomBoundaryDraw(){
   qparams._drawingBoundary = true;
@@ -922,6 +974,104 @@ const TENTACLES_CATS = [
 ];
 
 // ── Overpass API search ──
+const RANDOMIZE_RADAR_PRESETS = [
+  {radius_miles:0.25, label:'¼ mi'},
+  {radius_miles:0.5, label:'½ mi'},
+  {radius_miles:1, label:'1 mi'},
+  {radius_miles:3, label:'3 mi'},
+  {radius_miles:5, label:'5 mi'},
+  {radius_miles:10, label:'10 mi'},
+  {radius_miles:25, label:'25 mi'},
+];
+
+const RANDOMIZE_THERMO_PRESETS = [
+  {travel_miles:0.5, label:'1/2 mi'},
+  {travel_miles:3, label:'3 mi'},
+  {travel_miles:10, label:'10 mi'},
+];
+
+const RANDOMIZE_TENTACLE_PRESETS = [
+  {radius_miles:0.5, label:'½ mi'},
+  {radius_miles:1, label:'1 mi'},
+  {radius_miles:2, label:'2 mi'},
+];
+
+function getRandomizeQuestionCatalog(){
+  const items = [];
+  RANDOMIZE_RADAR_PRESETS.forEach(preset => {
+    items.push({
+      build_qtype:'radar',
+      question_type:'radar',
+      label:`Radar · ${preset.label}`,
+      radius_miles:preset.radius_miles,
+    });
+  });
+  RANDOMIZE_THERMO_PRESETS.forEach(preset => {
+    items.push({
+      build_qtype:'thermo',
+      question_type:'thermo',
+      label:`Thermometer · ${preset.label}`,
+      travel_miles:preset.travel_miles,
+    });
+  });
+  MEASURE_CATS.forEach(cat => {
+    items.push({
+      build_qtype:'measure',
+      question_type:'measure',
+      label:`Measure · ${cat.label}`,
+      category:cat.label,
+      category_label:cat.label,
+    });
+  });
+  TENTACLES_CATS.forEach(cat => {
+    RANDOMIZE_TENTACLE_PRESETS.forEach(preset => {
+      items.push({
+        build_qtype:'tentacles',
+        question_type:'tentacles',
+        label:`Tentacles · ${cat.label} · ${preset.label}`,
+        category:cat.label,
+        category_label:cat.label,
+        radius_miles:preset.radius_miles,
+      });
+    });
+  });
+  MATCHING_CATS.forEach(cat => {
+    items.push({
+      build_qtype:'matching',
+      question_type:'matching',
+      mode:'matching',
+      label:`Matching · ${cat.label}`,
+      category:cat.cat,
+      category_label:cat.label,
+    });
+  });
+  NEAREST_CATS.forEach(cat => {
+    items.push({
+      build_qtype:'matching',
+      question_type:'nearest',
+      mode:'nearest',
+      label:`Nearest · ${cat.label}`,
+      category:cat.label,
+      category_label:cat.label,
+    });
+  });
+  PHOTO_PROMPTS.forEach(prompt => {
+    items.push({
+      build_qtype:'photo',
+      question_type:'photo',
+      label:`Photo · ${prompt.text}`,
+      prompt:prompt.text,
+    });
+  });
+  return items;
+}
+
+function chooseRandomizedQuestionPreset(){
+  const catalog = getRandomizeQuestionCatalog();
+  if(!catalog.length) return null;
+  return cloneForStorage(catalog[Math.floor(Math.random() * catalog.length)]);
+}
+
 async function overpassSearch(overpassBody, near, radiusM=5000){
   const query = `[out:json][timeout:25];(${overpassBody});out center 100;`;
   // Try primary, fall back to mirror
@@ -1460,13 +1610,14 @@ function buildQuestionPacket(question){
 }
 
 function generateJSON(){
-  const def=QDEFS[qtype];
+  const activeType = getActiveBuildQType();
+  const def=QDEFS[activeType];
   if(currentBuiltQuestion?.id) forgetOutgoingQuestion(currentBuiltQuestion.id);
   const fullQuestion=def.toJSON(qparams);
   fullQuestion.id='q'+Date.now().toString(36);
   currentBuiltQuestion = {
     ...fullQuestion,
-    _constraint_union: qtype === 'measure' ? qparams.measure_constraint_union || null : null,
+    _constraint_union: fullQuestion.type === 'measure' ? qparams.measure_constraint_union || null : null,
   };
   rememberOutgoingQuestion(currentBuiltQuestion);
   saveGame();
@@ -1627,12 +1778,13 @@ function renderZonePreviewResult(result, label, color, shouldFit=true){
 }
 
 function getLivePreviewQuestion(){
-  if(currentBuiltQuestion && currentBuiltQuestion.type === qtype) return currentBuiltQuestion;
-  if(!qtype || !QDEFS[qtype] || !QDEFS[qtype].isReady(qparams)) return null;
+  const activeType = getActiveBuildQType();
+  if(currentBuiltQuestion && currentBuiltQuestion.type === activeType) return currentBuiltQuestion;
+  if(!qtype || !QDEFS[activeType] || !QDEFS[activeType].isReady(qparams)) return null;
   try{
     return {
-      ...QDEFS[qtype].toJSON(qparams),
-      _constraint_union: qtype === 'measure' ? qparams.measure_constraint_union || null : null,
+      ...QDEFS[activeType].toJSON(qparams),
+      _constraint_union: activeType === 'measure' ? qparams.measure_constraint_union || null : null,
     };
   }catch(e){
     return null;
@@ -1641,8 +1793,8 @@ function getLivePreviewQuestion(){
 
 function refreshActiveAnswerPreview(){
   if(!_simulActive || !qtype) return;
-  const def = QDEFS[qtype];
   const liveQ = getLivePreviewQuestion();
+  const def = liveQ ? QDEFS[liveQ.type] : QDEFS[getActiveBuildQType()];
   const opts = getLocalApplyOptions(liveQ);
   if(!def || !opts) return;
   const opt = opts.find(o=>o.val===_simulActive);
@@ -1702,8 +1854,8 @@ function renderSimulBtns(json){
 }
 
 function previewAnswer(val){
-  const def = QDEFS[qtype];
   const baseQuestion = getLivePreviewQuestion() || currentBuiltQuestion;
+  const def = baseQuestion ? QDEFS[baseQuestion.type] : QDEFS[getActiveBuildQType()];
   const opts = getLocalApplyOptions(baseQuestion);
   const hint = document.getElementById('simul-hint');
 
