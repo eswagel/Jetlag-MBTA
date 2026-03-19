@@ -330,43 +330,6 @@ async function hiderComputeAnswer(hiderLoc){
     hiderPickAnswer(answer, explanation);
     return;
 
-    if(q.mode === 'elevation'){
-      const elevation = await fetchPointElevation(hiderLoc.lat, hiderLoc.lng);
-      const hiderFt = elevation.feet;
-      const seekerFt = Number(q.seeker_elevation_ft);
-      answer = hiderFt >= seekerFt ? 'higher' : 'lower';
-      explanation = `Your elevation: <b>${hiderFt.toFixed(0)} ft</b> / Seeker's: ${seekerFt.toFixed(0)} ft above sea level → <b>${answer.toUpperCase()}</b>`;
-      hiderPickAnswer(answer, explanation);
-      return;
-    }
-
-    let nearest = null;
-    let hiderDist = Infinity;
-    if(Array.isArray(q.linear_features) && q.linear_features.length){
-      const hiderPoint = turf.point([hiderLoc.lng, hiderLoc.lat]);
-      q.linear_features.forEach(item => {
-        const feature = coerceFeature(item, item.name);
-        if(!feature) return;
-        try{
-          const snapped = turf.nearestPointOnLine(feature, hiderPoint, {units:'miles'});
-          const dist = snapped?.properties?.dist;
-          if(!Number.isFinite(dist) || dist >= hiderDist) return;
-          const [lng, lat] = snapped.geometry.coordinates;
-          hiderDist = dist;
-          nearest = {name:item.name || q.category_label, lat, lng};
-        }catch(e){}
-      });
-    } else {
-      const instances = q.all_instances||[];
-      if(!instances.length){ toast('No instances in question data'); return; }
-      nearest = instances.slice().sort((a,b)=>turfDist(hiderLoc,a)-turfDist(hiderLoc,b))[0];
-      hiderDist = turfDist(hiderLoc, nearest);
-    }
-    if(!nearest || !Number.isFinite(hiderDist)){ toast('Could not determine nearest measure feature'); return; }
-    const seekerDist = q.seeker_dist;
-    answer = hiderDist <= seekerDist ? 'closer' : 'further';
-    explanation = `Your nearest ${q.category_label}: <b>${nearest.name}</b> (${hiderDist.toFixed(2)}mi) / Seeker's: ${seekerDist.toFixed(2)}mi → <b>${answer.toUpperCase()}</b>`;
-
   } else if(q.type === 'tentacles'){
     const distToSeeker = turfDist(hiderLoc, q.center);
     if(distToSeeker > (q.radius_miles||1)){
