@@ -5,6 +5,7 @@ function selectRadius(el){
   document.querySelectorAll('.radius-opt').forEach(o=>o.classList.remove('selected'));
   el.classList.add('selected');
   hideRadiusMi = parseFloat(el.dataset.mi);
+  _hideRadiusZoneCache = { miles: null, stopCount: 0, zone: null };
 }
 
 function startGame(){
@@ -32,6 +33,8 @@ function promptHiderStationPick(){
   showBanner('🫣 TAP YOUR STATION on the map to set your hiding location');
 }
 
+let _hideRadiusZoneCache = { miles: null, stopCount: 0, zone: null };
+
 function buildHideRadiusZone(){
   const stops = Object.values(stopLineMap);
   console.log(`applyHideRadius: ${stops.length} stops in stopLineMap`);
@@ -39,8 +42,13 @@ function buildHideRadiusZone(){
     return null;
   }
 
-  // Draw individual radius circles for each stop using L.circle (meters, always crisp)
-  const radiusMeters = hideRadiusMi * 1609.34;
+  if(
+    _hideRadiusZoneCache.zone &&
+    _hideRadiusZoneCache.miles === hideRadiusMi &&
+    _hideRadiusZoneCache.stopCount === stops.length
+  ){
+    return cloneGeo(_hideRadiusZoneCache.zone);
+  }
 
   // Build union of all circles for zone clipping
   let union = makeCircle(stops[0], hideRadiusMi, 'miles');
@@ -52,7 +60,13 @@ function buildHideRadiusZone(){
   }
 
   // Intersect with full bounding area
-  return safeIsect(INIT_POLY, union);
+  const zone = safeIsect(INIT_POLY, union);
+  _hideRadiusZoneCache = {
+    miles: hideRadiusMi,
+    stopCount: stops.length,
+    zone: zone ? cloneGeo(zone) : null,
+  };
+  return zone ? cloneGeo(zone) : null;
 }
 
 function drawHideRadiusVisuals(){
