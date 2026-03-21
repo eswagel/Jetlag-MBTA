@@ -262,9 +262,9 @@ function renderRadarParams(){
   });
   h+=`<div class="axbtn ${isCustom||qparams._customR?'on':''}" onclick="${_c(()=>{setParam('_customR',true);renderBuildBody();})}">Custom</div></div>`;
   if(isCustom||qparams._customR)
-    h+=`<div class="param"><div class="plabel">Miles <span class="pval" id="rv">${qparams.radius_miles||0.5}</span></div>
-    <input type="range" min="0.1" max="10" step="0.1" value="${qparams.radius_miles||0.5}"
-    oninput="setParam('radius_miles',+this.value);document.getElementById('rv').textContent=this.value;updatePreview();tryGenerate()"></div>`;
+    h+=`<div class="param"><div class="plabel">Miles</div>
+    <input type="number" min="0.1" step="0.1" value="${qparams.radius_miles||0.5}" style="width:80px"
+    oninput="const v=+this.value;if(v>0){setParam('radius_miles',v);updatePreview();tryGenerate();}"></div>`;
   return h;
 }
 
