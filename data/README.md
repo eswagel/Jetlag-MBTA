@@ -20,7 +20,7 @@ Current offline coverage:
 - `boundaries.json` currently covers counties and cities/towns that contain at least one playable MBTA stop.
 - `pois.json` currently covers the preloaded measure/nearest/tentacle categories, including chain POIs and Amtrak line geometry.
 - `elevation-grid.json` stores a coarse cached elevation grid over the playable MBTA area for sea-level questions.
-- `landmasses.json` is generated from a Python + Shapely pipeline with cached shoreline/water checkpoints under `data/_cache/` during local generation.
+- `landmasses.json` is generated from a Python + Shapely offline pipeline that uses hand-drawn region priors plus coastline/river-aware municipal boundaries to refine runtime polygons and stop assignments.
 
 Current live fallbacks that still remain:
 
