@@ -144,18 +144,18 @@ function normalizeTentacleOption(option, fallbackIndex=0){
   };
 }
 
-function getTentacleReachMeters(question){
-  return Math.max(0, Number(question?.radius_miles || 1) * 1609.34);
+function getTentacleReachMiles(question){
+  return Math.max(0, Number(question?.radius_miles || 1));
 }
 
 function getTentacleOptionsInReach(question){
   const center = question?.center;
   if(!center || !Number.isFinite(Number(center.lat)) || !Number.isFinite(Number(center.lng))) return [];
-  const reachM = getTentacleReachMeters(question);
+  const reachMiles = getTentacleReachMiles(question);
   return (Array.isArray(question?.options) ? question.options : [])
     .map((opt, i)=>normalizeTentacleOption(opt, i))
     .filter(Boolean)
-    .filter(opt => turfDist(center, opt) <= reachM);
+    .filter(opt => turfDist(center, opt) <= reachMiles);
 }
 
 function findTentacleOption(question, answer){

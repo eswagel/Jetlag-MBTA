@@ -1298,6 +1298,15 @@ function getTentaclePreviewColor(index=0){
   return `hsl(${hue.toFixed(1)} 72% 48%)`;
 }
 
+function getTentaclePreviewColorMap(options=[]){
+  const colorById = new Map();
+  options.forEach((opt, i) => {
+    const key = String(opt?.id || '').trim() || String(i);
+    if(!colorById.has(key)) colorById.set(key, getTentaclePreviewColor(i));
+  });
+  return colorById;
+}
+
 function getTentacleDisplayOptions(question){
   const resolved = typeof getQuestionWithLocalContext === 'function'
     ? (getQuestionWithLocalContext(question) || question)
@@ -1324,9 +1333,11 @@ function renderTentacleOptionPins(question, shouldFit=false){
         id: question?.id || currentBuiltQuestion?.id || null,
       };
   const options = getTentacleDisplayOptions(q);
+  const colorById = getTentaclePreviewColorMap(options);
   clearPoiMarkers();
   options.forEach((opt, i)=>{
-    const col = getTentaclePreviewColor(i);
+    const key = String(opt?.id || '').trim() || String(i);
+    const col = colorById.get(key) || getTentaclePreviewColor(i);
     const m = L.marker([opt.lat, opt.lng], {icon:tentaclePin(i + 1, col), zIndexOffset:1500 + i})
       .bindPopup(`<div class="stop-popup"><div class="stop-popup-name">${opt.name}</div></div>`, {offset:[0,-28], maxWidth:220})
       .on('click', ()=>handleTentaclePinTap(opt, i, q))
@@ -1661,19 +1672,20 @@ async function selectTentacleCat(catObj){
 async function resolveTentacleQuestionOptions(categoryLabel, center, radiusMiles=1){
   const catObj = TENTACLES_CATS.find(c => c.label === categoryLabel);
   if(!catObj) throw new Error(`Unknown tentacles category: ${categoryLabel}`);
-  const reachM = Math.round((radiusMiles || 1) * 1609.34);
-  const searchRadiusM = Math.round(reachM * 1.5); // search wider, but only keep true in-range options
+  const reachMiles = Math.max(0, Number(radiusMiles || 1));
+  const searchRadiusMiles = Math.round(reachMiles * 1.5 * 100) / 100; // search wider, but only keep true in-range options
+  const searchRadiusM = Math.round(searchRadiusMiles * 1609.34);
   await loadPoiData();
   const preloaded = getNamedPoiCollection(catObj.label);
   let items = preloaded;
   if(items.length){
     items = items
-      .filter(it => turfDist(center, it) <= searchRadiusM);
+      .filter(it => turfDist(center, it) <= searchRadiusMiles);
   } else {
     items = await overpassSearch(catObj.overpass(center, searchRadiusM), center, searchRadiusM);
   }
   items = items
-    .filter(it => turfDist(center, it) <= reachM)
+    .filter(it => turfDist(center, it) <= reachMiles)
     .sort((a,b)=>turfDist({lat:a.lat,lng:a.lng},center)-turfDist({lat:b.lat,lng:b.lng},center));
   if(items.length < 2) return [];
   if(preloaded.length){
@@ -2056,6 +2068,8 @@ function renderTentacleRegionsPreview(question){
     toast('Generate a tentacles question first');
     return;
   }
+  const options = getTentacleDisplayOptions(q);
+  const colorById = getTentaclePreviewColorMap(options);
   const {circle, regions} = buildTentacleRegions(q, validZone);
   if(!circle){
     toast('Could not build tentacles preview');
@@ -2079,7 +2093,8 @@ function renderTentacleRegionsPreview(question){
   tentaclePreviewLayer.addData({
     type:'FeatureCollection',
     features: regions.map((item, i) => {
-      const col = getTentaclePreviewColor(i);
+      const key = String(item?.option?.id || '').trim() || String(item?.index ?? i);
+      const col = colorById.get(key) || getTentaclePreviewColor(item?.index ?? i);
       return {
         ...cloneGeo(item.region),
         properties:{
