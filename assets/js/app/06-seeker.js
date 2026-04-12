@@ -563,6 +563,7 @@ function loadQuestionIntoBuild(question){
   pickStepDefs = QDEFS[qtype]?.pickSteps || [];
   pickStep = pickStepDefs.length ? pickStepDefs.length : -1;
   _simulActive = null;
+  if(typeof _tentacleSelection !== 'undefined') _tentacleSelection = null;
 
   clearMarkers();
   previewLayer.clearLayers();
@@ -576,6 +577,9 @@ function loadQuestionIntoBuild(question){
   document.getElementById('panel').classList.remove('collapsed');
 
   renderBuildBody();
+  if(question.type === 'tentacles' && typeof renderTentacleOptionPins === 'function'){
+    renderTentacleOptionPins(currentBuiltQuestion);
+  }
   updatePreview();
 
   const packet = buildQuestionPacket(question);
@@ -633,6 +637,9 @@ function syncRestoredBuildUi(){
   }
 
   renderBuildBody();
+  if(currentBuiltQuestion?.type === 'tentacles' && typeof renderTentacleOptionPins === 'function'){
+    renderTentacleOptionPins(currentBuiltQuestion);
+  }
   updatePreview();
 
   if(currentBuiltQuestion){
@@ -655,6 +662,7 @@ function restoreSerializableBuildState(state){
   pickStep = Number.isInteger(state.pickStep) ? state.pickStep : -1;
   currentBuiltQuestion = state.currentBuiltQuestion ? cloneForStorage(state.currentBuiltQuestion) : null;
   _simulActive = null;
+  if(typeof _tentacleSelection !== 'undefined') _tentacleSelection = null;
   clearMarkers();
   previewLayer.clearLayers();
   simulLayer.clearLayers();

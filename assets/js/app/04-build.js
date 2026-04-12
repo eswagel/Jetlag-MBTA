@@ -384,6 +384,11 @@ function renderMeasureParams(){
 
 function renderTentaclesParams(){
   if(!qparams.center) return '<p class="empty" style="margin-top:6px;font-size:9px">Set your location above first.</p>';
+  const visibleOptions = getTentacleDisplayOptions({
+    center:qparams.center,
+    radius_miles:qparams.radius_miles || 1,
+    options:qparams.tentacle_options || [],
+  });
   let h='<div class="sec">Tentacle Type</div><div class="poi-presets">';
   TENTACLES_CATS.forEach(c=>{
     h+=`<div class="poi-chip ${qparams._tcat===c.label?'on':''}" onclick="${_c(()=>selectTentacleCat(c))}">${c.icon} ${c.label}</div>`;
@@ -392,18 +397,23 @@ function renderTentaclesParams(){
   const radPresets=[{r:0.5,l:'½ mi'},{r:1,l:'1 mi'},{r:2,l:'2 mi'}];
   h+='<div class="sec">Reach Radius</div><div class="axrow">';
   radPresets.forEach(p=>{
-    h+=`<div class="axbtn ${qparams.radius_miles===p.r?'on':''}" onclick="${_c(()=>{setParam('radius_miles',p.r);updatePreview();if(qparams.tentacle_options)tryGenerate();renderBuildBody();})}">${p.l}</div>`;
+    h+=`<div class="axbtn ${qparams.radius_miles===p.r?'on':''}" onclick="${_c(()=>{
+      setParam('radius_miles',p.r);
+      updatePreview();
+      renderBuildBody();
+      if(qparams._tcat && !qparams._tsearching){
+        const catObj = TENTACLES_CATS.find(c => c.label === qparams._tcat || c.label === qparams._tcatlabel || c.label === qparams.tentacles_cat_label);
+        if(catObj) selectTentacleCat(catObj);
+        else if(qparams.tentacle_options) tryGenerate();
+      } else if(qparams.tentacle_options){
+        tryGenerate();
+      }
+    })}">${p.l}</div>`;
   });
   h+='</div>';
   if(qparams._tsearching) h+='<div style="font-size:9px;color:var(--dim);margin-top:6px">⏳ Searching…</div>';
-  else if(qparams.tentacle_options&&qparams.tentacle_options.length){
-    h+=`<div class="found-result" style="margin-top:8px">🐙 Found <b>${qparams.tentacle_options.length} options</b> nearby:</div>`;
-    h+='<div class="tent-opt-list">';
-    qparams.tentacle_options.forEach((o,i)=>{
-      const col = getTentaclePreviewColor(i);
-      h+=`<div class="tent-opt"><div class="tent-opt-num" style="background:${col};color:#fff">${i+1}</div>${o.name}</div>`;
-    });
-    h+='</div>';
+  else if(visibleOptions.length){
+    h+=`<div class="found-result" style="margin-top:8px">🐙 Found <b>${visibleOptions.length} options</b> nearby.<br><span style="font-size:8px;color:var(--dim)">Use the map pins to preview or apply. Anything outside the radius is ignored.</span></div>`;
   }
   return h;
 }
@@ -1283,10 +1293,51 @@ function tentaclePin(num, col){
     </div>`});
 }
 
-const TENTACLE_PREVIEW_COLORS = ['#20c8b0','#3a8eff','#f0a030','#a060ff','#18b050','#e84040','#ff7f50','#7fd99b'];
-
 function getTentaclePreviewColor(index=0){
-  return TENTACLE_PREVIEW_COLORS[index % TENTACLE_PREVIEW_COLORS.length];
+  const hue = (index * 137.508) % 360;
+  return `hsl(${hue.toFixed(1)} 72% 48%)`;
+}
+
+function getTentacleDisplayOptions(question){
+  const resolved = typeof getQuestionWithLocalContext === 'function'
+    ? (getQuestionWithLocalContext(question) || question)
+    : question;
+  const source = resolved?.type === 'tentacles'
+    ? resolved
+    : {
+        center: resolved?.center || qparams.center,
+        radius_miles: resolved?.radius_miles || qparams.radius_miles || 1,
+        options: resolved?.options || resolved?.tentacle_options || qparams.tentacle_options || [],
+      };
+  return typeof getTentacleOptionsInReach === 'function'
+    ? getTentacleOptionsInReach(source)
+    : (source.options || []).map((opt, i)=>normalizeTentacleOption(opt, i)).filter(Boolean);
+}
+
+function renderTentacleOptionPins(question, shouldFit=false){
+  const q = question?.type === 'tentacles'
+    ? question
+    : {
+        center: question?.center || qparams.center,
+        radius_miles: question?.radius_miles || qparams.radius_miles || 1,
+        options: question?.options || question?.tentacle_options || qparams.tentacle_options || [],
+        id: question?.id || currentBuiltQuestion?.id || null,
+      };
+  const options = getTentacleDisplayOptions(q);
+  clearPoiMarkers();
+  options.forEach((opt, i)=>{
+    const col = getTentaclePreviewColor(i);
+    const m = L.marker([opt.lat, opt.lng], {icon:tentaclePin(i + 1, col), zIndexOffset:1500 + i})
+      .bindPopup(`<div class="stop-popup"><div class="stop-popup-name">${opt.name}</div></div>`, {offset:[0,-28], maxWidth:220})
+      .on('click', ()=>handleTentaclePinTap(opt, i, q))
+      .addTo(map);
+    pickedMarkers.push(m);
+  });
+  if(shouldFit && options.length){
+    const bounds = L.latLngBounds(options.map(opt => [opt.lat, opt.lng])).pad(0.3);
+    map.fitBounds(bounds);
+  }
+  return options;
 }
 
 // Measure nearest result — teal diamond pin
@@ -1584,7 +1635,10 @@ async function selectMeasureCat(catObj){
 async function selectTentacleCat(catObj){
   if(!qparams.center){toast('Set your location first');return;}
   qparams._tcat=catObj.label; qparams._tcatlabel=catObj.label; qparams._tsearching=true;
+  _tentacleSelection = null;
+  _simulActive = null;
   qparams.tentacle_options=null;
+  clearPoiMarkers();
   renderBuildBody();
   try{
     const opts = await resolveTentacleQuestionOptions(catObj.label, qparams.center, qparams.radius_miles || 1);
@@ -1594,18 +1648,12 @@ async function selectTentacleCat(catObj){
     }
     qparams._tsearching=false;
     qparams.tentacle_options=opts;
-    opts.forEach((o,i)=>{
-      const col = getTentaclePreviewColor(i);
-      const m=L.marker([o.lat,o.lng],{icon:tentaclePin(i+1,col),zIndexOffset:1500+i})
-        .bindPopup(`<div class="stop-popup"><div class="stop-popup-name">${o.name}</div></div>`,{offset:[0,-28],maxWidth:220})
-        .addTo(map);
-      pickedMarkers.push(m);
-    });
-    // Fit map to show all results
-    if(opts.length){
-      const bounds=L.latLngBounds(opts.map(o=>[o.lat,o.lng])).pad(0.3);
-      map.fitBounds(bounds);
-    }
+    renderTentacleOptionPins({
+      center:qparams.center,
+      radius_miles:qparams.radius_miles || 1,
+      options:opts,
+      id:currentBuiltQuestion?.id || null,
+    }, true);
     renderBuildBody(); updatePreview(); tryGenerate();
   }catch(e){qparams._tsearching=false;toast('Search failed: '+e.message);renderBuildBody();}
 }
@@ -1628,12 +1676,11 @@ async function resolveTentacleQuestionOptions(categoryLabel, center, radiusMiles
     .filter(it => turfDist(center, it) <= reachM)
     .sort((a,b)=>turfDist({lat:a.lat,lng:a.lng},center)-turfDist({lat:b.lat,lng:b.lng},center));
   if(items.length < 2) return [];
-  const top = items.slice(0,8);
   if(preloaded.length){
-    return top.map((it, i) => normalizeTentacleOption(it, i)).filter(Boolean);
+    return items.map((it, i) => normalizeTentacleOption(it, i)).filter(Boolean);
   }
-  const labeled = await Promise.all(top.map(it=>shortLabel(it.name,it.lat,it.lng)));
-  return top.map((it,i)=>normalizeTentacleOption({name:labeled[i], lat:it.lat, lng:it.lng}, i)).filter(Boolean);
+  const labeled = await Promise.all(items.map(it=>shortLabel(it.name,it.lat,it.lng)));
+  return items.map((it,i)=>normalizeTentacleOption({name:labeled[i], lat:it.lat, lng:it.lng}, i)).filter(Boolean);
 }
 
 function restartPick(){
@@ -1733,6 +1780,7 @@ function buildQuestionPacket(question){
 function generateJSON(){
   const activeType = getActiveBuildQType();
   const def=QDEFS[activeType];
+  _tentacleSelection = null;
   if(currentBuiltQuestion?.id) forgetOutgoingQuestion(currentBuiltQuestion.id);
   const fullQuestion=def.toJSON(qparams);
   fullQuestion.id='q'+Date.now().toString(36);
@@ -1747,6 +1795,7 @@ function generateJSON(){
   setTimeout(()=>{
     document.getElementById('json-out').value=JSON.stringify(json,null,2);
     document.getElementById('json-out-section').style.display='block';
+    if(currentBuiltQuestion?.type === 'tentacles') renderTentacleOptionPins(currentBuiltQuestion);
     updatePreview();
     renderSimulBtns(json);
     renderDirectApplyBtns(json);
@@ -1793,6 +1842,7 @@ const SIMUL_OPTS = {
 };
 
 let _simulActive = null; // currently previewed answer val
+let _tentacleSelection = null; // {mode:'preview'|'apply', questionId:string}
 
 function getQuestionWithLocalContext(question){
   if(!question) return null;
@@ -1805,6 +1855,57 @@ function getQuestionWithLocalContext(question){
     }
   }
   return question;
+}
+
+function getTentacleSelectionQuestion(question){
+  const q = getQuestionWithLocalContext(question || getLivePreviewQuestion() || currentBuiltQuestion);
+  return q?.type === 'tentacles' ? q : null;
+}
+
+function isTentacleSelectionActive(question){
+  const q = getTentacleSelectionQuestion(question);
+  return !!(q && _tentacleSelection && _tentacleSelection.questionId === q.id);
+}
+
+function tentacleSelectionPrompt(mode){
+  return mode === 'apply'
+    ? 'Tap a tentacle pin on the map to apply locally, or cancel.'
+    : 'Tap a tentacle pin on the map to preview, or cancel.';
+}
+
+function updateTentacleSelectionPanels(question){
+  const q = getTentacleSelectionQuestion(question);
+  if(!q) return;
+  renderSimulBtns(q);
+  renderDirectApplyBtns(q);
+}
+
+function startTentacleSelection(mode, question){
+  const q = getTentacleSelectionQuestion(question);
+  if(!q){ toast('Generate a tentacles question first'); return; }
+  _tentacleSelection = {mode, questionId:q.id};
+  updateTentacleSelectionPanels(q);
+  renderTentacleRegionsPreview(q);
+}
+
+function cancelTentacleSelection(question){
+  const q = getTentacleSelectionQuestion(question);
+  _tentacleSelection = null;
+  _simulActive = null;
+  clearZonePreview();
+  updatePreview();
+  if(q) updateTentacleSelectionPanels(q);
+}
+
+function handleTentaclePinTap(option, index, question){
+  const q = getTentacleSelectionQuestion(question);
+  if(!isTentacleSelectionActive(q)) return;
+  const pending = _tentacleSelection;
+  const val = option.id || buildTentacleOptionId(option, index);
+  _tentacleSelection = null;
+  updateTentacleSelectionPanels(q);
+  if(pending.mode === 'apply') applyBuiltAnswer(val);
+  else previewAnswer(val);
 }
 
 function getLocalApplyOptions(json){
@@ -1838,7 +1939,20 @@ function getLocalApplyOptions(json){
 function renderDirectApplyBtns(json){
   const container = document.getElementById('direct-apply-btns');
   if(!container) return;
-  const opts = getLocalApplyOptions(json);
+  const question = getQuestionWithLocalContext(json);
+  if(question?.type === 'tentacles'){
+    const active = isTentacleSelectionActive(question);
+    container.innerHTML = active
+      ? `<div class="simul-select-wrap tentacle-preview-tools">
+           <div class="found-result" style="margin-bottom:8px">🐙 ${tentacleSelectionPrompt(_tentacleSelection.mode)}</div>
+           <button class="simul-clear-btn" type="button" onclick="${_c(()=>cancelTentacleSelection(question))}">Cancel</button>
+         </div>`
+      : `<div class="simul-select-wrap tentacle-preview-tools">
+           <button class="simul-clear-btn tentacle-preview-btn" type="button" onclick="${_c(()=>startTentacleSelection('apply', question))}">Apply Locally</button>
+         </div>`;
+    return;
+  }
+  const opts = getLocalApplyOptions(question);
   if(!opts.length){
     container.innerHTML = '';
     return;
@@ -1975,18 +2089,16 @@ function renderTentacleRegionsPreview(question){
   setPreviewMapMode(true);
   const hint = document.getElementById('simul-hint');
   if(hint){
-    hint.innerHTML = `<b>Preview Regions:</b> inside the ${q.radius_miles || 1} mile circle, each colored region shows which option is closest.<br>${(q.options || []).map((opt, i)=>`<b>${i + 1}.</b> ${escapePreviewOptionLabel(opt.name)}`).join('<br>')}<br><span style="font-size:8px;color:var(--dim)">Outside the circle = Not nearby.</span>`;
+    hint.innerHTML = `<b>Preview Regions:</b> inside the ${q.radius_miles || 1} mile circle, each colored region matches the nearest tentacle pin.<br><span style="font-size:8px;color:var(--dim)">Tap a pin on the map to preview or apply, or cancel to return.</span>`;
     hint.className = 'simul-result-hint visible';
   }
   const msb = document.getElementById('msb-area');
-  if(msb) msb.innerHTML = 'colored regions show each tentacle answer';
+  if(msb) msb.innerHTML = 'tap a tentacle pin on the map';
   document.getElementById('map-simul-bar').classList.remove('visible');
 }
 
 function previewTentacleRegions(){
-  _simulActive = null;
-  document.querySelectorAll('.simul-btn,.msb-btn').forEach(b=>b.classList.remove('active'));
-  renderTentacleRegionsPreview(getLivePreviewQuestion() || currentBuiltQuestion);
+  startTentacleSelection('preview', getLivePreviewQuestion() || currentBuiltQuestion);
 }
 
 function refreshActiveAnswerPreview(){
@@ -2042,15 +2154,23 @@ function renderSimulBtns(json){
     return;
   }
   if(question?.type === 'tentacles'){
-    container.innerHTML = `
+    const active = isTentacleSelectionActive(question);
+    container.innerHTML = active
+      ? `
       <div class="simul-select-wrap tentacle-preview-tools">
-        <button class="simul-clear-btn tentacle-preview-btn" type="button" onclick="previewTentacleRegions()">Preview Regions</button>
-        <button class="simul-clear-btn" type="button" onclick="previewAnswer('')">Clear</button>
+        <div class="found-result" style="margin-bottom:8px">🐙 ${tentacleSelectionPrompt(_tentacleSelection.mode)}</div>
+        <button class="simul-clear-btn" type="button" onclick="${_c(()=>cancelTentacleSelection(question))}">Cancel</button>
+      </div>
+    `
+      : `
+      <div class="simul-select-wrap tentacle-preview-tools">
+        <button class="simul-clear-btn tentacle-preview-btn" type="button" onclick="${_c(()=>startTentacleSelection('preview', question))}">Preview Regions</button>
+        <button class="simul-clear-btn tentacle-preview-btn" type="button" onclick="${_c(()=>startTentacleSelection('apply', question))}">Apply Locally</button>
       </div>
     `;
     msbBtns.innerHTML = '';
     bar.classList.remove('visible');
-    if(msbArea) msbArea.innerHTML = 'preview tentacle regions on the map';
+    if(msbArea) msbArea.innerHTML = active ? tentacleSelectionPrompt(_tentacleSelection.mode) : 'choose Preview Regions or Apply Locally';
     return;
   }
   // Panel buttons
@@ -2093,12 +2213,13 @@ function previewAnswer(val){
     clearZonePreview();
     updatePreview();
     document.querySelectorAll('.simul-btn,.msb-btn').forEach(b=>b.classList.remove('active'));
+    if(baseQuestion?.type === 'tentacles') _tentacleSelection = null;
     if(hint){
       hint.className = 'simul-result-hint';
       hint.innerHTML = '';
     }
     if(msbArea) msbArea.innerHTML = baseQuestion?.type === 'tentacles'
-      ? 'preview tentacle regions on the map'
+      ? 'tap a tentacle pin on the map'
       : 'green stays · red goes';
     return;
   }
@@ -2109,12 +2230,13 @@ function previewAnswer(val){
     clearZonePreview();
     updatePreview();
     document.querySelectorAll('.simul-btn,.msb-btn').forEach(b=>b.classList.remove('active'));
+    if(baseQuestion?.type === 'tentacles') _tentacleSelection = null;
     if(hint){
       hint.className = 'simul-result-hint';
       hint.innerHTML = '';
     }
     if(msbArea) msbArea.innerHTML = baseQuestion?.type === 'tentacles'
-      ? 'preview tentacle regions on the map'
+      ? 'tap a tentacle pin on the map'
       : 'green stays · red goes';
     return;
   }
@@ -2222,6 +2344,7 @@ function copyQ(){
 function resetBuild(){
   qtype=null;qparams={};pickStep=-1;pickStepDefs=[];
   currentBuiltQuestion = null;
+  _tentacleSelection = null;
   clearMarkers();previewLayer.clearLayers();clearZonePreview();hideBanner();
   clearBoundaryHighlight();
   _simulActive=null;
