@@ -839,6 +839,63 @@ function renderLog(){
   }).join('');
 }
 
+function exportQuestionLog(){
+  const payload = {
+    kind:'jetlag_mbta_question_log',
+    version:1,
+    exported_at:new Date().toISOString(),
+    constraints: cloneForStorage(constraints),
+  };
+  const text = JSON.stringify(payload);
+  const input = document.getElementById('log-transfer-json');
+  if(input) input.value = text;
+  navigator.clipboard.writeText(text)
+    .then(()=>toast('Question log exported and copied'))
+    .catch(()=>toast('Question log exported (copy manually)'));
+}
+
+function importQuestionLog(){
+  const input = document.getElementById('log-transfer-json');
+  const raw = (input?.value || '').trim();
+  if(!raw){
+    toast('Paste an exported question log first');
+    return;
+  }
+  let parsed;
+  try{
+    parsed = JSON.parse(raw);
+  }catch(e){
+    toast('Invalid JSON - check format');
+    return;
+  }
+
+  const importedConstraints = Array.isArray(parsed)
+    ? parsed
+    : (Array.isArray(parsed?.constraints) ? parsed.constraints : null);
+  if(!importedConstraints){
+    toast('Invalid question log payload');
+    return;
+  }
+  if(!importedConstraints.every(item => item && typeof item === 'object' && typeof item.type === 'string')){
+    toast('Question log entries are malformed');
+    return;
+  }
+
+  const shouldImport = window.confirm('Importing this question log will replace your current questions and answers. Continue?');
+  if(!shouldImport) return;
+
+  constraints = cloneForStorage(importedConstraints);
+
+  if(recomputeZoneFromConstraints()){
+    scheduleSaveGame();
+    renderLog();
+    switchTab('log');
+    toast('Question log imported - previous log replaced');
+  }else{
+    toast('Could not import log - invalid setup data');
+  }
+}
+
 function recomputeZoneFromConstraints(){
   const baseZone = buildHideRadiusZone();
   if(!baseZone){
