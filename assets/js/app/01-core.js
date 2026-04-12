@@ -35,7 +35,7 @@ const INIT_POLY = turf.polygon([[
   [-71.70,41.85],[-70.40,41.85],[-70.40,42.80],[-71.70,42.80],[-71.70,41.85]
 ]]);
 
-let map, maskLayer, borderLayer, radiusLayer, previewLayer, simulLayer, simulMaskLayer, pickedMarkers=[];
+let map, maskLayer, borderLayer, radiusLayer, previewLayer, tentaclePreviewLayer, simulLayer, simulMaskLayer, pickedMarkers=[];
 let townLayer, countyLayer, boundaryHighlightLayer;
 const commuterRailStops = new Set();
 const commuterRailStopsList = [];
@@ -153,6 +153,40 @@ function findTentacleOption(question, answer){
 function getTentacleAnswerLabel(question, answer){
   if(answer === 'no') return 'Not within range';
   return findTentacleOption(question, answer)?.name || String(answer || '');
+}
+
+function exactIsect(a,b){
+  try{
+    return turf.intersect(a,b) || null;
+  }catch(e){
+    return null;
+  }
+}
+
+function buildTentacleRegions(question, zone=null){
+  const circle = makeCircle(question.center, question.radius_miles || 1, 'miles');
+  const scope = zone ? exactIsect(zone, circle) : circle;
+  const options = Array.isArray(question?.options) ? question.options.map((opt, i)=>normalizeTentacleOption(opt, i)).filter(Boolean) : [];
+  if(!scope || options.length < 2){
+    return {circle, scope, regions:[]};
+  }
+  try{
+    const bbox = expandBboxMiles(turf.bbox(circle), 0.25);
+    const points = turf.featureCollection(options.map((opt, i)=>turf.point([opt.lng, opt.lat], {id:opt.id, name:opt.name, index:i})));
+    const cells = turf.voronoi(points, {bbox});
+    if(!cells?.features?.length) return {circle, scope, regions:[]};
+    const regions = [];
+    options.forEach((opt, i) => {
+      const cell = cells.features[i];
+      if(!cell) return;
+      const region = exactIsect(scope, cell);
+      if(!region) return;
+      regions.push({option:opt, region, index:i});
+    });
+    return {circle, scope, regions};
+  }catch(e){
+    return {circle, scope, regions:[]};
+  }
 }
 
 function rememberOutgoingQuestion(question){
@@ -631,21 +665,13 @@ const QDEFS = {
       options:(p.tentacle_options || []).map((opt, i)=>normalizeTentacleOption(opt, i)).filter(Boolean),
     }),
     applyToZone:(zone,q)=>{
-      const circle=makeCircle(q.center,q.radius_miles||1,'miles');
+      const {circle, scope, regions} = buildTentacleRegions(q, zone);
       if(q.answer==='no') return safeDiff(zone,circle);
-      const inCircle=safeIsect(zone,circle);
       const option = findTentacleOption(q, q.answer);
-      const optIdx=q.options
-        ? q.options.findIndex(o => option?.id ? o.id === option.id : o.name === option?.name)
-        : -1;
-      if(optIdx>=0&&q.options.length>=2){
-        try{
-          const pts=turf.featureCollection(q.options.map(o=>turf.point([o.lng,o.lat])));
-          const cells=turf.voronoi(pts,{bbox:[-72,41.5,-70,43]});
-          if(cells&&cells.features[optIdx]) return safeIsect(inCircle,cells.features[optIdx]);
-        }catch(e){}
-      }
-      return inCircle;
+      const match = option
+        ? regions.find(item => item.option.id === option.id || item.option.name === option.name)
+        : null;
+      return match?.region || scope || zone;
     },
     describe:q=>q.answer==='no'
       ? `<b>NOT WITHIN</b> ${q.radius_miles||1}mi of seeker`

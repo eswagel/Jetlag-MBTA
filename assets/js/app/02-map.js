@@ -30,6 +30,14 @@ function initMap(){
   radiusLayer = L.layerGroup().addTo(map);
 
   previewLayer=L.geoJSON(null,{interactive:false,style:{color:'#f0a030',weight:1.5,fillColor:'#f0a030',fillOpacity:0.08,dashArray:'4 3'}}).addTo(map);
+  tentaclePreviewLayer=L.geoJSON(null,{interactive:false,style:(feature)=>({
+    color: feature?.properties?.strokeColor || feature?.properties?.color || '#20c8b0',
+    weight: feature?.properties?.weight ?? 2,
+    opacity: feature?.properties?.opacity ?? 0.9,
+    fillColor: feature?.properties?.fillColor || feature?.properties?.color || '#20c8b0',
+    fillOpacity: feature?.properties?.fillOpacity ?? 0.18,
+    dashArray: feature?.properties?.dashArray || null,
+  })}).addTo(map);
   simulLayer=L.geoJSON(null,{interactive:false,style:{color:'#20c8b0',weight:2,fillColor:'#20c8b0',fillOpacity:0.22}}).addTo(map);
   simulMaskLayer=L.geoJSON(null,{interactive:false,style:{color:'transparent',weight:0,fillColor:'#e84040',fillOpacity:0.18}}).addTo(map);
 

@@ -1784,12 +1784,26 @@ const SIMUL_OPTS = {
 
 let _simulActive = null; // currently previewed answer val
 
+function getQuestionWithLocalContext(question){
+  if(!question) return null;
+  if(question.type === 'tentacles' && (!Array.isArray(question.options) || question.options.length < 2) && question.id){
+    const local = (currentBuiltQuestion && currentBuiltQuestion.id === question.id)
+      ? currentBuiltQuestion
+      : getOutgoingQuestion(question.id);
+    if(local?.type === 'tentacles' && Array.isArray(local.options) && local.options.length >= 2){
+      return local;
+    }
+  }
+  return question;
+}
+
 function getLocalApplyOptions(json){
-  if(!json) return [];
-  if(json.type === 'measure') return measureAnswerOptions(json);
-  if(json.type === 'tentacles'){
+  const question = getQuestionWithLocalContext(json);
+  if(!question) return [];
+  if(question.type === 'measure') return measureAnswerOptions(question);
+  if(question.type === 'tentacles'){
     const opts = [{val:'no', icon:'❌', label:'Not nearby', color:'#e84040'}];
-    (json.options || []).forEach((opt, i) => {
+    (question.options || []).forEach((opt, i) => {
       opts.push({
         val: opt.id || buildTentacleOptionId(opt, i),
         icon: String(i + 1),
@@ -1799,11 +1813,11 @@ function getLocalApplyOptions(json){
     });
     return opts;
   }
-  if(SIMUL_OPTS[json.type]) return SIMUL_OPTS[json.type];
-  if(json.type === 'photo'){
+  if(SIMUL_OPTS[question.type]) return SIMUL_OPTS[question.type];
+  if(question.type === 'photo'){
     return [{val:'sent', icon:'📸', label:'Photo sent', color:'#18b050'}];
   }
-  return (json.answer_opts || []).map(val => ({
+  return (question.answer_opts || []).map(val => ({
     val,
     icon:'•',
     label:String(val),
@@ -1853,6 +1867,7 @@ function setPreviewMapMode(active){
 }
 
 function clearZonePreview(){
+  if(tentaclePreviewLayer) tentaclePreviewLayer.clearLayers();
   simulLayer.clearLayers();
   simulMaskLayer.clearLayers();
   setPreviewMapMode(false);
@@ -1904,9 +1919,67 @@ function getLivePreviewQuestion(){
   }
 }
 
+function renderTentacleRegionsPreview(question){
+  const q = getQuestionWithLocalContext(question) || getQuestionWithLocalContext(getLivePreviewQuestion()) || currentBuiltQuestion;
+  if(!q || q.type !== 'tentacles'){
+    toast('Generate a tentacles question first');
+    return;
+  }
+  const {circle, regions} = buildTentacleRegions(q, validZone);
+  if(!circle){
+    toast('Could not build tentacles preview');
+    return;
+  }
+  const palette = ['#20c8b0','#3a8eff','#f0a030','#a060ff','#18b050','#e84040','#ff7f50','#7fd99b'];
+  clearZonePreview();
+  if(tentaclePreviewLayer) tentaclePreviewLayer.clearLayers();
+  tentaclePreviewLayer.addData({
+    type:'Feature',
+    properties:{
+      color:'#20c8b0',
+      strokeColor:'#20c8b0',
+      fillColor:'#20c8b0',
+      fillOpacity:0.04,
+      weight:2,
+      dashArray:'6 4',
+      opacity:0.9,
+    },
+    geometry: circle.geometry,
+  });
+  tentaclePreviewLayer.addData({
+    type:'FeatureCollection',
+    features: regions.map((item, i) => ({
+      ...cloneGeo(item.region),
+      properties:{
+        color: palette[i % palette.length],
+        strokeColor: palette[i % palette.length],
+        fillColor: palette[i % palette.length],
+        fillOpacity:0.18,
+        weight:2,
+        opacity:0.95,
+      },
+    })),
+  });
+  setPreviewMapMode(true);
+  const hint = document.getElementById('simul-hint');
+  if(hint){
+    hint.innerHTML = `<b>Preview Regions:</b> inside the ${q.radius_miles || 1} mile circle, each colored region shows which option is closest.<br>${(q.options || []).map((opt, i)=>`<b>${i + 1}.</b> ${escapePreviewOptionLabel(opt.name)}`).join('<br>')}<br><span style="font-size:8px;color:var(--dim)">Outside the circle = Not nearby.</span>`;
+    hint.className = 'simul-result-hint visible';
+  }
+  const msb = document.getElementById('msb-area');
+  if(msb) msb.innerHTML = 'colored regions show each tentacle answer';
+  document.getElementById('map-simul-bar').classList.remove('visible');
+}
+
+function previewTentacleRegions(){
+  _simulActive = null;
+  document.querySelectorAll('.simul-btn,.msb-btn').forEach(b=>b.classList.remove('active'));
+  renderTentacleRegionsPreview(getLivePreviewQuestion() || currentBuiltQuestion);
+}
+
 function refreshActiveAnswerPreview(){
   if(!_simulActive || !qtype) return;
-  const liveQ = getLivePreviewQuestion();
+  const liveQ = getQuestionWithLocalContext(getLivePreviewQuestion());
   const def = liveQ ? QDEFS[liveQ.type] : QDEFS[getActiveBuildQType()];
   const opts = getLocalApplyOptions(liveQ);
   if(!def || !opts) return;
@@ -1932,38 +2005,40 @@ function escapePreviewOptionLabel(text){
 }
 
 function renderSimulBtns(json){
-  const opts = getLocalApplyOptions(json);
+  const question = getQuestionWithLocalContext(json);
+  const opts = getLocalApplyOptions(question);
   const container = document.getElementById('simul-btns');
   const hint      = document.getElementById('simul-hint');
   const bar       = document.getElementById('map-simul-bar');
   const msbBtns   = document.getElementById('msb-btns');
-  const preserved = opts?.some(o=>o.val===_simulActive) ? _simulActive : null;
+  const msbArea   = document.getElementById('msb-area');
+  const preserved = question?.type === 'tentacles'
+    ? null
+    : (opts.some(o=>o.val===_simulActive) ? _simulActive : null);
   _simulActive = preserved;
   clearZonePreview();
-  hint.className  = 'simul-result-hint';
-  if(!opts){
+  updatePreview();
+  if(hint){
+    hint.className = 'simul-result-hint';
+    hint.innerHTML = '';
+  }
+  if(!opts.length){
     container.innerHTML='';
     msbBtns.innerHTML='';
     bar.classList.remove('visible');
+    if(msbArea) msbArea.innerHTML = 'green stays · red goes';
     return;
   }
-  if(json?.type === 'tentacles'){
-    const selectOptions = [
-      '<option value="">Choose a tentacles answer…</option>',
-      ...opts.map(o => `<option value="${escapePreviewOptionLabel(o.val)}"${o.val===_simulActive?' selected':''}>${escapePreviewOptionLabel(`${o.icon} ${o.label}`)}</option>`)
-    ];
+  if(question?.type === 'tentacles'){
     container.innerHTML = `
-      <div class="simul-select-wrap">
-        <select id="tentacle-simul-select" class="simul-select" onchange="previewAnswer(this.value)">
-          ${selectOptions.join('')}
-        </select>
+      <div class="simul-select-wrap tentacle-preview-tools">
+        <button class="simul-clear-btn tentacle-preview-btn" type="button" onclick="previewTentacleRegions()">Preview Regions</button>
         <button class="simul-clear-btn" type="button" onclick="previewAnswer('')">Clear</button>
       </div>
     `;
     msbBtns.innerHTML = '';
     bar.classList.remove('visible');
-    if(_simulActive) refreshActiveAnswerPreview();
-    else document.getElementById('msb-area').innerHTML = 'green stays · red goes';
+    if(msbArea) msbArea.innerHTML = 'preview tentacle regions on the map';
     return;
   }
   // Panel buttons
@@ -1990,34 +2065,45 @@ function renderSimulBtns(json){
     if(mbtn) mbtn.classList.add('active');
     refreshActiveAnswerPreview();
   } else {
-    document.getElementById('msb-area').innerHTML = 'green stays · red goes';
+    if(msbArea) msbArea.innerHTML = 'green stays · red goes';
   }
 }
 
 function previewAnswer(val){
-  const baseQuestion = getLivePreviewQuestion() || currentBuiltQuestion;
+  const baseQuestion = getQuestionWithLocalContext(getLivePreviewQuestion() || currentBuiltQuestion);
   const def = baseQuestion ? QDEFS[baseQuestion.type] : QDEFS[getActiveBuildQType()];
   const opts = getLocalApplyOptions(baseQuestion);
   const hint = document.getElementById('simul-hint');
-  const tentacleSelect = document.getElementById('tentacle-simul-select');
+  const msbArea = document.getElementById('msb-area');
 
   if(!val){
     _simulActive = null;
     clearZonePreview();
+    updatePreview();
     document.querySelectorAll('.simul-btn,.msb-btn').forEach(b=>b.classList.remove('active'));
-    hint.className = 'simul-result-hint';
-    document.getElementById('msb-area').innerHTML = 'green stays · red goes';
-    if(tentacleSelect) tentacleSelect.value = '';
+    if(hint){
+      hint.className = 'simul-result-hint';
+      hint.innerHTML = '';
+    }
+    if(msbArea) msbArea.innerHTML = baseQuestion?.type === 'tentacles'
+      ? 'preview tentacle regions on the map'
+      : 'green stays · red goes';
     return;
   }
 
   // Toggle off if same button pressed twice
-  if(_simulActive === val && !tentacleSelect){
+  if(_simulActive === val){
     _simulActive = null;
     clearZonePreview();
+    updatePreview();
     document.querySelectorAll('.simul-btn,.msb-btn').forEach(b=>b.classList.remove('active'));
-    hint.className = 'simul-result-hint';
-    document.getElementById('msb-area').innerHTML = 'green stays · red goes';
+    if(hint){
+      hint.className = 'simul-result-hint';
+      hint.innerHTML = '';
+    }
+    if(msbArea) msbArea.innerHTML = baseQuestion?.type === 'tentacles'
+      ? 'preview tentacle regions on the map'
+      : 'green stays · red goes';
     return;
   }
 
@@ -2027,14 +2113,13 @@ function previewAnswer(val){
   const mbtn = document.getElementById(`msb-${val}`);
   if(btn)  btn.classList.add('active');
   if(mbtn) mbtn.classList.add('active');
-  if(tentacleSelect) tentacleSelect.value = val;
 
   const opt = opts.find(o=>o.val===val);
   const col = opt ? opt.color : '#20c8b0';
 
   try {
-    const liveQ = getLivePreviewQuestion();
-    const baseQ = liveQ || JSON.parse(document.getElementById('json-out').value);
+    const liveQ = getQuestionWithLocalContext(getLivePreviewQuestion());
+    const baseQ = liveQ || getQuestionWithLocalContext(JSON.parse(document.getElementById('json-out').value));
     runSlowMeasureAction(baseQ, () => {
       try{
         ensureMeasureConstraint(baseQ);
