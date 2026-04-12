@@ -327,12 +327,25 @@
   </div>
 </div>
 
-<script src="assets/js/app/01-core.js"></script>
-<script src="assets/js/app/02-map.js"></script>
-<script src="assets/js/app/03-setup.js"></script>
+<!-- App runtime -->
+<script src="assets/js/app/core/00-runtime.js"></script>
+<script src="assets/js/app/core/01-geometry.js"></script>
+<script src="assets/js/app/map/00-init.js"></script>
+<script src="assets/js/app/map/01-mbta.js"></script>
+<script src="assets/js/app/setup/00-zone.js"></script>
+
+<!-- Build flow -->
+<script src="assets/js/app/build/01-build-data.js"></script>
+<script src="assets/js/app/build/02-build-visuals.js"></script>
+<script src="assets/js/app/build/03-build-ui.js"></script>
+<script src="assets/js/app/build/04-build-actions.js"></script>
 <script src="assets/js/app/04-build.js"></script>
-<script src="assets/js/app/05-hider.js"></script>
-<script src="assets/js/app/06-seeker.js"></script>
+
+<!-- Shared UI and role flows -->
+<script src="assets/js/app/ui/shared.js"></script>
+<script src="assets/js/app/ui/panel.js"></script>
+<script src="assets/js/app/seeker/flow.js"></script>
+<script src="assets/js/app/hider/flow.js"></script>
 <script src="assets/js/app/07-bootstrap.js"></script>
 </body>
 </html>
