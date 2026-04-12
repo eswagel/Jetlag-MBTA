@@ -456,16 +456,29 @@ function finalizeMBTALoad(legStatus){
 }
 
 async function loadLandmassData(){
-  if(_landmassCache.ready) return;
-  const data = preloadedData.landmasses || await fetchOptionalJSON(DATA_FILES.landmasses, 'landmasses');
-  if(!data) return;
-  preloadedData.landmasses = data;
-  _landmassCache.pieces = (data.pieces || []).map(piece => ({
-    type:'Feature',
-    properties:{id: piece.id, name: piece.name},
-    geometry: deepClone(piece.geometry),
-  })).filter(piece => piece.geometry?.type === 'Polygon' || piece.geometry?.type === 'MultiPolygon');
-  _landmassCache.stopIndex = {...(data.stops || {})};
-  _landmassCache.ready = _landmassCache.pieces.length > 0;
-  if(_landmassCache.ready && typeof renderBuildBody === 'function') renderBuildBody();
+  if(_landmassCache.ready) return _landmassCache.pieces;
+  if(_landmassCache.loading) return _landmassCache.loading;
+
+  // Multiple startup paths ask for landmasses before the first fetch completes.
+  // Reuse the in-flight load so the browser only fetches/parses this once.
+  _landmassCache.loading = (async () => {
+    const data = preloadedData.landmasses || await fetchOptionalJSON(DATA_FILES.landmasses, 'landmasses');
+    if(!data) return null;
+    preloadedData.landmasses = data;
+    _landmassCache.pieces = (data.pieces || []).map(piece => ({
+      type:'Feature',
+      properties:{id: piece.id, name: piece.name},
+      geometry: deepClone(piece.geometry),
+    })).filter(piece => piece.geometry?.type === 'Polygon' || piece.geometry?.type === 'MultiPolygon');
+    _landmassCache.stopIndex = {...(data.stops || {})};
+    _landmassCache.ready = _landmassCache.pieces.length > 0;
+    if(_landmassCache.ready && typeof renderBuildBody === 'function') renderBuildBody();
+    return _landmassCache.pieces;
+  })();
+
+  try{
+    return await _landmassCache.loading;
+  }finally{
+    _landmassCache.loading = null;
+  }
 }

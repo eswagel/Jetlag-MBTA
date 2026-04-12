@@ -136,6 +136,7 @@ async function fetchNominatimBoundary(query, featureClass, adminLevel){
 
 const _landmassCache = {
   ready: false,
+  loading: null,
   pieces: [],           // array of Turf polygon Features
   stopIndex: {},        // stopId → piece index
 };
