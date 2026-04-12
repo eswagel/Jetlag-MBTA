@@ -1743,6 +1743,12 @@ function buildQuestionPacket(question){
     };
   }
   if(question.type === 'tentacles'){
+    const options = getTentacleDisplayOptions(question).map(opt => ({
+      id: opt.id,
+      name: opt.name,
+      lat: opt.lat,
+      lng: opt.lng,
+    }));
     return {
       id:question.id,
       type:question.type,
@@ -1750,6 +1756,7 @@ function buildQuestionPacket(question){
       radius_miles:question.radius_miles || 1,
       category:question.category || question.category_label || null,
       category_label:question.category_label || question.category || null,
+      options,
     };
   }
   if(question.type === 'matching'){

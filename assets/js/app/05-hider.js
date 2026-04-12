@@ -395,7 +395,7 @@ async function hiderComputeAnswer(hiderLoc){
         const d = turfDist(hiderLoc, o);
         if(d < minDist){ minDist = d; closest = o; }
       });
-      answer = closest?.id || closest?.name;
+      answer = closest?.id;
       explanation = `You are within range (${distToSeeker.toFixed(2)}mi). Closest option: <b>${closest?.name || 'Option'}</b> (${minDist.toFixed(2)}mi away)`;
       hiderPickAnswer(answer, explanation, closest?.name || answer);
     }

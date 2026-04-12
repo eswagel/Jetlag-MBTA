@@ -161,7 +161,11 @@ function getTentacleOptionsInReach(question){
 function findTentacleOption(question, answer){
   const options = getTentacleOptionsInReach(question);
   if(answer == null) return null;
-  return options.find(opt => opt?.id === answer) || options.find(opt => opt?.name === answer) || null;
+  const byId = options.find(opt => opt?.id === answer);
+  if(byId) return byId;
+  return options.some(opt => opt?.id)
+    ? null
+    : (options.find(opt => opt?.name === answer) || null);
 }
 
 function getTentacleAnswerLabel(question, answer){
@@ -687,7 +691,7 @@ const QDEFS = {
       if(q.answer==='no') return safeDiff(zone,circle);
       const option = findTentacleOption(q, q.answer);
       const match = option
-        ? regions.find(item => item.option.id === option.id || item.option.name === option.name)
+        ? regions.find(item => item.option.id === option.id)
         : null;
       return match?.region || scope || zone;
     },
