@@ -253,6 +253,15 @@
     <div id="tab-log" class="tab-pane" style="display:none">
       <div class="sec">Applied Constraints</div>
       <div id="log-list"><p class="empty">No constraints applied yet.</p></div>
+      <div class="sec" style="margin-top:12px">Share Full Question Log</div>
+      <textarea id="log-transfer-json" class="jarea" rows="5" placeholder='Export puts JSON here. To import, paste JSON and click "Import Log".'></textarea>
+      <div class="row" style="margin-top:8px;gap:8px">
+        <button class="btn btn-red" onclick="exportQuestionLog()">📤 Export Log</button>
+        <button class="btn btn-ghost" onclick="importQuestionLog()">📥 Import Log</button>
+      </div>
+      <div style="font-size:8.5px;color:var(--dim);font-family:'IBM Plex Mono',monospace;line-height:1.45;margin-top:8px">
+        Importing a log <b>replaces your current questions/answers</b> and recomputes the zone.
+      </div>
       <button class="btn btn-ghost" style="margin-top:12px" onclick="resetZone()">⟲ Reset All</button>
     </div>
 
