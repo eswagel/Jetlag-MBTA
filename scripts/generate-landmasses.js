@@ -2,389 +2,126 @@
 
 const fs = require('fs/promises');
 const path = require('path');
-const {point, polygon, feature, lineString, featureCollection} = require('@turf/helpers');
-const {flatten} = require('@turf/flatten');
-const {simplify} = require('@turf/simplify');
-const {booleanPointInPolygon} = require('@turf/boolean-point-in-polygon');
-const {booleanIntersects} = require('@turf/boolean-intersects');
-const {difference} = require('@turf/difference');
-const {area} = require('@turf/area');
+const {point, lineString, featureCollection} = require('@turf/helpers');
 const {buffer} = require('@turf/buffer');
-const {fetchCoastlineWays, buildLandFacesFromCoastlineWays} = require('./lib/shoreline');
+const {union} = require('@turf/union');
+const {flatten} = require('@turf/flatten');
 
-const OUTPUT = path.resolve(__dirname, '..', 'data', 'landmasses.json');
-const CACHE_DIR = path.resolve(__dirname, '..', 'data', '_cache', 'landmasses-v1');
-const MBTA_DATA = path.resolve(__dirname, '..', 'data', 'mbta-data.json');
-const BBOX = {south: 42.18, west: -71.55, north: 42.67, east: -70.85};
-const MIN_WATER_AREA_SQM = 15000;
-const OVERPASS_ENDPOINTS = [
-  'https://overpass-api.de/api/interpreter',
-  'https://overpass.kumi.systems/api/interpreter',
+const ROOT = path.resolve(__dirname, '..');
+const BOUNDARIES = path.join(ROOT, 'data', 'boundaries.json');
+const MBTA_DATA = path.join(ROOT, 'data', 'mbta-data.json');
+const OUTPUT = path.join(ROOT, 'data', 'landmasses.json');
+
+const REGIONS = [
+  {id: 0, name: 'Across the Mystic'},
+  {id: 1, name: 'Across the Charles'},
+  {id: 2, name: 'Across the Neponset'},
+  {id: 3, name: 'Mainland Boston'},
 ];
 
-async function overpassRaw(query){
-  for(const url of OVERPASS_ENDPOINTS){
-    try{
-      const res = await fetch(url, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/x-www-form-urlencoded',
-          'User-Agent': 'Jetlag-MBTA-Landmass-Generator/1.0',
-        },
-        body: 'data=' + encodeURIComponent(query),
-      });
-      if(!res.ok) continue;
-      const text = await res.text();
-      try{
-        return JSON.parse(text);
-      }catch(err){
-        continue;
-      }
-    }catch(err){}
-  }
-  throw new Error('All Overpass endpoints failed');
+const CHARLES_LINE = [[-71.173, 42.363], [-70.978, 42.359]];
+const MYSTIC_LINE = [[-71.084, 42.391], [-70.957, 42.366]];
+const NEPONSET_LINE = [[-71.151, 42.287], [-70.983, 42.306]];
+
+const EAST_BOSTON_AND_NORTH = new Set([
+  'place-welln', 'place-mlmnl', 'place-ogmnl',
+  'place-mvbcl', 'place-aport', 'place-wimnl', 'place-orhte',
+  'place-sdmnl', 'place-bmmnl', 'place-rbmnl', 'place-wondl',
+]);
+
+async function readJSON(file){
+  return JSON.parse(await fs.readFile(file, 'utf8'));
 }
 
-async function readJSONIfExists(filePath){
+function flattenPolygons(feature){
   try{
-    return JSON.parse(await fs.readFile(filePath, 'utf8'));
-  }catch(err){
-    return null;
+    return (flatten(feature).features || []).filter(f => f.geometry?.type === 'Polygon');
+  }catch{
+    return [];
   }
 }
 
-async function writeJSON(filePath, value){
-  await fs.mkdir(path.dirname(filePath), {recursive: true});
-  await fs.writeFile(filePath, JSON.stringify(value, null, 2) + '\n', 'utf8');
-}
-
-function coordKey(coord){
-  return `${coord[0].toFixed(6)},${coord[1].toFixed(6)}`;
-}
-
-function sameCoord(a, b){
-  return coordKey(a) === coordKey(b);
-}
-
-function closeRing(ring){
-  if(!ring.length) return ring;
-  return sameCoord(ring[0], ring[ring.length - 1]) ? ring : [...ring, ring[0]];
-}
-
-function ringArea(ring){
-  let area = 0;
-  for(let i = 0; i < ring.length - 1; i++){
-    const [x1, y1] = ring[i];
-    const [x2, y2] = ring[i + 1];
-    area += (x1 * y2) - (x2 * y1);
+function unionAll(features){
+  if(!features.length) return null;
+  let current = features[0];
+  for(let i = 1; i < features.length; i++){
+    const next = union(featureCollection([current, features[i]]));
+    if(next) current = next;
   }
-  return area / 2;
+  return current;
 }
 
-function pointInRing(point, ring){
-  let inside = false;
-  const [px, py] = point;
-  for(let i = 0, j = ring.length - 1; i < ring.length; j = i++){
-    const [xi, yi] = ring[i];
-    const [xj, yj] = ring[j];
-    const intersects = ((yi > py) !== (yj > py)) &&
-      (px < (xj - xi) * (py - yi) / ((yj - yi) || 1e-12) + xi);
-    if(intersects) inside = !inside;
+function sideOfLine(stop, line){
+  const [a, b] = line;
+  const [x1, y1] = a;
+  const [x2, y2] = b;
+  const vx = x2 - x1;
+  const vy = y2 - y1;
+  const tRaw = ((stop.lng - x1) * vx + (stop.lat - y1) * vy) / ((vx * vx + vy * vy) || 1);
+  const t = Math.max(0, Math.min(1, tRaw));
+  const px = x1 + t * vx;
+  const py = y1 + t * vy;
+  return (vx * (stop.lat - py)) - (vy * (stop.lng - px));
+}
+
+function classifyStop(stop){
+  const northOfCharles = sideOfLine(stop, CHARLES_LINE) > 0;
+  const northOfMystic = sideOfLine(stop, MYSTIC_LINE) > 0;
+  const southOfNeponset = sideOfLine(stop, NEPONSET_LINE) < 0;
+
+  if(southOfNeponset) return 2;
+  if(northOfCharles){
+    if(northOfMystic || EAST_BOSTON_AND_NORTH.has(stop.id)) return 0;
+    return 1;
   }
-  return inside;
-}
-
-function stitchSegments(segments){
-  const pool = segments
-    .map(segment => segment.filter((coord, idx, arr) => idx === 0 || !sameCoord(coord, arr[idx - 1])))
-    .filter(segment => segment.length >= 2);
-  const rings = [];
-
-  while(pool.length){
-    let current = pool.shift().slice();
-    let changed = true;
-
-    while(changed){
-      changed = false;
-      for(let i = 0; i < pool.length; i++){
-        const candidate = pool[i];
-        const start = current[0];
-        const end = current[current.length - 1];
-        const candStart = candidate[0];
-        const candEnd = candidate[candidate.length - 1];
-
-        if(sameCoord(end, candStart)){
-          current = current.concat(candidate.slice(1));
-        } else if(sameCoord(end, candEnd)){
-          current = current.concat(candidate.slice(0, -1).reverse());
-        } else if(sameCoord(start, candEnd)){
-          current = candidate.slice(0, -1).concat(current);
-        } else if(sameCoord(start, candStart)){
-          current = candidate.slice(1).reverse().concat(current);
-        } else {
-          continue;
-        }
-
-        pool.splice(i, 1);
-        changed = true;
-        break;
-      }
-    }
-
-    current = closeRing(current);
-    if(current.length >= 4 && sameCoord(current[0], current[current.length - 1])){
-      rings.push(current);
-    }
-  }
-
-  return rings;
-}
-
-function relationToGeometry(relation){
-  const outerSegments = [];
-  const innerSegments = [];
-
-  for(const member of relation.members || []){
-    if(member.type !== 'way' || !member.geometry || member.geometry.length < 2) continue;
-    const segment = member.geometry.map(point => [point.lon, point.lat]);
-    if(member.role === 'inner') innerSegments.push(segment);
-    else outerSegments.push(segment);
-  }
-
-  const outerRings = stitchSegments(outerSegments)
-    .sort((a, b) => Math.abs(ringArea(b)) - Math.abs(ringArea(a)));
-  const innerRings = stitchSegments(innerSegments);
-  if(!outerRings.length) return null;
-
-  const polygons = outerRings.map(ring => ({outer: ring, holes: []}));
-  for(const hole of innerRings){
-    const container = polygons.find(poly => pointInRing(hole[0], poly.outer));
-    if(container) container.holes.push(hole);
-  }
-
-  const coords = polygons.map(poly => [poly.outer, ...poly.holes]);
-  if(coords.length === 1) return {type: 'Polygon', coordinates: coords[0]};
-  return {type: 'MultiPolygon', coordinates: coords};
-}
-
-function flattenPolygonFeature(feature){
-  if(!feature) return [];
-  try{
-    const fc = flatten(feature);
-    return (fc.features || []).filter(f => f.geometry?.type === 'Polygon');
-  }catch(err){
-    return feature.geometry?.type === 'Polygon' ? [feature] : [];
-  }
-}
-
-function simplifyFeature(feature, tolerance = 0.0004){
-  try{
-    return simplify(feature, {tolerance, highQuality: false, mutate: false});
-  }catch(err){
-    return feature;
-  }
-}
-
-async function loadStops(){
-  const data = JSON.parse(await fs.readFile(MBTA_DATA, 'utf8'));
-  const deduped = new Map();
-  for(const line of data.lines || []){
-    for(const stop of line.stops || []){
-      if(!deduped.has(stop.id)){
-        deduped.set(stop.id, {id: stop.id, name: stop.name, lat: stop.lat, lng: stop.lng});
-      }
-    }
-  }
-  return [...deduped.values()];
-}
-
-async function fetchWaterRelationsAndWays(){
-  const query = `[out:json][timeout:120];
-    (
-      way["natural"~"^(water|bay)$"](${BBOX.south},${BBOX.west},${BBOX.north},${BBOX.east});
-      relation["natural"~"^(water|bay)$"](${BBOX.south},${BBOX.west},${BBOX.north},${BBOX.east});
-      way["waterway"="river"](${BBOX.south},${BBOX.west},${BBOX.north},${BBOX.east});
-      way["waterway"="riverbank"](${BBOX.south},${BBOX.west},${BBOX.north},${BBOX.east});
-      relation["waterway"="riverbank"](${BBOX.south},${BBOX.west},${BBOX.north},${BBOX.east});
-    );
-    out geom;`;
-  const data = await overpassRaw(query);
-  return data.elements || [];
-}
-
-function buildWaterPolygons(elements){
-  const out = [];
-
-  for(const el of elements){
-    if(el.type === 'way' && Array.isArray(el.geometry) && el.geometry.length >= 2){
-      const coords = el.geometry.map(point => [point.lon, point.lat]);
-      const isRiverLine = el.tags?.waterway === 'river' && !sameCoord(coords[0], coords[coords.length - 1]);
-      if(isRiverLine){
-        try{
-          const buffered = buffer(lineString(coords, {name: el.tags?.name || 'river'}), 0.03, {units: 'kilometers'});
-          out.push(...flattenPolygonFeature(buffered));
-        }catch(err){}
-        continue;
-      }
-
-      const ring = closeRing(coords);
-      if(ring.length >= 4){
-        out.push(polygon([ring], {name: el.tags?.name || 'water'}));
-      }
-      continue;
-    }
-
-    if(el.type === 'relation'){
-      const geometry = relationToGeometry(el);
-      if(!geometry) continue;
-      const waterFeature = feature(geometry, {name: el.tags?.name || 'water'});
-      out.push(...flattenPolygonFeature(waterFeature));
-    }
-  }
-
-  return out.filter(poly => {
-    try{
-      return area(poly) >= MIN_WATER_AREA_SQM;
-    }catch(err){
-      return false;
-    }
-  });
-}
-
-function subtractWaterFromLand(landFaces, waterPolygons){
-  let pieces = landFaces.slice();
-
-  for(const water of waterPolygons){
-    const next = [];
-    for(const piece of pieces){
-      let result = piece;
-      try{
-        if(booleanIntersects(piece, water)){
-          result = difference(featureCollection([piece, water]));
-        }
-      }catch(err){}
-
-      if(!result){
-        continue;
-      }
-      next.push(...flattenPolygonFeature(result));
-    }
-    pieces = next.length ? next : pieces;
-  }
-
-  return pieces
-    .map(piece => simplifyFeature(piece))
-    .filter(piece => area(piece) > 1000);
-}
-
-function assignStopsToPieces(stops, pieces){
-  const stopIndex = {};
-  const pieceStops = pieces.map(() => []);
-
-  stops.forEach(stop => {
-    const pt = point([stop.lng, stop.lat]);
-    const idx = pieces.findIndex(piece => {
-      try{
-        return booleanPointInPolygon(pt, piece);
-      }catch(err){
-        return false;
-      }
-    });
-    if(idx >= 0){
-      stopIndex[stop.id] = idx;
-      pieceStops[idx].push(stop.name);
-    }
-  });
-
-  return {stopIndex, pieceStops};
+  return 3;
 }
 
 async function main(){
-  console.log('Loading MBTA stops...');
-  const stops = await loadStops();
-  console.log(`Loaded ${stops.length} unique stops`);
+  const [boundaryData, mbtaData] = await Promise.all([readJSON(BOUNDARIES), readJSON(MBTA_DATA)]);
 
-  const coastlineCache = path.join(CACHE_DIR, 'coastline-ways.json');
-  let coastlineWays = await readJSONIfExists(coastlineCache);
-  if(coastlineWays){
-    console.log(`Loaded ${coastlineWays.length} cached coastline ways`);
-  } else {
-    console.log('Fetching coastline ways...');
-    coastlineWays = await fetchCoastlineWays(overpassRaw, BBOX);
-    console.log(`Fetched ${coastlineWays.length} coastline ways`);
-    await writeJSON(coastlineCache, coastlineWays);
+  const cityFeatures = (boundaryData.cities || [])
+    .filter(city => city.geometry)
+    .map(city => city.geometry.type === 'Feature'
+      ? city.geometry
+      : {type: 'Feature', properties: {name: city.name}, geometry: city.geometry});
+
+  const stopsById = new Map();
+  for(const line of mbtaData.lines || []){
+    for(const stop of line.stops || []){
+      if(!stopsById.has(stop.id)) stopsById.set(stop.id, stop);
+    }
+  }
+  const stops = [...stopsById.values()];
+
+  const assignments = {};
+  const regionStops = new Map(REGIONS.map(r => [r.id, []]));
+  for(const stop of stops){
+    const regionId = classifyStop(stop);
+    assignments[stop.id] = regionId;
+    regionStops.get(regionId).push(stop);
   }
 
-  const landFaceCache = path.join(CACHE_DIR, 'land-faces.json');
-  let landFaces = await readJSONIfExists(landFaceCache);
-  if(landFaces){
-    console.log(`Loaded ${landFaces.length} cached coastline-derived land faces`);
-  } else {
-    console.log('Building coastal land faces...');
-    landFaces = buildLandFacesFromCoastlineWays(coastlineWays, BBOX, stops);
-    console.log(`Kept ${landFaces.length} coastline-derived land faces`);
-    await writeJSON(landFaceCache, landFaces);
-  }
-  if(!landFaces.length){
-    throw new Error('No coastline-derived land faces contained MBTA stops');
-  }
+  const pieces = REGIONS.map(region => {
+    const stopPoints = regionStops.get(region.id).map(stop => point([stop.lng, stop.lat]));
+    const cloud = stopPoints.length ? buffer(featureCollection(stopPoints), 1.3, {units: 'kilometers'}) : null;
+    const cloudUnion = cloud ? unionAll(flattenPolygons(cloud)) : null;
+    const geometry = (cloudUnion || unionAll(cityFeatures)).geometry;
 
-  const waterCache = path.join(CACHE_DIR, 'water-elements.json');
-  let waterElements = await readJSONIfExists(waterCache);
-  if(waterElements){
-    console.log(`Loaded ${waterElements.length} cached water elements`);
-  } else {
-    console.log('Fetching water polygons...');
-    waterElements = await fetchWaterRelationsAndWays();
-    console.log(`Fetched ${waterElements.length} water elements`);
-    await writeJSON(waterCache, waterElements);
-  }
-  const waterPolygons = buildWaterPolygons(waterElements);
-  console.log(`Built ${waterPolygons.length} water polygons`);
-
-  const rawPieceCache = path.join(CACHE_DIR, 'raw-pieces-v2.json');
-  let rawPieces = await readJSONIfExists(rawPieceCache);
-  if(rawPieces){
-    console.log(`Loaded ${rawPieces.length} cached raw land pieces`);
-  } else {
-    console.log('Subtracting water from land faces...');
-    rawPieces = subtractWaterFromLand(landFaces, waterPolygons);
-    console.log(`Built ${rawPieces.length} raw land pieces`);
-    await writeJSON(rawPieceCache, rawPieces);
-  }
-
-  const {stopIndex, pieceStops} = assignStopsToPieces(stops, rawPieces);
-  const usedPieceIds = [...new Set(Object.values(stopIndex))].sort((a, b) => a - b);
-  const usedPieces = usedPieceIds.map((oldIdx, newIdx) => {
-    const names = pieceStops[oldIdx] || [];
-    const label = names.includes('Airport') || names.includes('Maverick')
-      ? 'East Boston'
-      : `Landmass ${newIdx + 1}`;
-    return {
-      oldIdx,
-      piece: {
-        id: newIdx,
-        name: label,
-        geometry: rawPieces[oldIdx].geometry,
-      },
-    };
-  });
-
-  const remappedStops = {};
-  Object.entries(stopIndex).forEach(([stopId, oldIdx]) => {
-    const mapped = usedPieces.find(entry => entry.oldIdx === oldIdx);
-    if(mapped) remappedStops[stopId] = mapped.piece.id;
+    return {id: region.id, name: region.name, geometry};
   });
 
   const payload = {
     generatedAt: new Date().toISOString(),
-    pieces: usedPieces.map(entry => entry.piece),
-    stops: remappedStops,
+    pieces,
+    stops: assignments,
   };
 
-  await fs.mkdir(path.dirname(OUTPUT), {recursive: true});
-  await fs.writeFile(OUTPUT, JSON.stringify(payload, null, 2) + '\n', 'utf8');
+  await fs.writeFile(OUTPUT, JSON.stringify(payload) + '\n', 'utf8');
   console.log(`Wrote ${OUTPUT}`);
+  const counts = {};
+  for(const id of Object.values(assignments)) counts[id] = (counts[id] || 0) + 1;
+  console.log('Region stop counts:', counts);
 }
 
 main().catch(err => {
