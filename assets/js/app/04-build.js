@@ -1613,17 +1613,20 @@ async function selectTentacleCat(catObj){
 async function resolveTentacleQuestionOptions(categoryLabel, center, radiusMiles=1){
   const catObj = TENTACLES_CATS.find(c => c.label === categoryLabel);
   if(!catObj) throw new Error(`Unknown tentacles category: ${categoryLabel}`);
-  const radiusM = Math.round((radiusMiles || 1) * 1609.34 * 1.5); // search 1.5x reach radius
+  const reachM = Math.round((radiusMiles || 1) * 1609.34);
+  const searchRadiusM = Math.round(reachM * 1.5); // search wider, but only keep true in-range options
   await loadPoiData();
   const preloaded = getNamedPoiCollection(catObj.label);
   let items = preloaded;
   if(items.length){
     items = items
-      .filter(it => turfDist(center, it) <= radiusM)
-      .sort((a,b)=>turfDist({lat:a.lat,lng:a.lng},center)-turfDist({lat:b.lat,lng:b.lng},center));
+      .filter(it => turfDist(center, it) <= searchRadiusM);
   } else {
-    items = await overpassSearch(catObj.overpass(center, radiusM), center, radiusM);
+    items = await overpassSearch(catObj.overpass(center, searchRadiusM), center, searchRadiusM);
   }
+  items = items
+    .filter(it => turfDist(center, it) <= reachM)
+    .sort((a,b)=>turfDist({lat:a.lat,lng:a.lng},center)-turfDist({lat:b.lat,lng:b.lng},center));
   if(items.length < 2) return [];
   const top = items.slice(0,8);
   if(preloaded.length){

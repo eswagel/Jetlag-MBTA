@@ -144,8 +144,22 @@ function normalizeTentacleOption(option, fallbackIndex=0){
   };
 }
 
+function getTentacleReachMeters(question){
+  return Math.max(0, Number(question?.radius_miles || 1) * 1609.34);
+}
+
+function getTentacleOptionsInReach(question){
+  const center = question?.center;
+  if(!center || !Number.isFinite(Number(center.lat)) || !Number.isFinite(Number(center.lng))) return [];
+  const reachM = getTentacleReachMeters(question);
+  return (Array.isArray(question?.options) ? question.options : [])
+    .map((opt, i)=>normalizeTentacleOption(opt, i))
+    .filter(Boolean)
+    .filter(opt => turfDist(center, opt) <= reachM);
+}
+
 function findTentacleOption(question, answer){
-  const options = Array.isArray(question?.options) ? question.options : [];
+  const options = getTentacleOptionsInReach(question);
   if(answer == null) return null;
   return options.find(opt => opt?.id === answer) || options.find(opt => opt?.name === answer) || null;
 }
@@ -166,7 +180,7 @@ function exactIsect(a,b){
 function buildTentacleRegions(question, zone=null){
   const circle = makeCircle(question.center, question.radius_miles || 1, 'miles');
   const scope = zone ? exactIsect(zone, circle) : circle;
-  const options = Array.isArray(question?.options) ? question.options.map((opt, i)=>normalizeTentacleOption(opt, i)).filter(Boolean) : [];
+  const options = getTentacleOptionsInReach(question);
   if(!scope || options.length < 2){
     return {circle, scope, regions:[]};
   }
@@ -662,7 +676,11 @@ const QDEFS = {
       radius_miles:p.radius_miles||1,
       category:p._tcatlabel || p._tcat || p.tentacles_cat_label || null,
       category_label:p._tcatlabel || p._tcat || p.tentacles_cat_label || null,
-      options:(p.tentacle_options || []).map((opt, i)=>normalizeTentacleOption(opt, i)).filter(Boolean),
+      options:getTentacleOptionsInReach({
+        center:p.center,
+        radius_miles:p.radius_miles||1,
+        options:p.tentacle_options || [],
+      }),
     }),
     applyToZone:(zone,q)=>{
       const {circle, scope, regions} = buildTentacleRegions(q, zone);
