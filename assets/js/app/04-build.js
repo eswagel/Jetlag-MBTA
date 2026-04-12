@@ -400,7 +400,8 @@ function renderTentaclesParams(){
     h+=`<div class="found-result" style="margin-top:8px">🐙 Found <b>${qparams.tentacle_options.length} options</b> nearby:</div>`;
     h+='<div class="tent-opt-list">';
     qparams.tentacle_options.forEach((o,i)=>{
-      h+=`<div class="tent-opt"><div class="tent-opt-num" style="background:var(--teal);color:#000">${i+1}</div>${o.name}</div>`;
+      const col = getTentaclePreviewColor(i);
+      h+=`<div class="tent-opt"><div class="tent-opt-num" style="background:${col};color:#fff">${i+1}</div>${o.name}</div>`;
     });
     h+='</div>';
   }
@@ -1282,6 +1283,12 @@ function tentaclePin(num, col){
     </div>`});
 }
 
+const TENTACLE_PREVIEW_COLORS = ['#20c8b0','#3a8eff','#f0a030','#a060ff','#18b050','#e84040','#ff7f50','#7fd99b'];
+
+function getTentaclePreviewColor(index=0){
+  return TENTACLE_PREVIEW_COLORS[index % TENTACLE_PREVIEW_COLORS.length];
+}
+
 // Measure nearest result — teal diamond pin
 function measurePin(){
   return L.divIcon({className:'', iconSize:[0,0], html:`
@@ -1587,9 +1594,9 @@ async function selectTentacleCat(catObj){
     }
     qparams._tsearching=false;
     qparams.tentacle_options=opts;
-    const TENT_COL = '#f0a030';
     opts.forEach((o,i)=>{
-      const m=L.marker([o.lat,o.lng],{icon:tentaclePin(i+1,TENT_COL),zIndexOffset:1500})
+      const col = getTentaclePreviewColor(i);
+      const m=L.marker([o.lat,o.lng],{icon:tentaclePin(i+1,col),zIndexOffset:1500+i})
         .bindPopup(`<div class="stop-popup"><div class="stop-popup-name">${o.name}</div></div>`,{offset:[0,-28],maxWidth:220})
         .addTo(map);
       pickedMarkers.push(m);
@@ -1930,7 +1937,6 @@ function renderTentacleRegionsPreview(question){
     toast('Could not build tentacles preview');
     return;
   }
-  const palette = ['#20c8b0','#3a8eff','#f0a030','#a060ff','#18b050','#e84040','#ff7f50','#7fd99b'];
   clearZonePreview();
   if(tentaclePreviewLayer) tentaclePreviewLayer.clearLayers();
   tentaclePreviewLayer.addData({
@@ -1948,17 +1954,20 @@ function renderTentacleRegionsPreview(question){
   });
   tentaclePreviewLayer.addData({
     type:'FeatureCollection',
-    features: regions.map((item, i) => ({
-      ...cloneGeo(item.region),
-      properties:{
-        color: palette[i % palette.length],
-        strokeColor: palette[i % palette.length],
-        fillColor: palette[i % palette.length],
-        fillOpacity:0.18,
-        weight:2,
-        opacity:0.95,
-      },
-    })),
+    features: regions.map((item, i) => {
+      const col = getTentaclePreviewColor(i);
+      return {
+        ...cloneGeo(item.region),
+        properties:{
+          color: col,
+          strokeColor: col,
+          fillColor: col,
+          fillOpacity:0.18,
+          weight:2,
+          opacity:0.95,
+        },
+      };
+    }),
   });
   setPreviewMapMode(true);
   const hint = document.getElementById('simul-hint');
