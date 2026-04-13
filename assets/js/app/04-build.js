@@ -68,7 +68,9 @@ const MATCHING_CATS = [
       const d = await rev.json();
       const val = d.address?.suburb || d.address?.neighbourhood || d.address?.quarter || null;
       if(!val) return { val:null, boundary:null };
-      const boundary = await fetchNominatimBoundary(val + ' Boston Massachusetts', 'boundary', 10);
+      const locality = d.address?.city || d.address?.town || d.address?.village || d.address?.municipality || 'Boston';
+      const state = d.address?.state || 'Massachusetts';
+      const boundary = await fetchNominatimBoundary(`${val} ${locality} ${state}`, 'boundary', 10);
       return { val, boundary };
     }
   },
@@ -80,7 +82,7 @@ const MATCHING_CATS = [
       if(local) return local;
       const rev = await fetch(`https://nominatim.openstreetmap.org/reverse?lat=${c.lat}&lon=${c.lng}&format=json&addressdetails=1`,{headers:{'Accept-Language':'en-US'}});
       const d = await rev.json();
-      const val = d.address?.postcode || null;
+      const val = normalizePostcode(d.address?.postcode || null);
       if(!val) return { val:null, boundary:null };
       const boundary = await fetchNominatimBoundary(val + ' Massachusetts', 'postcode', null);
       return { val, boundary };
