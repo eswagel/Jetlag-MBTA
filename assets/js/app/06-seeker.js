@@ -99,7 +99,7 @@ function buildStoredMatchingQuestion(payload){
   const boundary = category === 'line'
     ? (payload.boundary_geojson || null)
     : normalizeMatchingBoundaryForCenter(payload.boundary_geojson || null, center);
-  return {
+  const question = {
     id:payload.id,
     ...QDEFS.matching.toJSON({
       center,
@@ -112,6 +112,11 @@ function buildStoredMatchingQuestion(payload){
       _matching_boundary_simplified:boundary,
     }),
   };
+  if(payload.constraint_effect) question.constraint_effect = payload.constraint_effect;
+  if(payload.constraint_policy) question.constraint_policy = cloneForStorage(payload.constraint_policy);
+  return typeof decorateConstraintQuestion === 'function'
+    ? decorateConstraintQuestion(question)
+    : question;
 }
 
 async function rebuildMatchingQuestion(payload){
@@ -129,7 +134,7 @@ async function rebuildMatchingQuestion(payload){
   const boundary = category === 'line'
     ? (result.boundary || null)
     : normalizeMatchingBoundaryForCenter(result.boundary || null, center);
-  return {
+  const question = {
     id:payload.id,
     ...QDEFS.matching.toJSON({
       center,
@@ -142,6 +147,11 @@ async function rebuildMatchingQuestion(payload){
       _matching_boundary_simplified:boundary,
     }),
   };
+  if(payload.constraint_effect) question.constraint_effect = payload.constraint_effect;
+  if(payload.constraint_policy) question.constraint_policy = cloneForStorage(payload.constraint_policy);
+  return typeof decorateConstraintQuestion === 'function'
+    ? decorateConstraintQuestion(question)
+    : question;
 }
 
 function buildStoredNearestQuestion(payload){
@@ -694,7 +704,7 @@ function resolveAnsweredQuestion(payload){
 function applyAnswerObject(q, onSuccess){
   // Veto
   if(q.type === 'veto'){
-    constraints.push({type:'_veto', _label:'Veto card played - question nullified'});
+    constraints.push({type:'_veto', _label:'Veto card played - question nullified', constraint_effect:'hard'});
     renderLog();
     saveGame();
     onSuccess();
@@ -717,6 +727,7 @@ function applyAnswerObject(q, onSuccess){
       _qtype: preset?.question_type || q.question_type,
       _preset_label: label,
       _label:`Randomize card - preloaded question: ${label}`,
+      constraint_effect:'hard',
     });
     renderLog();
     saveGame();
@@ -738,14 +749,12 @@ function applyAnswerObject(q, onSuccess){
   const def = QDEFS[q.type];
   if(!def){ toast(`Unknown type: "${q.type}"`); return; }
   try{
-    const nz = def.applyToZone(validZone, q);
-    if(!nz){ toast('Zone empty - contradiction?'); return; }
-    validZone = nz;
-    constraints.push(q);
+    constraints.push(normalizeConstraintEntry(q));
+    if(!recomputeZoneFromConstraints()){
+      constraints.pop();
+      return;
+    }
     forgetOutgoingQuestion(q.id);
-    renderZone();
-    renderLog();
-    saveGame();
     onSuccess();
     toast('Zone updated ✓');
   }catch(e){
@@ -843,14 +852,21 @@ function renderLog(){
       return `<div class="citem"><span class="ctag" style="background:rgba(160,96,255,0.2);color:var(--purple)">RANDOM</span><div class="cdesc"><b>Randomize card played</b> - preloaded question: <b>${q._preset_label || (def ? def.label : q._qtype)}</b></div>${delBtn}</div>`;
     }
     const def = QDEFS[q.type];
-    return `<div class="citem"><span class="ctag ${def ? def.colorTag : 'tag-radar'}">${def ? def.label : q.type}</span><div class="cdesc">${def ? def.describe(q) : JSON.stringify(q)}</div>${delBtn}</div>`;
+    const effect = getConstraintEffect(q);
+    const promoteBtn = effect === 'soft'
+      ? `<button class="caction" onclick="promoteConstraintAt(${idx})" title="Promote to hard">⇧</button>`
+      : '';
+    const effectTag = effect === 'soft'
+      ? `<span class="ctag" style="background:rgba(240,160,48,0.2);color:var(--gold)">SOFT</span>`
+      : '';
+    return `<div class="citem">${effectTag}<span class="ctag ${def ? def.colorTag : 'tag-radar'}">${def ? def.label : q.type}</span><div class="cdesc">${def ? def.describe(q) : JSON.stringify(q)}</div>${promoteBtn}${delBtn}</div>`;
   }).join('');
 }
 
 function exportQuestionLog(){
   const payload = {
     kind:'jetlag_mbta_question_log',
-    version:1,
+    version:2,
     exported_at:new Date().toISOString(),
     constraints: cloneForStorage(constraints),
   };
@@ -892,7 +908,7 @@ function importQuestionLog(){
   const shouldImport = window.confirm('Importing this question log will replace your current questions and answers. Continue?');
   if(!shouldImport) return;
 
-  constraints = cloneForStorage(importedConstraints);
+  constraints = normalizeConstraintList(importedConstraints);
 
   if(recomputeZoneFromConstraints()){
     scheduleSaveGame();
@@ -910,18 +926,29 @@ function recomputeZoneFromConstraints(){
     toast('Could not rebuild base zone');
     return false;
   }
-  validZone = baseZone;
-  drawHideRadiusVisuals();
-  for(const q of constraints){
-    if(q.type === '_setup' || q.type === '_veto' || q.type === '_randomize_card') continue;
-    const def = QDEFS[q.type];
-    if(!def) continue;
-    validZone = def.applyToZone(validZone, q) || validZone;
+  const nextState = deriveZoneStateFromConstraints(baseZone, constraints);
+  if(!nextState?.validZone){
+    toast('Could not rebuild zone state');
+    return false;
   }
+  constraints = normalizeConstraintList(constraints);
+  validZone = nextState.validZone;
+  softZone = nextState.softZone || null;
+  drawHideRadiusVisuals();
   renderZone();
   renderLog();
   saveGame();
   return true;
+}
+
+function promoteConstraintAt(index){
+  if(index < 0 || index >= constraints.length) return;
+  const current = constraints[index];
+  if(!current || getConstraintEffect(current) !== 'soft') return;
+  constraints[index] = normalizeConstraintEntry({...current, constraint_effect:'hard'});
+  if(recomputeZoneFromConstraints()){
+    toast('Constraint promoted to hard');
+  }
 }
 
 function deleteConstraintAt(index){

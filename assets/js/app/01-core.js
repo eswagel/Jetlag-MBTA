@@ -35,13 +35,14 @@ const INIT_POLY = turf.polygon([[
   [-71.70,41.85],[-70.40,41.85],[-70.40,42.80],[-71.70,42.80],[-71.70,41.85]
 ]]);
 
-let map, maskLayer, borderLayer, radiusLayer, previewLayer, tentaclePreviewLayer, simulLayer, simulMaskLayer, pickedMarkers=[];
+let map, maskLayer, softLayer, borderLayer, radiusLayer, previewLayer, tentaclePreviewLayer, simulLayer, simulMaskLayer, pickedMarkers=[];
 let townLayer, countyLayer, boundaryHighlightLayer;
 const commuterRailStops = new Set();
 const commuterRailStopsList = [];
 let seekerPinMarkers = []; // seeker location dots — preserved across POI category changes
 let thermoHandleMarker = null;
 let validZone = cloneGeo(INIT_POLY);
+let softZone = null;
 let constraints = [];
 let qtype=null, qparams={}, pickStep=-1, pickStepDefs=[];
 let currentBuiltQuestion = null;
@@ -115,6 +116,75 @@ function cloneForStorage(value){
     if(k === '_constraint_union') return undefined;
     return v instanceof Set ? [...v] : v;
   }));
+}
+
+function getConstraintEffect(constraint){
+  const effect = String(constraint?.constraint_effect ?? constraint?.zone_effect ?? 'hard').toLowerCase();
+  return effect === 'soft' ? 'soft' : 'hard';
+}
+
+function normalizeConstraintEntry(constraint){
+  if(!constraint || typeof constraint !== 'object') return constraint;
+  const effect = getConstraintEffect(constraint);
+  if(constraint.constraint_effect === effect && (!('zone_effect' in constraint) || constraint.zone_effect === effect)) return constraint;
+  const next = {...constraint, constraint_effect: effect};
+  if('zone_effect' in constraint) next.zone_effect = effect;
+  return next;
+}
+
+function normalizeConstraintList(list){
+  return Array.isArray(list) ? list.map(normalizeConstraintEntry) : [];
+}
+
+function exactDiff(a, b){
+  try{
+    return turf.difference(a, b) || null;
+  }catch(e){
+    return null;
+  }
+}
+
+function safeUnion(a, b){
+  if(!a) return b || null;
+  if(!b) return a || null;
+  try{
+    return turf.union(a, b) || a || b;
+  }catch(e){
+    return a || b;
+  }
+}
+
+function deriveZoneStateFromConstraints(baseZone, list){
+  const base = baseZone ? cloneGeo(baseZone) : null;
+  if(!base) return {validZone:null, softZone:null};
+
+  let hardZone = base;
+  let softZoneState = null;
+
+  for(const q of normalizeConstraintList(list)){
+    if(!q || q.type === '_setup' || q.type === '_veto' || q.type === '_randomize_card') continue;
+    const def = QDEFS[q.type];
+    if(!def) continue;
+
+    if(getConstraintEffect(q) === 'soft'){
+      const afterSoft = def.applyToZone(hardZone, q);
+      const excluded = afterSoft ? exactDiff(hardZone, afterSoft) : null;
+      if(excluded){
+        softZoneState = softZoneState ? safeUnion(softZoneState, excluded) : excluded;
+      }
+      continue;
+    }
+
+    hardZone = def.applyToZone(hardZone, q) || hardZone;
+    if(softZoneState){
+      softZoneState = exactIsect(softZoneState, hardZone) || null;
+    }
+  }
+
+  return {
+    validZone: hardZone,
+    softZone: softZoneState,
+  };
 }
 
 function buildTentacleOptionId(option, fallbackIndex=0){
@@ -227,13 +297,14 @@ function saveGame(){
   if(setupOverlay && !setupOverlay.classList.contains('hidden')) return;
   try{
     const save = {
-      v: 1,
+      v: 2,
       ts: Date.now(),
       gameMode,
       hideRadiusMi,
       hiderStation: hiderStation || null,
       validZone: cloneGeo(validZone),
-      constraints: constraints.map(cloneForStorage),
+      softZone: softZone ? cloneGeo(softZone) : null,
+      constraints: normalizeConstraintList(constraints).map(cloneForStorage),
       outgoingQuestions: cloneForStorage(outgoingQuestions),
       buildState: typeof getSerializableBuildState === 'function' ? getSerializableBuildState() : null,
     };
@@ -263,6 +334,7 @@ function loadSave(){
 
 function clearSave(){
   outgoingQuestions = {};
+  softZone = null;
   clearTimeout(_saveGameTimer);
   _saveGameTimer = null;
   localStorage.removeItem(SAVE_KEY);
@@ -526,7 +598,7 @@ function checkForResume(){
   clearTimeout(_saveGameTimer);
   _saveGameTimer = null;
   // Don't prompt if the game hasn't really started (only setup constraint)
-  const realConstraints = save.constraints.filter(c=>!['_setup'].includes(c.type));
+  const realConstraints = normalizeConstraintList(save.constraints).filter(c=>!['_setup'].includes(c.type));
   if(!realConstraints.length) return;
 
   const km2 = (turf.area(save.validZone)/1e6).toFixed(1);
@@ -552,8 +624,9 @@ function resumeGame(){
   hideRadiusMi = save.hideRadiusMi || 0.25;
   gameMode = save.gameMode || 'seeker';
   hiderStation = save.hiderStation || null;
-  validZone = save.validZone;
-  constraints = save.constraints;
+  validZone = cloneGeo(save.validZone);
+  softZone = save.softZone ? cloneGeo(save.softZone) : null;
+  constraints = normalizeConstraintList(save.constraints);
   outgoingQuestions = save.outgoingQuestions || {};
 
   // Dismiss resume overlay and setup overlay

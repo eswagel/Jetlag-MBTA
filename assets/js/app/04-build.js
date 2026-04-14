@@ -1732,69 +1732,73 @@ function updatePreview(){
 }
 
 function buildQuestionPacket(question){
-  if(!question) return null;
-  if(question.type === 'radar'){
-    return {id:question.id, type:question.type, center:question.center, radius_miles:question.radius_miles};
+  const q = decorateConstraintQuestion(question);
+  if(!q) return null;
+  if(q.type === 'radar'){
+    return {id:q.id, type:q.type, center:q.center, radius_miles:q.radius_miles};
   }
-  if(question.type === 'thermo'){
+  if(q.type === 'thermo'){
     return {
-      id:question.id,
-      type:question.type,
-      center:question.center,
-      thermo_dest:question.thermo_dest,
-      travel_miles:question.travel_miles,
+      id:q.id,
+      type:q.type,
+      center:q.center,
+      thermo_dest:q.thermo_dest,
+      travel_miles:q.travel_miles,
     };
   }
-  if(question.type === 'measure'){
+  if(q.type === 'measure'){
     return {
-      id:question.id,
-      type:question.type,
-      center:question.center,
-      mode:question.mode || 'distance',
-      category:question.category,
-      category_label:question.category_label,
+      id:q.id,
+      type:q.type,
+      center:q.center,
+      mode:q.mode || 'distance',
+      category:q.category,
+      category_label:q.category_label,
     };
   }
-  if(question.type === 'tentacles'){
-    const options = getTentacleDisplayOptions(question).map(opt => ({
+  if(q.type === 'tentacles'){
+    const options = getTentacleDisplayOptions(q).map(opt => ({
       id: opt.id,
       name: opt.name,
       lat: opt.lat,
       lng: opt.lng,
     }));
     return {
-      id:question.id,
-      type:question.type,
-      center:question.center,
-      radius_miles:question.radius_miles || 1,
-      category:question.category || question.category_label || null,
-      category_label:question.category_label || question.category || null,
+      id:q.id,
+      type:q.type,
+      center:q.center,
+      radius_miles:q.radius_miles || 1,
+      category:q.category || q.category_label || null,
+      category_label:q.category_label || q.category || null,
       options,
     };
   }
-  if(question.type === 'matching'){
+  if(q.type === 'matching'){
     return {
-      id:question.id,
-      type:question.type,
-      center:question.center,
-      category:question.category,
-      category_label:question.category_label,
-      ...(question.category === 'line'
+      id:q.id,
+      type:q.type,
+      center:q.center,
+      category:q.category,
+      category_label:q.category_label,
+      constraint_effect:q.constraint_effect || null,
+      constraint_policy:q.constraint_policy || null,
+      ...(Array.isArray(q.answer_opts) ? {answer_opts: cloneForStorage(q.answer_opts)} : {}),
+      ...(q.category === 'line'
         ? {
-            seeker_val:question.seeker_val,
-            line_id:question.line_id || null,
-            hide_radius_miles:question.hide_radius_miles ?? hideRadiusMi,
+            seeker_val:q.seeker_val,
+            line_id:q.line_id || null,
+            hide_radius_miles:q.hide_radius_miles ?? hideRadiusMi,
           }
         : {}),
     };
   }
-  if(question.type === 'nearest'){
-    return {id:question.id, type:question.type, center:question.center, category:question.category, category_label:question.category_label};
+  if(q.type === 'nearest'){
+    return {id:q.id, type:q.type, center:q.center, category:q.category, category_label:q.category_label};
   }
-  if(question.type === 'photo'){
-    return {id:question.id, type:question.type, prompt:question.prompt};
+  if(q.type === 'photo'){
+    return {id:q.id, type:q.type, prompt:q.prompt};
   }
-  return cloneForStorage(question);
+  return cloneForStorage(q);
 }
 
 function generateJSON(){
@@ -1804,10 +1808,10 @@ function generateJSON(){
   if(currentBuiltQuestion?.id) forgetOutgoingQuestion(currentBuiltQuestion.id);
   const fullQuestion=def.toJSON(qparams);
   fullQuestion.id='q'+Date.now().toString(36);
-  currentBuiltQuestion = {
+  currentBuiltQuestion = decorateConstraintQuestion({
     ...fullQuestion,
     _constraint_union: fullQuestion.type === 'measure' ? qparams.measure_constraint_union || null : null,
-  };
+  });
   rememberOutgoingQuestion(currentBuiltQuestion);
   saveGame();
   const json = buildQuestionPacket(currentBuiltQuestion);
@@ -1831,6 +1835,38 @@ function ensureMeasureConstraint(question){
     currentBuiltQuestion._constraint_union = union;
   }
   return question;
+}
+
+function normalizeConstraintEffect(effect){
+  const val = String(effect || '').trim().toLowerCase();
+  if(val === 'soft' || val === 'hard') return val;
+  return null;
+}
+
+function resolveConstraintEffect(question){
+  const explicit = normalizeConstraintEffect(question?.constraint_effect);
+  if(explicit) return explicit;
+  const policyEffect = normalizeConstraintEffect(question?.constraint_policy?.default_effect);
+  if(policyEffect) return policyEffect;
+  return question?.type === 'matching' && question?.category !== 'line' ? 'soft' : null;
+}
+
+function decorateConstraintQuestion(question){
+  if(!question) return question;
+  const q = cloneForStorage(question);
+  const effect = resolveConstraintEffect(q);
+  if(effect) q.constraint_effect = effect;
+  if(q.type === 'matching' && q.category !== 'line'){
+    q.constraint_policy = {
+      allow_soft: true,
+      default_effect: 'soft',
+      ...(q.constraint_policy || {}),
+    };
+    if(Array.isArray(q.answer_opts)) q.answer_opts = cloneForStorage(q.answer_opts);
+  } else if(q.constraint_policy && typeof q.constraint_policy === 'object'){
+    q.constraint_policy = cloneForStorage(q.constraint_policy);
+  }
+  return q;
 }
 
 function shouldWarnSlowMeasure(question){
@@ -1960,6 +1996,23 @@ function renderDirectApplyBtns(json){
   const container = document.getElementById('direct-apply-btns');
   if(!container) return;
   const question = getQuestionWithLocalContext(json);
+  if(isSoftMatchingQuestion(question)){
+    container.innerHTML = `
+      <button class="simul-btn" style="--simul-col:#f0a030" onclick="${_c(()=>applyBuiltAnswer('Yes','soft'))}">
+        <span class="s-icon">✅</span>Same · Apply Locally
+      </button>
+      <button class="simul-btn" style="--simul-col:#f0a030" onclick="${_c(()=>applyBuiltAnswer('No','soft'))}">
+        <span class="s-icon">❌</span>Different · Apply Locally
+      </button>
+      <button class="simul-btn" style="--simul-col:#e84040" onclick="${_c(()=>applyBuiltAnswer('Yes','hard'))}">
+        <span class="s-icon">✅</span>Same · Turn Red
+      </button>
+      <button class="simul-btn" style="--simul-col:#e84040" onclick="${_c(()=>applyBuiltAnswer('No','hard'))}">
+        <span class="s-icon">❌</span>Different · Turn Red
+      </button>
+    `;
+    return;
+  }
   if(question?.type === 'tentacles'){
     const active = isTentacleSelectionActive(question);
     container.innerHTML = active
@@ -2010,6 +2063,18 @@ function setPreviewMapMode(active){
   }
 }
 
+function isSoftConstraintQuestion(question){
+  return resolveConstraintEffect(question) === 'soft';
+}
+
+function isSoftMatchingQuestion(question){
+  return !!(question && question.type === 'matching' && isSoftConstraintQuestion(question));
+}
+
+function getPreviewCutLegend(question){
+  return 'green stays · red goes';
+}
+
 function clearZonePreview(){
   if(tentaclePreviewLayer) tentaclePreviewLayer.clearLayers();
   simulLayer.clearLayers();
@@ -2021,6 +2086,7 @@ function renderZonePreviewResult(result, label, color, shouldFit=true){
   if(!result) return;
   const hint = document.getElementById('simul-hint');
   const previewQuestion = getLivePreviewQuestion() || currentBuiltQuestion;
+  const isSoft = isSoftConstraintQuestion(previewQuestion);
   const eliminated = safeDiff(validZone, result);
   setPreviewMapMode(true);
   simulLayer.clearLayers();
@@ -2029,7 +2095,11 @@ function renderZonePreviewResult(result, label, color, shouldFit=true){
     color: '#4fe07c', weight: 3, fillColor: '#37c96b', fillOpacity: 0.30, interactive: false
   };
   simulMaskLayer.options.style = {
-    color: '#ff6b6b', weight: 2, fillColor: '#ff5a5a', fillOpacity: 0.30, interactive: false
+    color: '#ff6b6b',
+    weight: 2,
+    fillColor: '#ff5a5a',
+    fillOpacity: 0.30,
+    interactive: false
   };
   simulLayer.addData(result);
   if(eliminated) simulMaskLayer.addData(eliminated);
@@ -2039,25 +2109,30 @@ function renderZonePreviewResult(result, label, color, shouldFit=true){
   const area = (turf.area(result)/1e6).toFixed(1);
   const pctRemain = validZone ? Math.round(turf.area(result)/turf.area(validZone)*100) : '?';
   const pctElim = typeof pctRemain === 'number' ? 100 - pctRemain : '?';
+  const excludedColor = '#e84040';
+  const excludedLabel = 'cut';
   if(hint){
-    hint.innerHTML = `<b>${label}:</b> ${area} km² remain <span style="color:${color}">(${pctElim}% eliminated)</span><br><span style="font-size:8px;color:var(--dim)">Green stays in play. Red is eliminated by this answer.</span>`;
+    const detail = isSoft
+      ? 'Preview shows the cut in red. If you use Apply Locally, that area will remain temporary on the main map in yellow.'
+      : 'Green stays in play. Red is eliminated by this answer.';
+    hint.innerHTML = `<b>${label}:</b> ${area} km² remain <span style="color:${excludedColor}">(${pctElim}% eliminated)</span><br><span style="font-size:8px;color:var(--dim)">${detail}</span>`;
     hint.className = 'simul-result-hint visible';
   }
   const msb = document.getElementById('msb-area');
-  if(msb) msb.innerHTML = `<b style="color:var(--green)">${pctRemain}%</b> stays · <b style="color:#e84040">${pctElim}%</b> cut`;
+  if(msb) msb.innerHTML = `<b style="color:var(--green)">${pctRemain}%</b> stays · <b style="color:${excludedColor}">${pctElim}%</b> ${excludedLabel}`;
   if(previewQuestion?.type === 'tentacles') document.getElementById('map-simul-bar').classList.remove('visible');
   else document.getElementById('map-simul-bar').classList.add('visible');
 }
 
 function getLivePreviewQuestion(){
   const activeType = getActiveBuildQType();
-  if(currentBuiltQuestion && currentBuiltQuestion.type === activeType) return currentBuiltQuestion;
+  if(currentBuiltQuestion && currentBuiltQuestion.type === activeType) return decorateConstraintQuestion(currentBuiltQuestion);
   if(!qtype || !QDEFS[activeType] || !QDEFS[activeType].isReady(qparams)) return null;
   try{
-    return {
+    return decorateConstraintQuestion({
       ...QDEFS[activeType].toJSON(qparams),
       _constraint_union: activeType === 'measure' ? qparams.measure_constraint_union || null : null,
-    };
+    });
   }catch(e){
     return null;
   }
@@ -2135,7 +2210,7 @@ function refreshActiveAnswerPreview(){
   if(!liveQ) return;
   try{
     ensureMeasureConstraint(liveQ);
-    const q = {...liveQ, answer:_simulActive, answer_label: opt.label};
+    const q = decorateConstraintQuestion({...liveQ, answer:_simulActive, answer_label: opt.label});
     const result = def.applyToZone(validZone, q);
     if(!result) return;
     renderZonePreviewResult(result, `${opt.icon} ${opt.label}`, opt.color, false);
@@ -2173,7 +2248,7 @@ function renderSimulBtns(json){
     container.innerHTML='';
     msbBtns.innerHTML='';
     bar.classList.remove('visible');
-    if(msbArea) msbArea.innerHTML = 'green stays · red goes';
+    if(msbArea) msbArea.innerHTML = getPreviewCutLegend(question);
     return;
   }
   if(question?.type === 'tentacles'){
@@ -2220,7 +2295,7 @@ function renderSimulBtns(json){
     if(mbtn) mbtn.classList.add('active');
     refreshActiveAnswerPreview();
   } else {
-    if(msbArea) msbArea.innerHTML = 'green stays · red goes';
+    if(msbArea) msbArea.innerHTML = getPreviewCutLegend(question);
   }
 }
 
@@ -2243,7 +2318,7 @@ function previewAnswer(val){
     }
     if(msbArea) msbArea.innerHTML = baseQuestion?.type === 'tentacles'
       ? 'tap a tentacle pin on the map'
-      : 'green stays · red goes';
+      : getPreviewCutLegend(baseQuestion);
     return;
   }
 
@@ -2260,7 +2335,7 @@ function previewAnswer(val){
     }
     if(msbArea) msbArea.innerHTML = baseQuestion?.type === 'tentacles'
       ? 'tap a tentacle pin on the map'
-      : 'green stays · red goes';
+      : getPreviewCutLegend(baseQuestion);
     return;
   }
 
@@ -2280,7 +2355,7 @@ function previewAnswer(val){
     runSlowMeasureAction(baseQ, () => {
       try{
         ensureMeasureConstraint(baseQ);
-        const q = opt ? {...baseQ, answer: val, answer_label: opt.label} : {...baseQ, answer: val};
+        const q = decorateConstraintQuestion(opt ? {...baseQ, answer: val, answer_label: opt.label} : {...baseQ, answer: val});
         const result = def.applyToZone(validZone, q);
         if(!result){ toast('Nothing left in zone for this answer'); return; }
         renderZonePreviewResult(result, opt ? `${opt.icon} ${opt.label}` : val, col);
@@ -2293,7 +2368,7 @@ function previewAnswer(val){
   }
 }
 
-function applyBuiltAnswer(val){
+function applyBuiltAnswer(val, effectOverride=null){
   const raw = document.getElementById('json-out').value.trim();
   if(!raw){ toast('Generate a question first'); return; }
   try{
@@ -2302,9 +2377,12 @@ function applyBuiltAnswer(val){
       ? currentBuiltQuestion
       : getOutgoingQuestion(parsed.id);
     const opt = getLocalApplyOptions(base || parsed).find(o => o.val === val);
-    const q = base
+    const q = decorateConstraintQuestion(base
       ? {...base, answer: val, ...(opt ? {answer_label: opt.label} : {})}
-      : {...parsed, answer: val, ...(opt ? {answer_label: opt.label} : {})};
+      : {...parsed, answer: val, ...(opt ? {answer_label: opt.label} : {})});
+    if(effectOverride === 'soft' || effectOverride === 'hard'){
+      q.constraint_effect = effectOverride;
+    }
     runSlowMeasureAction(q, () => {
       try{
         ensureMeasureConstraint(q);

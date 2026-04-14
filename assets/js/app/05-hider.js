@@ -28,6 +28,37 @@ function findMeasureCategory(label){
   return MEASURE_CATS.find(c => c.label === label);
 }
 
+function normalizeConstraintEffect(effect){
+  const val = String(effect || '').trim().toLowerCase();
+  if(val === 'soft' || val === 'hard') return val;
+  return null;
+}
+
+function resolveConstraintEffect(question){
+  const explicit = normalizeConstraintEffect(question?.constraint_effect);
+  if(explicit) return explicit;
+  const policyEffect = normalizeConstraintEffect(question?.constraint_policy?.default_effect);
+  if(policyEffect) return policyEffect;
+  return question?.type === 'matching' && question?.category !== 'line' ? 'soft' : null;
+}
+
+function decorateHiderQuestion(question){
+  if(!question) return question;
+  const q = {...question};
+  const effect = resolveConstraintEffect(q);
+  if(effect) q.constraint_effect = effect;
+  if(q.type === 'matching' && q.category !== 'line'){
+    q.constraint_policy = {
+      allow_soft: true,
+      default_effect: 'soft',
+      ...(q.constraint_policy || {}),
+    };
+  } else if(q.constraint_policy && typeof q.constraint_policy === 'object'){
+    q.constraint_policy = {...q.constraint_policy};
+  }
+  return q;
+}
+
 async function resolveMatchingValue(cat, loc){
   const catObj = findMatchingCategory(cat);
   if(!catObj) throw new Error(`Unknown matching category: ${cat}`);
@@ -115,6 +146,7 @@ async function hiderLoadQuestion(){
       }
     }
   }
+  q = decorateHiderQuestion(q);
   const def = QDEFS[q.type];
   if(!def){ toast(`Unknown question type: "${q.type}"`); return; }
   _hiderQ = q;
@@ -136,11 +168,15 @@ async function hiderLoadQuestion(){
 
   if(!isGeo){
     if(q.type === 'matching'){
+      const softNote = resolveConstraintEffect(q) === 'soft'
+        ? '<div style="font-size:8px;color:var(--gold);margin-bottom:8px">This answer will preserve the temporary-exclusion flag.</div>'
+        : '';
       document.getElementById('hider-manual-btns').innerHTML = q.category === 'line' ? `
         <p style="font-size:9px;color:var(--dim);margin-bottom:10px;font-family:'IBM Plex Mono',monospace">
           Is your station on the <b>${q.seeker_val || q.matching_line_label || q.category_label}</b>?
           Use your saved station to auto-answer, or answer manually.
         </p>
+        ${softNote}
         <button class="btn btn-red" style="margin-bottom:8px" onclick="hiderAutoLineLookup()">🚇 Auto-answer from Station</button>
         <div style="display:flex;gap:8px">
           <button class="ans-btn yes" style="flex:1" onclick="_amDispatch('Yes')"><span class="ans-ico">✅</span>Yes — same</button>
@@ -150,6 +186,7 @@ async function hiderLoadQuestion(){
           Are you in the same <b>${q.category_label}</b> as the seeker?
           Use your GPS to auto-answer, or answer manually.
         </p>
+        ${softNote}
         <button class="btn btn-red" style="margin-bottom:8px" onclick="hiderAutoMatchLookup()">📡 Auto-answer with GPS</button>
         <div style="display:flex;gap:8px">
           <button class="ans-btn yes" style="flex:1" onclick="_amDispatch('Yes')"><span class="ans-ico">✅</span>Yes — same</button>
@@ -411,6 +448,9 @@ function hiderPickAnswer(val, explanation, answerLabel=null){
   if(!_hiderQ) return;
   const answered = _hiderQ.id ? {id:_hiderQ.id, answer: val} : {answer: val};
   if(answerLabel) answered.answer_label = answerLabel;
+  const effect = resolveConstraintEffect(_hiderQ);
+  if(effect) answered.constraint_effect = effect;
+  if(_hiderQ.constraint_policy) answered.constraint_policy = _hiderQ.constraint_policy;
 
   // Show result state
   document.getElementById('hider-locate-state').style.display = 'none';

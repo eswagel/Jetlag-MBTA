@@ -35,6 +35,17 @@ function promptHiderStationPick(){
 
 let _hideRadiusZoneCache = { miles: null, stopCount: 0, zone: null };
 
+function getHardZoneForRender(){
+  if(typeof hardZone !== 'undefined' && hardZone) return hardZone;
+  if(typeof validZone !== 'undefined' && validZone) return validZone;
+  return null;
+}
+
+function getSoftZoneForRender(){
+  if(typeof softZone !== 'undefined' && softZone) return softZone;
+  return null;
+}
+
 function buildHideRadiusZone(){
   const stops = Object.values(stopLineMap);
   console.log(`applyHideRadius: ${stops.length} stops in stopLineMap`);
@@ -82,6 +93,7 @@ function applyHideRadius(){
 
   drawHideRadiusVisuals();
   validZone = zone;
+  softZone = null;
   constraints = [{
     type:'_setup',
     answer:'applied',
@@ -99,17 +111,39 @@ function applyHideRadius(){
 // ══════════════════════════════════════════════════════
 function renderZone(){
   maskLayer.clearLayers();
+  softLayer.clearLayers();
   borderLayer.clearLayers();
-  if(!validZone) return;
-  // Red tinted mask = everything OUTSIDE valid zone
-  try{ const mask=turf.difference(INIT_POLY,validZone); if(mask) maskLayer.addData(mask); }catch(e){}
-  // Green outline = valid zone
-  borderLayer.addData(validZone);
+  const hard = getHardZoneForRender();
+  const soft = getSoftZoneForRender();
+  if(!hard) return;
+
+  // Red mask = everything outside the hard zone
+  try{
+    const mask = turf.difference(INIT_POLY, hard);
+    if(mask) maskLayer.addData(mask);
+  }catch(e){}
+
+  if(soft){
+    try{
+      const yellow = turf.intersect(hard, soft);
+      if(yellow) softLayer.addData(yellow);
+    }catch(e){}
+  }
+
+  // Green = remaining hard zone after removing temporary exclusions
+  try{
+    const green = soft ? turf.difference(hard, soft) : hard;
+    if(green) borderLayer.addData(green);
+    else borderLayer.addData(hard);
+  }catch(e){
+    borderLayer.addData(hard);
+  }
   updateStat();
 }
 
 function updateStat(){
-  const km2=validZone?(turf.area(validZone)/1e6).toFixed(1):'0';
+  const hard = getHardZoneForRender();
+  const km2=hard?(turf.area(hard)/1e6).toFixed(1):'0';
   document.getElementById('zone-stat').textContent=`${km2} km²`;
   document.getElementById('zone-area').textContent=`${km2} km² in play`;
 }
