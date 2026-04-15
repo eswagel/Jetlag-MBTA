@@ -288,26 +288,13 @@ async function rebuildMeasureQuestion(payload){
     };
   }
 
-  if(['An Amtrak Line','A Coastline'].includes(catObj.label)){
-    const lineFeatures = (await getMeasureLinearFeatures(catObj, center))
-      .map(item => ({name:item.name, feature:coerceFeature(item, item.name)}))
-      .filter(item => item.feature);
-    if(!lineFeatures.length) throw new Error(`No ${catObj.label} geometry found`);
-
-    const seekerPoint = turf.point([center.lng, center.lat]);
-    let best = null;
-    lineFeatures.forEach(item => {
-      try{
-        const snapped = turf.nearestPointOnLine(item.feature, seekerPoint, {units:'miles'});
-        const dist = snapped?.properties?.dist;
-        if(!Number.isFinite(dist)) return;
-        if(!best || dist < best.dist){
-          const [lng, lat] = snapped.geometry.coordinates;
-          best = {name:item.name, lat, lng, dist};
-        }
-      }catch(e){}
+  if(['An Amtrak Line','A Coastline','A Body of Water'].includes(catObj.label)){
+    const resolved = await resolveLinearMeasureCategory(catObj, center, {
+      zone: validZone,
+      buildConstraintUnion: true,
     });
-    if(!best) throw new Error(`Could not resolve ${catObj.label}`);
+    if(!resolved?.best || !resolved.lineFeatures?.length) throw new Error(`Could not resolve ${catObj.label}`);
+    const {best, lineFeatures, union} = resolved;
 
     return {
       id:payload.id,
@@ -321,9 +308,11 @@ async function rebuildMeasureQuestion(payload){
         measure_all_instances:[{lat:best.lat,lng:best.lng,name:best.name}],
         measure_linear_features:lineFeatures.map(item => ({
           name:item.name,
-          geometry:item.feature.geometry,
+          bbox:item.bbox || null,
+          geometry:item.geometry,
         })),
       }),
+      _constraint_union: union || null,
     };
   }
 
@@ -559,7 +548,7 @@ function toggleLoadQuestionPanel(){
 function loadQuestionIntoBuild(question){
   qtype = question.type === 'nearest' ? 'matching' : question.type;
   qparams = questionToBuildParams(question);
-  currentBuiltQuestion = cloneForStorage(question);
+  currentBuiltQuestion = deepClone(question);
   pickStepDefs = QDEFS[qtype]?.pickSteps || [];
   pickStep = pickStepDefs.length ? pickStepDefs.length : -1;
   _simulActive = null;
@@ -682,7 +671,7 @@ function resolveAnsweredQuestion(payload){
   }
   if(!payload.id) return null;
   const base = (currentBuiltQuestion && currentBuiltQuestion.id === payload.id)
-    ? cloneForStorage(currentBuiltQuestion)
+    ? deepClone(currentBuiltQuestion)
     : getOutgoingQuestion(payload.id);
   if(!base) return null;
   const extras = {...payload};

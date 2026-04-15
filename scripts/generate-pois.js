@@ -97,6 +97,69 @@ function segmentKey(coords){
   return a < b ? `${a}|${b}` : `${b}|${a}`;
 }
 
+function geometryBBox(geometry){
+  if(!geometry?.type || !Array.isArray(geometry.coordinates)) return null;
+  let west = Infinity;
+  let south = Infinity;
+  let east = -Infinity;
+  let north = -Infinity;
+  const visit = (coords) => {
+    if(!Array.isArray(coords)) return;
+    if(typeof coords[0] === 'number' && typeof coords[1] === 'number'){
+      const [lng, lat] = coords;
+      if(lng < west) west = lng;
+      if(lat < south) south = lat;
+      if(lng > east) east = lng;
+      if(lat > north) north = lat;
+      return;
+    }
+    coords.forEach(visit);
+  };
+  visit(geometry.coordinates);
+  return Number.isFinite(west) && Number.isFinite(south) && Number.isFinite(east) && Number.isFinite(north)
+    ? [west, south, east, north]
+    : null;
+}
+
+function buildLineSpatialIndex(features, bbox = null, cellSize = 0.02){
+  if(!Array.isArray(features) || !features.length) return null;
+  const resolvedBbox = bbox || features.reduce((acc, feature) => {
+    const featureBbox = Array.isArray(feature?.bbox) ? feature.bbox : geometryBBox(feature?.geometry);
+    if(!featureBbox) return acc;
+    if(!acc) return [...featureBbox];
+    acc[0] = Math.min(acc[0], featureBbox[0]);
+    acc[1] = Math.min(acc[1], featureBbox[1]);
+    acc[2] = Math.max(acc[2], featureBbox[2]);
+    acc[3] = Math.max(acc[3], featureBbox[3]);
+    return acc;
+  }, null);
+  if(!resolvedBbox) return null;
+
+  const cells = {};
+  features.forEach((feature, index) => {
+    const featureBbox = Array.isArray(feature?.bbox) ? feature.bbox : geometryBBox(feature?.geometry);
+    if(!featureBbox) return;
+    const minX = Math.floor((featureBbox[0] - resolvedBbox[0]) / cellSize);
+    const maxX = Math.floor((featureBbox[2] - resolvedBbox[0]) / cellSize);
+    const minY = Math.floor((featureBbox[1] - resolvedBbox[1]) / cellSize);
+    const maxY = Math.floor((featureBbox[3] - resolvedBbox[1]) / cellSize);
+    for(let x = minX; x <= maxX; x++){
+      for(let y = minY; y <= maxY; y++){
+        const key = `${x}:${y}`;
+        if(!cells[key]) cells[key] = [];
+        cells[key].push(index);
+      }
+    }
+  });
+
+  return {
+    version: 1,
+    cellSize,
+    bbox: resolvedBbox,
+    cells,
+  };
+}
+
 function normalizeAmtrakName(name){
   const value = String(name || '').toLowerCase();
   if(value.includes('downeaster')) return 'Amtrak Downeaster';
@@ -159,6 +222,52 @@ function buildNamedMultiLineFeatures(elements, fallbackName, tolerance = 0.001, 
     }));
 }
 
+function buildWaterLineFeatures(elements, fallbackName = 'Water', tolerance = 0.00012){
+  const grouped = new Map();
+  const addSegment = (name, geometry) => {
+    if(!Array.isArray(geometry) || geometry.length < 2) return;
+    const coords = simplifyLineCoords(
+      geometry.map(point => [point.lon, point.lat]),
+      tolerance
+    );
+    if(coords.length < 2) return;
+    const key = segmentKey(coords);
+    const group = grouped.get(name) || {name, seen:new Set(), segments:[]};
+    if(group.seen.has(key)) return;
+    group.seen.add(key);
+    group.segments.push(coords);
+    grouped.set(name, group);
+  };
+
+  for(const el of elements || []){
+    const name = el.tags?.name || fallbackName;
+    if(el.type === 'way' && Array.isArray(el.geometry) && el.geometry.length >= 2){
+      addSegment(name, el.geometry);
+      continue;
+    }
+    if(el.type === 'relation' && Array.isArray(el.members)){
+      for(const member of el.members || []){
+        if(member.type !== 'way' || !Array.isArray(member.geometry) || member.geometry.length < 2) continue;
+        addSegment(name, member.geometry);
+      }
+    }
+  }
+
+  return [...grouped.values()]
+    .filter(group => group.segments.length)
+    .map(group => ({
+      name: group.name,
+      bbox: geometryBBox({
+        type: 'MultiLineString',
+        coordinates: group.segments,
+      }),
+      geometry: {
+        type: 'MultiLineString',
+        coordinates: group.segments,
+      },
+    }));
+}
+
 async function fetchCategory(name, body, outMode = 'center', fallbackName = 'POI'){
   const query = `[out:json][timeout:45];(${body});out ${outMode} 1000;`;
   console.log(`Fetching ${name}...`);
@@ -176,6 +285,19 @@ async function fetchAmtrakLines(){
   const data = await overpassRaw(query);
   const turf = await import('@turf/turf');
   return buildNamedMultiLineFeatures(data.elements, 'Amtrak track', 0.001, AMTRAK_CLIP_BBOX, turf);
+}
+
+async function fetchBodyOfWaterLines(){
+  const query = `[out:json][timeout:60];(
+    way["natural"~"^(water|bay)$"]["name"](${BBOX.south},${BBOX.west},${BBOX.north},${BBOX.east});
+    relation["natural"~"^(water|bay)$"]["name"](${BBOX.south},${BBOX.west},${BBOX.north},${BBOX.east});
+    way["waterway"~"^(river|canal)$"]["name"](${BBOX.south},${BBOX.west},${BBOX.north},${BBOX.east});
+    way["waterway"="riverbank"]["name"](${BBOX.south},${BBOX.west},${BBOX.north},${BBOX.east});
+    relation["waterway"="riverbank"]["name"](${BBOX.south},${BBOX.west},${BBOX.north},${BBOX.east});
+  );out geom;`;
+  console.log('Fetching bodiesOfWaterLines...');
+  const data = await overpassRaw(query);
+  return buildWaterLineFeatures(data.elements, 'Water');
 }
 
 async function loadExistingPayload(){
@@ -222,6 +344,26 @@ async function main(){
     } else {
       console.log('Skipping amtrakLines (cached)');
     }
+  }
+
+  if(!requested.size || requested.has('bodiesOfWaterLines')){
+    if(
+      !Array.isArray(payload.bodiesOfWaterLines) ||
+      !payload.bodiesOfWaterLines.length ||
+      requested.has('bodiesOfWaterLines')
+    ){
+      payload.bodiesOfWaterLines = await fetchBodyOfWaterLines();
+      await writePayload(payload);
+      await sleep(REQUEST_DELAY_MS);
+    } else {
+      console.log('Skipping bodiesOfWaterLines (cached)');
+    }
+    payload.bodiesOfWaterLineIndex = buildLineSpatialIndex(payload.bodiesOfWaterLines, [
+      BBOX.west,
+      BBOX.south,
+      BBOX.east,
+      BBOX.north,
+    ]);
   }
 
   if(!requested.size || requested.has('coastline')){

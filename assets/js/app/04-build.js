@@ -1001,12 +1001,20 @@ const MEASURE_CATS = [
   { group:'Natural', icon:'💧', label:'A Body of Water',
     instances: async (c) => {
       await loadPoiData();
-      const preloaded = getNamedPoiCollection('A Body of Water');
-      if(preloaded.length) return preloaded;
+      const preloadedLines = getNamedLinearCollection('A Body of Water');
+      if(preloadedLines.length) return preloadedLines;
       const r = 35000;
-      const q = `[out:json][timeout:25];(way["natural"~"^(water|bay)$"]["name"](around:${r},${c.lat},${c.lng});relation["natural"~"^(water|bay)$"]["name"](around:${r},${c.lat},${c.lng});way["waterway"="river"]["name"](around:${r},${c.lat},${c.lng}););out center 50;`;
+      const q = `[out:json][timeout:35];(
+        way["natural"~"^(water|bay)$"]["name"](around:${r},${c.lat},${c.lng});
+        relation["natural"~"^(water|bay)$"]["name"](around:${r},${c.lat},${c.lng});
+        way["waterway"~"^(river|canal)$"]["name"](around:${r},${c.lat},${c.lng});
+        way["waterway"="riverbank"]["name"](around:${r},${c.lat},${c.lng});
+        relation["waterway"="riverbank"]["name"](around:${r},${c.lat},${c.lng});
+      );out geom 500;`;
       const data = await overpassRaw(q);
-      return (data.elements||[]).filter(e=>e.center||e.lat).map(e=>({lat:e.center?.lat||e.lat,lng:e.center?.lon||e.lon,name:e.tags?.name||'Water'}));
+      const lineFeatures = waterLineFeaturesFromOverpass(data, 'Water');
+      const points = lineFeatures.flatMap(item => pointsFromFeatureGeometry(coerceFeature(item, item.name), item.name));
+      return points.length ? points : getNamedPoiCollection('A Body of Water');
     }},
   { group:'Natural', icon:'🏖️', label:'A Coastline',
     instances: async (c) => {
@@ -1383,7 +1391,7 @@ function amtrakLineLabel(name){
 }
 
 function measureNearestPopup(categoryLabel, nearestName){
-  const what = /line|coast|sea level|border/i.test(categoryLabel) ? 'nearest point' : 'nearest';
+  const what = /line|coast|sea level|border|water/i.test(categoryLabel) ? 'nearest point' : 'nearest';
   return `<div class="stop-popup"><div class="stop-popup-name">${nearestName}</div><div style="font-size:9px;color:#f0a030">★ Your ${what} on ${categoryLabel}</div></div>`;
 }
 
@@ -1453,10 +1461,96 @@ function coastlineLineFeaturesFromOverpass(data, fallbackName='Coastline'){
   }];
 }
 
-async function getMeasureLinearFeatures(catObj, center){
+
+function waterLineFeaturesFromOverpass(data, fallbackName='Water'){
+  const byName = new Map();
+  const addSegment = (name, segment) => {
+    if(!Array.isArray(segment) || segment.length < 2) return;
+    const line = simplifyLineCoords(segment, 0.00012);
+    if(line.length < 2) return;
+    const key = `${line[0][0].toFixed(4)},${line[0][1].toFixed(4)}|${line[line.length - 1][0].toFixed(4)},${line[line.length - 1][1].toFixed(4)}|${line.length}`;
+    const group = byName.get(name) || {name, seen:new Set(), coords:[]};
+    if(group.seen.has(key)) return;
+    group.seen.add(key);
+    group.coords.push(line);
+    byName.set(name, group);
+  };
+
+  (data?.elements || []).forEach(el => {
+    const name = el.tags?.name || fallbackName;
+    if(el.type === 'way' && Array.isArray(el.geometry) && el.geometry.length >= 2){
+      addSegment(name, el.geometry.map(p => [p.lon, p.lat]));
+      return;
+    }
+    if(el.type === 'relation' && Array.isArray(el.members)){
+      (el.members || []).forEach(member => {
+        if(member.type !== 'way' || !Array.isArray(member.geometry) || member.geometry.length < 2) return;
+        addSegment(name, member.geometry.map(p => [p.lon, p.lat]));
+      });
+    }
+  });
+
+  return [...byName.values()]
+    .filter(group => group.coords.length)
+    .map(group => ({
+      name: group.name,
+      bbox: featureBBox({
+        geometry: {type:'MultiLineString', coordinates:group.coords},
+      }),
+      geometry: {type:'MultiLineString', coordinates:group.coords},
+    }));
+}
+
+function normalizeMeasureLineFeatures(items){
+  return (items || [])
+    .map(item => {
+      const feature = coerceFeature(item, item?.name);
+      if(!feature) return null;
+      return {
+        name: item?.name || feature.properties?.name || 'Line',
+        bbox: featureBBox(item),
+        geometry: feature.geometry,
+      };
+    })
+    .filter(Boolean);
+}
+
+function mergeMeasureLineFeatures(primary, extra){
+  const merged = [];
+  const seen = new Set();
+  [...(primary || []), ...(extra || [])].forEach(item => {
+    if(!item?.geometry) return;
+    const bbox = featureBBox(item) || [];
+    const geom = item.geometry;
+    const key = `${item.name || ''}|${bbox.join(',')}|${geom.type}|${Array.isArray(geom.coordinates) ? geom.coordinates.length : 0}`;
+    if(seen.has(key)) return;
+    seen.add(key);
+    merged.push(item);
+  });
+  return merged;
+}
+
+async function getMeasureLinearFeatures(catObj, center, opts={}){
   await loadPoiData();
   if(catObj.label === 'An Amtrak Line'){
     return getNamedLinearFeatures(catObj.label);
+  }
+  if(catObj.label === 'A Body of Water'){
+    const preloaded = getNamedLinearFeatures(catObj.label);
+    if(preloaded.length){
+      if(opts.zone) return getWaterLineFeaturesForZone(opts.zone, opts.extraMiles || 0);
+      return getWaterLineFeaturesNearCenter(center);
+    }
+    const r = 35000;
+    const q = `[out:json][timeout:35];(
+      way["natural"~"^(water|bay)$"]["name"](around:${r},${center.lat},${center.lng});
+      relation["natural"~"^(water|bay)$"]["name"](around:${r},${center.lat},${center.lng});
+      way["waterway"~"^(river|canal)$"]["name"](around:${r},${center.lat},${center.lng});
+      way["waterway"="riverbank"]["name"](around:${r},${center.lat},${center.lng});
+      relation["waterway"="riverbank"]["name"](around:${r},${center.lat},${center.lng});
+    );out geom 500;`;
+    const data = await overpassRaw(q);
+    return waterLineFeaturesFromOverpass(data, 'Water');
   }
   if(catObj.label === 'A Coastline'){
     const preloaded = getNamedLinearFeatures(catObj.label);
@@ -1467,6 +1561,49 @@ async function getMeasureLinearFeatures(catObj, center){
     return coastlineLineFeaturesFromOverpass(data, 'Coastline');
   }
   return [];
+}
+
+async function resolveLinearMeasureCategory(catObj, center, opts={}){
+  const nearestFeatures = normalizeMeasureLineFeatures(await getMeasureLinearFeatures(catObj, center, {purpose:'nearest'}));
+  if(!nearestFeatures.length) return null;
+
+  const nearestResult = await solveLinearMeasureWithWorker({
+    center,
+    categoryLabel: catObj.label,
+    lineFeatures: nearestFeatures,
+    buildConstraintUnion: false,
+  });
+  if(!nearestResult?.best) return null;
+
+  let lineFeatures = nearestFeatures;
+  let union = null;
+  if(opts.buildConstraintUnion && opts.zone && Number.isFinite(nearestResult.best.dist)){
+    let unionFeatures = nearestFeatures;
+    if(catObj.label === 'A Body of Water'){
+      const zoneFeatures = normalizeMeasureLineFeatures(await getMeasureLinearFeatures(catObj, center, {
+        purpose: 'union',
+        zone: opts.zone,
+        extraMiles: nearestResult.best.dist,
+      }));
+      unionFeatures = mergeMeasureLineFeatures(zoneFeatures, nearestFeatures);
+    }
+    const unionResult = await solveLinearMeasureWithWorker({
+      center,
+      zone: opts.zone,
+      seekerDist: nearestResult.best.dist,
+      categoryLabel: catObj.label,
+      lineFeatures: unionFeatures,
+      buildConstraintUnion: true,
+    });
+    if(unionResult?.union) union = unionResult.union;
+    lineFeatures = unionFeatures;
+  }
+
+  return {
+    best: nearestResult.best,
+    lineFeatures,
+    union,
+  };
 }
 
 function renderAmtrakMeasureLines(center, nearestName){
@@ -1546,44 +1683,28 @@ async function selectMeasureCat(catObj){
       return;
     }
 
-    if(['An Amtrak Line','A Coastline'].includes(catObj.label)){
-      const lineFeatures = (await getMeasureLinearFeatures(catObj, qparams.center))
-        .map(item => ({name:item.name, feature:coerceFeature(item, item.name)}))
-        .filter(item => item.feature);
-      if(!lineFeatures.length){
+    if(['An Amtrak Line','A Coastline','A Body of Water'].includes(catObj.label)){
+      const resolved = await resolveLinearMeasureCategory(catObj, qparams.center, {
+        zone: validZone,
+        buildConstraintUnion: true,
+      });
+      if(!resolved?.lineFeatures?.length || !resolved.best){
         toast(`No ${catObj.label} geometry found`);
         qparams._msearching=false;
         renderBuildBody();
         return;
       }
-
-      const seekerPoint = turf.point([qparams.center.lng, qparams.center.lat]);
-      let best = null;
-      lineFeatures.forEach(item => {
-        try{
-          const snapped = turf.nearestPointOnLine(item.feature, seekerPoint, {units:'miles'});
-          const dist = snapped?.properties?.dist;
-          if(!Number.isFinite(dist)) return;
-          if(!best || dist < best.dist){
-            const [lng, lat] = snapped.geometry.coordinates;
-            best = {name:item.name, lat, lng, dist};
-          }
-        }catch(e){}
-      });
-      if(!best){
-        toast('Could not determine the nearest Amtrak line');
-        qparams._msearching=false;
-        renderBuildBody();
-        return;
-      }
+      const {best, lineFeatures, union} = resolved;
 
       qparams._msearching=false;
       qparams.measure_seeker_nearest={lat:best.lat,lng:best.lng,name:best.name};
       qparams.measure_seeker_dist=best.dist;
       qparams.measure_linear_features=lineFeatures.map(item => ({
         name:item.name,
-        geometry:item.feature.geometry,
+        bbox:item.bbox || null,
+        geometry:item.geometry,
       }));
+      qparams.measure_constraint_union=union || null;
       qparams.measure_all_instances=[{lat:best.lat,lng:best.lng,name:best.name}];
 
       clearPoiMarkers();
@@ -1614,7 +1735,7 @@ async function selectMeasureCat(catObj){
 
     // Drop teardrop pins — gold #1 for nearest, teal for rest
     clearPoiMarkers();
-    const POI_CATS_LINEAR = new Set(['An Amtrak Line','A County Border','A City Border','Sea Level','A Coastline']);
+    const POI_CATS_LINEAR = new Set(['An Amtrak Line','A County Border','A City Border','Sea Level','A Coastline','A Body of Water']);
     const isLinear = POI_CATS_LINEAR.has(catObj.label);
     if(isLinear){
       if(catObj.label === 'An Amtrak Line'){
@@ -1721,7 +1842,10 @@ function updatePreview(){
         previewLayer.addData(thermoDividerLine(qparams.center, qparams.thermo_dest));
       }
     }
-    if(qtype==='measure'&&qparams.measure_mode!=='elevation'&&qparams.measure_seeker_nearest&&qparams.measure_seeker_dist) previewLayer.addData(makeCircle(qparams.measure_seeker_nearest,qparams.measure_seeker_dist,'miles'));
+    if(qtype==='measure'&&qparams.measure_mode!=='elevation'){
+      if(qparams.measure_constraint_union) previewLayer.addData(qparams.measure_constraint_union);
+      else if(qparams.measure_seeker_nearest&&qparams.measure_seeker_dist) previewLayer.addData(makeCircle(qparams.measure_seeker_nearest,qparams.measure_seeker_dist,'miles'));
+    }
     if(qtype==='tentacles'&&qparams.center&&qparams.radius_miles) previewLayer.addData(makeCircle(qparams.center,qparams.radius_miles,'miles'));
     if(qtype==='custom_boundary'&&qparams.custom_boundary_geojson) previewLayer.addData(qparams.custom_boundary_geojson);
   }catch(e){}
@@ -1866,6 +1990,23 @@ let _tentacleSelection = null; // {mode:'preview'|'apply', questionId:string}
 
 function getQuestionWithLocalContext(question){
   if(!question) return null;
+  if(question.type === 'measure' && !question._constraint_union){
+    const local = question.id
+      ? ((currentBuiltQuestion && currentBuiltQuestion.id === question.id)
+          ? currentBuiltQuestion
+          : getOutgoingQuestion(question.id))
+      : null;
+    if(local?.type === 'measure' && local._constraint_union){
+      return {...question, _constraint_union: local._constraint_union};
+    }
+    if(
+      currentBuiltQuestion?.type === 'measure' &&
+      currentBuiltQuestion.id === question.id &&
+      qparams.measure_constraint_union
+    ){
+      return {...question, _constraint_union: qparams.measure_constraint_union};
+    }
+  }
   if(question.type === 'tentacles' && (!Array.isArray(question.options) || question.options.length < 2) && question.id){
     const local = (currentBuiltQuestion && currentBuiltQuestion.id === question.id)
       ? currentBuiltQuestion

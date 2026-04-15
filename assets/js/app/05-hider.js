@@ -55,23 +55,14 @@ async function resolveMeasureValue(question, loc){
   const catObj = findMeasureCategory(question.category);
   if(!catObj) throw new Error(`Unknown measure category: ${question.category}`);
 
-  if(['An Amtrak Line','A Coastline'].includes(question.category)){
-    const lineFeatures = (await getMeasureLinearFeatures(catObj, loc))
-      .map(item => ({name:item.name, feature:coerceFeature(item, item.name)}))
-      .filter(item => item.feature);
-    if(!lineFeatures.length) return null;
-
-    const point = turf.point([loc.lng, loc.lat]);
-    let best = null;
-    lineFeatures.forEach(item => {
-      try{
-        const snapped = turf.nearestPointOnLine(item.feature, point, {units:'miles'});
-        const dist = snapped?.properties?.dist;
-        if(!Number.isFinite(dist) || (best && dist >= best.dist)) return;
-        best = {name:item.name || question.category_label, dist};
-      }catch(e){}
-    });
-    return best ? {kind:'distance', name:best.name, dist:best.dist} : null;
+  if(['An Amtrak Line','A Coastline','A Body of Water'].includes(question.category)){
+    const resolved = await resolveLinearMeasureCategory(catObj, loc);
+    if(!resolved?.best) return null;
+    return {
+      kind:'distance',
+      name:resolved.best.name || question.category_label,
+      dist:resolved.best.dist,
+    };
   }
 
   const items = await getCategoryInstances(catObj, loc, 35000);

@@ -60,6 +60,11 @@ const preloadedData = {
   elevation: null,
 };
 const elevationPointCache = new Map();
+const measureWorkerState = {
+  worker: null,
+  nextId: 1,
+  pending: new Map(),
+};
 
 // ══════════════════════════════════════════════════════
 //  GAME MODE
@@ -441,6 +446,218 @@ function lookupLinearPoiFeatures(keys){
   return Array.isArray(items) ? items : [];
 }
 
+function isValidBbox(value){
+  return Array.isArray(value) &&
+    value.length === 4 &&
+    value.every(Number.isFinite);
+}
+
+function bboxOverlaps(a, b){
+  return !!(
+    isValidBbox(a) &&
+    isValidBbox(b) &&
+    a[0] <= b[2] &&
+    a[2] >= b[0] &&
+    a[1] <= b[3] &&
+    a[3] >= b[1]
+  );
+}
+
+function featureBBox(item){
+  const bbox = item?.bbox;
+  if(isValidBbox(bbox)) return bbox.map(Number);
+  const feature = coerceFeature(item, item?.name);
+  if(!feature) return null;
+  try{
+    const resolved = turf.bbox(feature);
+    return isValidBbox(resolved) ? resolved : null;
+  }catch(e){
+    return null;
+  }
+}
+
+function indexedLinearFeatureQuery(features, index, bbox){
+  if(!Array.isArray(features) || !features.length || !isValidBbox(bbox)) return [];
+  if(!index?.cells || !isValidBbox(index?.bbox) || !Number.isFinite(index?.cellSize) || index.cellSize <= 0){
+    return features.filter(item => bboxOverlaps(featureBBox(item), bbox));
+  }
+  const [west, south] = index.bbox;
+  const cellSize = Number(index.cellSize);
+  const minX = Math.floor((bbox[0] - west) / cellSize);
+  const maxX = Math.floor((bbox[2] - west) / cellSize);
+  const minY = Math.floor((bbox[1] - south) / cellSize);
+  const maxY = Math.floor((bbox[3] - south) / cellSize);
+  const seen = new Set();
+  const out = [];
+  for(let x = minX; x <= maxX; x++){
+    for(let y = minY; y <= maxY; y++){
+      const ids = index.cells[`${x}:${y}`];
+      if(!Array.isArray(ids)) continue;
+      ids.forEach(id => {
+        if(seen.has(id)) return;
+        const item = features[id];
+        if(!item || !bboxOverlaps(featureBBox(item), bbox)) return;
+        seen.add(id);
+        out.push(item);
+      });
+    }
+  }
+  return out;
+}
+
+function getWaterLineFeaturesInBbox(bbox){
+  const features = getNamedLinearFeatures('A Body of Water');
+  if(!features.length || !isValidBbox(bbox)) return features;
+  const index = preloadedData.pois?.bodiesOfWaterLineIndex || null;
+  const candidates = indexedLinearFeatureQuery(features, index, bbox);
+  if(candidates.length) return candidates;
+  return features.filter(item => bboxOverlaps(featureBBox(item), bbox));
+}
+
+function getWaterLineFeaturesNearCenter(center, radiiMiles = [1.5, 3, 6, 12, 24, 40]){
+  if(!center) return getNamedLinearFeatures('A Body of Water');
+  const features = getNamedLinearFeatures('A Body of Water');
+  if(!features.length) return [];
+  for(const miles of radiiMiles){
+    const bbox = expandBboxMiles([center.lng, center.lat, center.lng, center.lat], miles);
+    const candidates = getWaterLineFeaturesInBbox(bbox);
+    if(candidates.length) return candidates;
+  }
+  return features;
+}
+
+function getWaterLineFeaturesForZone(zone, extraMiles = 0){
+  const features = getNamedLinearFeatures('A Body of Water');
+  if(!features.length) return [];
+  if(!zone) return features;
+  try{
+    const bbox = expandBboxMiles(turf.bbox(zone), Number(extraMiles) + 0.75);
+    const candidates = getWaterLineFeaturesInBbox(bbox);
+    return candidates.length ? candidates : features;
+  }catch(e){
+    return features;
+  }
+}
+
+function rejectMeasureWorkerPending(message){
+  for(const {reject} of measureWorkerState.pending.values()){
+    reject(new Error(message));
+  }
+  measureWorkerState.pending.clear();
+}
+
+function getMeasureWorker(){
+  if(typeof Worker === 'undefined') return null;
+  if(measureWorkerState.worker) return measureWorkerState.worker;
+  try{
+    const workerUrl = new URL('assets/js/app/measure-worker.js', window.location.href);
+    const worker = new Worker(workerUrl);
+    worker.onmessage = (event) => {
+      const {id, result, error} = event.data || {};
+      if(!measureWorkerState.pending.has(id)) return;
+      const {resolve, reject} = measureWorkerState.pending.get(id);
+      measureWorkerState.pending.delete(id);
+      if(error){
+        reject(new Error(error));
+        return;
+      }
+      resolve(result);
+    };
+    worker.onerror = () => {
+      rejectMeasureWorkerPending('Measure worker failed');
+      measureWorkerState.worker = null;
+    };
+    measureWorkerState.worker = worker;
+    return worker;
+  }catch(e){
+    console.warn('Measure worker unavailable:', e);
+    return null;
+  }
+}
+
+function solveLinearMeasureLocally(options = {}){
+  const center = options.center && Number.isFinite(Number(options.center.lat)) && Number.isFinite(Number(options.center.lng))
+    ? {lat:Number(options.center.lat), lng:Number(options.center.lng)}
+    : null;
+  const lineFeatures = (options.lineFeatures || [])
+    .map(item => {
+      const feature = coerceFeature(item, item?.name);
+      if(!feature) return null;
+      return {
+        name: item?.name || feature.properties?.name || options.categoryLabel || 'Line',
+        geometry: feature.geometry,
+        bbox: featureBBox(item),
+      };
+    })
+    .filter(Boolean);
+  if(!center || !lineFeatures.length) return null;
+
+  const point = turf.point([center.lng, center.lat]);
+  let best = null;
+  lineFeatures.forEach(item => {
+    try{
+      const snapped = turf.nearestPointOnLine(coerceFeature(item, item.name), point, {units:'miles'});
+      const dist = snapped?.properties?.dist;
+      if(!Number.isFinite(dist) || (best && dist >= best.dist)) return;
+      const [lng, lat] = snapped.geometry.coordinates;
+      best = {name:item.name, lat, lng, dist};
+    }catch(e){}
+  });
+  if(!best) return null;
+
+  let union = null;
+  const seekerDist = Number.isFinite(Number(options.seekerDist)) ? Number(options.seekerDist) : best.dist;
+  if(options.buildConstraintUnion && Number.isFinite(seekerDist)){
+    union = buildMeasureConstraintUnion({
+      mode: 'distance',
+      seeker_dist: seekerDist,
+      category: options.categoryLabel || '',
+      category_label: options.categoryLabel || '',
+      linear_features: lineFeatures,
+    }, options.zone || null);
+  }
+
+  return {best, union};
+}
+
+async function solveLinearMeasureWithWorker(options = {}){
+  const lineFeatures = (options.lineFeatures || [])
+    .map(item => {
+      const feature = coerceFeature(item, item?.name);
+      if(!feature) return null;
+      return {
+        name: item?.name || feature.properties?.name || options.categoryLabel || 'Line',
+        geometry: feature.geometry,
+        bbox: featureBBox(item),
+      };
+    })
+    .filter(Boolean);
+  if(!lineFeatures.length) return null;
+
+  const worker = getMeasureWorker();
+  if(!worker) return solveLinearMeasureLocally({...options, lineFeatures});
+
+  return await new Promise((resolve, reject) => {
+    const id = `mw_${measureWorkerState.nextId++}`;
+    measureWorkerState.pending.set(id, {resolve, reject});
+    worker.postMessage({
+      id,
+      type: 'solveLinearMeasure',
+      payload: {
+        center: options.center || null,
+        zone: options.zone || null,
+        seekerDist: Number.isFinite(Number(options.seekerDist)) ? Number(options.seekerDist) : null,
+        categoryLabel: options.categoryLabel || '',
+        buildConstraintUnion: !!options.buildConstraintUnion,
+        lineFeatures,
+      },
+    });
+  }).catch(err => {
+    console.warn('Measure worker fallback:', err);
+    return solveLinearMeasureLocally({...options, lineFeatures});
+  });
+}
+
 function getNamedPoiCollection(label){
   const keyMap = {
     'Park': ['parks'],
@@ -481,6 +698,7 @@ function getNamedPoiCollection(label){
 function getNamedLinearCollection(label){
   const keyMap = {
     'An Amtrak Line': ['amtrakLines', 'amtrak_lines'],
+    'A Body of Water': ['bodiesOfWaterLines', 'bodies_of_water_lines', 'waterLines'],
     'Sea Level': ['coastlineLines', 'coastline_lines'],
     'A Coastline': ['coastlineLines', 'coastline_lines'],
   };
@@ -491,6 +709,7 @@ function getNamedLinearCollection(label){
 function getNamedLinearFeatures(label){
   const keyMap = {
     'An Amtrak Line': ['amtrakLines', 'amtrak_lines'],
+    'A Body of Water': ['bodiesOfWaterLines', 'bodies_of_water_lines', 'waterLines'],
     'Sea Level': ['coastlineLines', 'coastline_lines'],
     'A Coastline': ['coastlineLines', 'coastline_lines'],
   };
