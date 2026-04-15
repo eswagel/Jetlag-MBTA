@@ -1998,17 +1998,11 @@ function renderDirectApplyBtns(json){
   const question = getQuestionWithLocalContext(json);
   if(isSoftMatchingQuestion(question)){
     container.innerHTML = `
-      <button class="simul-btn" style="--simul-col:#f0a030" onclick="${_c(()=>applyBuiltAnswer('Yes','soft'))}">
+      <button class="simul-btn" style="--simul-col:#f0a030" onclick="${_c(()=>applyBuiltAnswer('Yes'))}">
         <span class="s-icon">✅</span>Same · Apply Locally
       </button>
-      <button class="simul-btn" style="--simul-col:#f0a030" onclick="${_c(()=>applyBuiltAnswer('No','soft'))}">
+      <button class="simul-btn" style="--simul-col:#f0a030" onclick="${_c(()=>applyBuiltAnswer('No'))}">
         <span class="s-icon">❌</span>Different · Apply Locally
-      </button>
-      <button class="simul-btn" style="--simul-col:#e84040" onclick="${_c(()=>applyBuiltAnswer('Yes','hard'))}">
-        <span class="s-icon">✅</span>Same · Turn Red
-      </button>
-      <button class="simul-btn" style="--simul-col:#e84040" onclick="${_c(()=>applyBuiltAnswer('No','hard'))}">
-        <span class="s-icon">❌</span>Different · Turn Red
       </button>
     `;
     return;
@@ -2072,7 +2066,7 @@ function isSoftMatchingQuestion(question){
 }
 
 function getPreviewCutLegend(question){
-  return 'green stays · red goes';
+  return 'green stays · yellow temporary · red goes';
 }
 
 function clearZonePreview(){
@@ -2082,13 +2076,56 @@ function clearZonePreview(){
   setPreviewMapMode(false);
 }
 
-function renderZonePreviewResult(result, label, color, shouldFit=true){
-  if(!result) return;
+function decoratePreviewFeatures(features, color, fillOpacity, dashArray=null){
+  return {
+    type:'FeatureCollection',
+    features:(features || []).map(feature => ({
+      ...cloneGeo(feature),
+      properties:{
+        ...(feature.properties || {}),
+        color,
+        strokeColor: color,
+        fillColor: color,
+        fillOpacity,
+        weight: 2,
+        opacity: 0.95,
+        dashArray,
+      },
+    })),
+  };
+}
+
+function derivePreviewZoneState(question){
+  const q = normalizeConstraintEntry(question);
+  const def = QDEFS[q?.type];
+  if(!q || !def) return null;
+  let nextHardZone = validZone;
+  if(getConstraintEffect(q) === 'hard'){
+    nextHardZone = def.applyToZone(validZone, q);
+  }
+  if(!nextHardZone) return null;
+  const nextStopState = deriveStopRegionState(nextHardZone, [...constraints, q]);
+  return {
+    question: q,
+    hardZone: nextHardZone,
+    stopState: nextStopState,
+    greenFeatures: nextStopState?.greenFeatures || [],
+    yellowFeatures: nextStopState?.yellowFeatures || [],
+  };
+}
+
+function renderZonePreviewState(previewState, label, shouldFit=true){
+  if(!previewState?.hardZone) return;
   const hint = document.getElementById('simul-hint');
-  const previewQuestion = getLivePreviewQuestion() || currentBuiltQuestion;
+  const previewQuestion = previewState.question || getLivePreviewQuestion() || currentBuiltQuestion;
   const isSoft = isSoftConstraintQuestion(previewQuestion);
-  const eliminated = safeDiff(validZone, result);
+  const redMask = getConstraintEffect(previewQuestion) === 'hard'
+    ? exactDiff(validZone, previewState.hardZone)
+    : null;
+  const greenFeatures = previewState.greenFeatures || [];
+  const yellowFeatures = previewState.yellowFeatures || [];
   setPreviewMapMode(true);
+  if(tentaclePreviewLayer) tentaclePreviewLayer.clearLayers();
   simulLayer.clearLayers();
   simulMaskLayer.clearLayers();
   simulLayer.options.style = {
@@ -2101,25 +2138,25 @@ function renderZonePreviewResult(result, label, color, shouldFit=true){
     fillOpacity: 0.30,
     interactive: false
   };
-  simulLayer.addData(result);
-  if(eliminated) simulMaskLayer.addData(eliminated);
-  if(shouldFit){
-    try{ map.fitBounds(L.geoJSON(result).getBounds().pad(0.12)); }catch(e){}
+  if(greenFeatures.length) simulLayer.addData(decoratePreviewFeatures(greenFeatures, '#37c96b', 0.26, '4 3'));
+  else if(!yellowFeatures.length) simulLayer.addData(previewState.hardZone);
+  if(yellowFeatures.length && tentaclePreviewLayer){
+    tentaclePreviewLayer.addData(decoratePreviewFeatures(yellowFeatures, '#f0a030', 0.22, '6 4'));
   }
-  const area = (turf.area(result)/1e6).toFixed(1);
-  const pctRemain = validZone ? Math.round(turf.area(result)/turf.area(validZone)*100) : '?';
-  const pctElim = typeof pctRemain === 'number' ? 100 - pctRemain : '?';
-  const excludedColor = '#e84040';
-  const excludedLabel = 'cut';
+  if(redMask) simulMaskLayer.addData(redMask);
+  if(shouldFit){
+    try{ map.fitBounds(L.geoJSON(previewState.hardZone).getBounds().pad(0.12)); }catch(e){}
+  }
+  const area = (turf.area(previewState.hardZone)/1e6).toFixed(1);
   if(hint){
     const detail = isSoft
-      ? 'Preview shows the cut in red. If you use Apply Locally, that area will remain temporary on the main map in yellow.'
-      : 'Green stays in play. Red is eliminated by this answer.';
-    hint.innerHTML = `<b>${label}:</b> ${area} km² remain <span style="color:${excludedColor}">(${pctElim}% eliminated)</span><br><span style="font-size:8px;color:var(--dim)">${detail}</span>`;
+      ? 'Green remains possible now. Yellow is temporarily ruled out. Red is impossible.'
+      : 'Green remains possible. Yellow stays temporary if prior soft clues still apply. Red is impossible.';
+    hint.innerHTML = `<b>${label}:</b> ${area} km² still in play<br><span style="font-size:8px;color:var(--dim)">${detail}</span>`;
     hint.className = 'simul-result-hint visible';
   }
   const msb = document.getElementById('msb-area');
-  if(msb) msb.innerHTML = `<b style="color:var(--green)">${pctRemain}%</b> stays · <b style="color:${excludedColor}">${pctElim}%</b> ${excludedLabel}`;
+  if(msb) msb.innerHTML = '<b style="color:var(--green)">green</b> stays · <b style="color:var(--gold)">yellow</b> temporary · <b style="color:#e84040">red</b> gone';
   if(previewQuestion?.type === 'tentacles') document.getElementById('map-simul-bar').classList.remove('visible');
   else document.getElementById('map-simul-bar').classList.add('visible');
 }
@@ -2211,9 +2248,9 @@ function refreshActiveAnswerPreview(){
   try{
     ensureMeasureConstraint(liveQ);
     const q = decorateConstraintQuestion({...liveQ, answer:_simulActive, answer_label: opt.label});
-    const result = def.applyToZone(validZone, q);
-    if(!result) return;
-    renderZonePreviewResult(result, `${opt.icon} ${opt.label}`, opt.color, false);
+    const previewState = derivePreviewZoneState(q);
+    if(!previewState) return;
+    renderZonePreviewState(previewState, `${opt.icon} ${opt.label}`, false);
   }catch(e){}
 }
 
@@ -2301,7 +2338,6 @@ function renderSimulBtns(json){
 
 function previewAnswer(val){
   const baseQuestion = getQuestionWithLocalContext(getLivePreviewQuestion() || currentBuiltQuestion);
-  const def = baseQuestion ? QDEFS[baseQuestion.type] : QDEFS[getActiveBuildQType()];
   const opts = getLocalApplyOptions(baseQuestion);
   const hint = document.getElementById('simul-hint');
   const msbArea = document.getElementById('msb-area');
@@ -2347,7 +2383,6 @@ function previewAnswer(val){
   if(mbtn) mbtn.classList.add('active');
 
   const opt = opts.find(o=>o.val===val);
-  const col = opt ? opt.color : '#20c8b0';
 
   try {
     const liveQ = getQuestionWithLocalContext(getLivePreviewQuestion());
@@ -2356,9 +2391,9 @@ function previewAnswer(val){
       try{
         ensureMeasureConstraint(baseQ);
         const q = decorateConstraintQuestion(opt ? {...baseQ, answer: val, answer_label: opt.label} : {...baseQ, answer: val});
-        const result = def.applyToZone(validZone, q);
-        if(!result){ toast('Nothing left in zone for this answer'); return; }
-        renderZonePreviewResult(result, opt ? `${opt.icon} ${opt.label}` : val, col);
+        const previewState = derivePreviewZoneState(q);
+        if(!previewState){ toast('Nothing left in zone for this answer'); return; }
+        renderZonePreviewState(previewState, opt ? `${opt.icon} ${opt.label}` : val);
       }catch(e){
         toast('Preview error: '+e.message);
       }
@@ -2407,9 +2442,9 @@ function previewCustomBoundary(mode){
   qparams._drawingBoundary = false;
   hideBanner();
   const q = {type:'custom_boundary', boundary_geojson: poly, mode};
-  const result = QDEFS.custom_boundary.applyToZone(validZone, q);
-  if(!result){ toast('Nothing left in zone for this boundary'); return; }
-  renderZonePreviewResult(result, mode === 'include' ? '✅ Include' : '❌ Exclude', mode === 'include' ? '#18b050' : '#e84040');
+  const previewState = derivePreviewZoneState(q);
+  if(!previewState){ toast('Nothing left in zone for this boundary'); return; }
+  renderZonePreviewState(previewState, mode === 'include' ? '✅ Include' : '❌ Exclude');
 }
 
 function applyCustomBoundary(){
@@ -2422,14 +2457,9 @@ function applyCustomBoundary(){
     type:'custom_boundary',
     boundary_geojson: poly,
     mode: qparams.custom_boundary_mode,
+    constraint_effect:'hard',
   };
-  const nz = QDEFS.custom_boundary.applyToZone(validZone, q);
-  if(!nz){ toast('Zone empty — contradiction?'); return; }
-  validZone = nz;
-  constraints.push(q);
-  renderZone();
-  renderLog();
-  saveGame();
+  if(!applyConstraintIncrementally(q)) return;
   toast(`Custom boundary ${q.mode === 'include' ? 'included' : 'excluded'} ✓`);
   clearCustomBoundary();
   switchTab('log');

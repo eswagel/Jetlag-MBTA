@@ -749,9 +749,7 @@ function applyAnswerObject(q, onSuccess){
   const def = QDEFS[q.type];
   if(!def){ toast(`Unknown type: "${q.type}"`); return; }
   try{
-    constraints.push(normalizeConstraintEntry(q));
-    if(!recomputeZoneFromConstraints()){
-      constraints.pop();
+    if(!applyConstraintIncrementally(q)){
       return;
     }
     forgetOutgoingQuestion(q.id);
@@ -852,14 +850,10 @@ function renderLog(){
       return `<div class="citem"><span class="ctag" style="background:rgba(160,96,255,0.2);color:var(--purple)">RANDOM</span><div class="cdesc"><b>Randomize card played</b> - preloaded question: <b>${q._preset_label || (def ? def.label : q._qtype)}</b></div>${delBtn}</div>`;
     }
     const def = QDEFS[q.type];
-    const effect = getConstraintEffect(q);
-    const promoteBtn = effect === 'soft'
-      ? `<button class="caction" onclick="promoteConstraintAt(${idx})" title="Promote to hard">⇧</button>`
-      : '';
-    const effectTag = effect === 'soft'
+    const effectTag = getConstraintEffect(q) === 'soft'
       ? `<span class="ctag" style="background:rgba(240,160,48,0.2);color:var(--gold)">SOFT</span>`
       : '';
-    return `<div class="citem">${effectTag}<span class="ctag ${def ? def.colorTag : 'tag-radar'}">${def ? def.label : q.type}</span><div class="cdesc">${def ? def.describe(q) : JSON.stringify(q)}</div>${promoteBtn}${delBtn}</div>`;
+    return `<div class="citem">${effectTag}<span class="ctag ${def ? def.colorTag : 'tag-radar'}">${def ? def.label : q.type}</span><div class="cdesc">${def ? def.describe(q) : JSON.stringify(q)}</div>${delBtn}</div>`;
   }).join('');
 }
 
@@ -926,14 +920,15 @@ function recomputeZoneFromConstraints(){
     toast('Could not rebuild base zone');
     return false;
   }
+  constraints = normalizeConstraintList(constraints);
   const nextState = deriveZoneStateFromConstraints(baseZone, constraints);
   if(!nextState?.validZone){
     toast('Could not rebuild zone state');
     return false;
   }
-  constraints = normalizeConstraintList(constraints);
+  stopRegionState = deriveStopRegionState(nextState.validZone, constraints);
   validZone = nextState.validZone;
-  softZone = nextState.softZone || null;
+  softZone = stopRegionState?.yellowUnion || nextState.softZone || null;
   drawHideRadiusVisuals();
   renderZone();
   renderLog();
@@ -941,14 +936,32 @@ function recomputeZoneFromConstraints(){
   return true;
 }
 
-function promoteConstraintAt(index){
-  if(index < 0 || index >= constraints.length) return;
-  const current = constraints[index];
-  if(!current || getConstraintEffect(current) !== 'soft') return;
-  constraints[index] = normalizeConstraintEntry({...current, constraint_effect:'hard'});
-  if(recomputeZoneFromConstraints()){
-    toast('Constraint promoted to hard');
+function commitZoneState(nextHardZone, nextConstraints){
+  constraints = normalizeConstraintList(nextConstraints);
+  validZone = nextHardZone;
+  stopRegionState = deriveStopRegionState(validZone, constraints);
+  softZone = stopRegionState?.yellowUnion || null;
+  drawHideRadiusVisuals();
+  renderZone();
+  renderLog();
+  saveGame();
+  return true;
+}
+
+function applyConstraintIncrementally(question){
+  const q = normalizeConstraintEntry(question);
+  const def = QDEFS[q?.type];
+  if(!def) return false;
+  const nextConstraints = [...constraints, q];
+  let nextHardZone = validZone;
+  if(getConstraintEffect(q) === 'hard'){
+    nextHardZone = def.applyToZone(validZone, q);
+    if(!nextHardZone){
+      toast('Zone empty — contradiction?');
+      return false;
+    }
   }
+  return commitZoneState(nextHardZone, nextConstraints);
 }
 
 function deleteConstraintAt(index){

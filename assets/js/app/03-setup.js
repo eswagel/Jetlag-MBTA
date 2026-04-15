@@ -6,6 +6,7 @@ function selectRadius(el){
   el.classList.add('selected');
   hideRadiusMi = parseFloat(el.dataset.mi);
   _hideRadiusZoneCache = { miles: null, stopCount: 0, zone: null };
+  _stopBaseRegionCache = { miles: null, stopCount: 0, entries: null };
 }
 
 function startGame(){
@@ -34,16 +35,123 @@ function promptHiderStationPick(){
 }
 
 let _hideRadiusZoneCache = { miles: null, stopCount: 0, zone: null };
+let _pendingYellowRegionFeature = null;
 
 function getHardZoneForRender(){
+  if(stopRegionState?.hardUnion) return stopRegionState.hardUnion;
   if(typeof hardZone !== 'undefined' && hardZone) return hardZone;
   if(typeof validZone !== 'undefined' && validZone) return validZone;
   return null;
 }
 
 function getSoftZoneForRender(){
+  if(stopRegionState?.yellowUnion) return stopRegionState.yellowUnion;
   if(typeof softZone !== 'undefined' && softZone) return softZone;
   return null;
+}
+
+function getGreenFeaturesForRender(hard, soft){
+  if(stopRegionState?.greenFeatures?.length) return stopRegionState.greenFeatures;
+  if(!hard) return [];
+  try{
+    const green = soft ? turf.difference(hard, soft) : hard;
+    return geometryToPolygonFeatures(green, {regionKind:'green'});
+  }catch(e){
+    return geometryToPolygonFeatures(hard, {regionKind:'green'});
+  }
+}
+
+function getYellowFeaturesForRender(hard, soft){
+  if(stopRegionState?.yellowFeatures?.length) return stopRegionState.yellowFeatures;
+  if(!hard || !soft) return [];
+  try{
+    const yellow = turf.intersect(hard, soft);
+    return geometryToPolygonFeatures(yellow, {regionKind:'yellow', menuLabel:'Exclude region'});
+  }catch(e){
+    return [];
+  }
+}
+
+function buildRedMaskFeature(maskBase, hardZone){
+  if(!maskBase || !hardZone) return null;
+  return exactDiff(maskBase, hardZone);
+}
+
+function canOpenYellowRegionMenu(){
+  const setupOverlay = document.getElementById('setup-overlay');
+  if(setupOverlay && !setupOverlay.classList.contains('hidden')) return false;
+  if(gameMode === 'hider') return false;
+  if(_pickingHiderStation) return false;
+  if(typeof _hiderPickingLocation !== 'undefined' && _hiderPickingLocation) return false;
+  if(qtype === 'custom_boundary' && qparams._drawingBoundary) return false;
+  if(pickStep >= 0 && pickStep < pickStepDefs.length) return false;
+  return !!stopRegionState?.yellowFeatures?.length;
+}
+
+function findYellowRegionFeatureAtLatLng(latlng){
+  if(!canOpenYellowRegionMenu()) return null;
+  const pt = turf.point([latlng.lng, latlng.lat]);
+  if(stopRegionState?.greenFeatures?.some(feature => {
+    try{
+      return turf.booleanPointInPolygon(pt, feature);
+    }catch(e){
+      return false;
+    }
+  })) return null;
+  return stopRegionState.yellowFeatures.find(feature => {
+    try{
+      return turf.booleanPointInPolygon(pt, feature);
+    }catch(e){
+      return false;
+    }
+  }) || null;
+}
+
+function dismissYellowRegionMenu(){
+  _pendingYellowRegionFeature = null;
+  if(map) map.closePopup();
+}
+
+function openYellowRegionMenu(latlng, feature){
+  if(!map || !feature) return;
+  _pendingYellowRegionFeature = cloneGeo(feature);
+  const actionLabel = feature.properties?.menuLabel || 'Exclude region';
+  const popup = L.popup({closeButton:true, autoPan:true, offset:[0, -4]})
+    .setLatLng(latlng)
+    .setContent(`
+      <div class="stop-popup">
+        <div class="stop-popup-name">Temporary Region</div>
+        <div style="font-size:9px;color:var(--dim);line-height:1.55">
+          This yellow area is only ruled out for the moment. Exclude it permanently and add that choice to the log?
+        </div>
+        <button class="btn btn-red yellow-region-menu-btn" type="button" onclick="excludePendingYellowRegion()">${actionLabel}</button>
+      </div>
+    `);
+  popup.on('remove', ()=>{ _pendingYellowRegionFeature = null; });
+  popup.openOn(map);
+}
+
+function handleYellowRegionTap(latlng){
+  const feature = findYellowRegionFeatureAtLatLng(latlng);
+  if(!feature) return false;
+  openYellowRegionMenu(latlng, feature);
+  return true;
+}
+
+function excludePendingYellowRegion(){
+  if(!_pendingYellowRegionFeature) return;
+  const feature = cloneGeo(_pendingYellowRegionFeature);
+  const nextConstraint = normalizeConstraintEntry({
+    type:'custom_boundary',
+    boundary_geojson: feature,
+    mode:'exclude',
+    _label:'Exclude region',
+    constraint_effect:'hard',
+  });
+  dismissYellowRegionMenu();
+  if(!applyConstraintIncrementally(nextConstraint)) return;
+  switchTab('log');
+  toast('Region excluded');
 }
 
 function buildHideRadiusZone(){
@@ -93,12 +201,13 @@ function applyHideRadius(){
 
   drawHideRadiusVisuals();
   validZone = zone;
-  softZone = null;
   constraints = [{
     type:'_setup',
     answer:'applied',
     _label:`Hide radius: ${hideRadiusMi < 1 ? (hideRadiusMi*5280).toFixed(0)+' ft' : hideRadiusMi+' mi'} from any station`
   }];
+  stopRegionState = deriveStopRegionState(validZone, constraints);
+  softZone = stopRegionState?.yellowUnion || null;
   renderZone();
   renderLog();
   const km2 = (turf.area(validZone)/1e6).toFixed(1);
@@ -113,17 +222,23 @@ function renderZone(){
   maskLayer.clearLayers();
   softLayer.clearLayers();
   borderLayer.clearLayers();
+  dismissYellowRegionMenu();
   const hard = getHardZoneForRender();
   const soft = getSoftZoneForRender();
+  const maskBase = buildHideRadiusZone() || INIT_POLY;
   if(!hard) return;
+  const greenFeatures = getGreenFeaturesForRender(hard, soft);
+  const yellowFeatures = getYellowFeaturesForRender(hard, soft);
 
   // Red mask = everything outside the hard zone
   try{
-    const mask = turf.difference(INIT_POLY, hard);
+    const mask = buildRedMaskFeature(maskBase, hard);
     if(mask) maskLayer.addData(mask);
   }catch(e){}
 
-  if(soft){
+  if(yellowFeatures.length){
+    softLayer.addData(turf.featureCollection(yellowFeatures));
+  } else if(soft){
     try{
       const yellow = turf.intersect(hard, soft);
       if(yellow) softLayer.addData(yellow);
@@ -131,18 +246,22 @@ function renderZone(){
   }
 
   // Green = remaining hard zone after removing temporary exclusions
-  try{
-    const green = soft ? turf.difference(hard, soft) : hard;
-    if(green) borderLayer.addData(green);
-    else borderLayer.addData(hard);
-  }catch(e){
-    borderLayer.addData(hard);
+  if(greenFeatures.length){
+    borderLayer.addData(turf.featureCollection(greenFeatures));
+  }else{
+    try{
+      const green = soft ? turf.difference(hard, soft) : hard;
+      if(green) borderLayer.addData(green);
+      else if(!soft && !yellowFeatures.length) borderLayer.addData(hard);
+    }catch(e){
+      if(!soft && !yellowFeatures.length) borderLayer.addData(hard);
+    }
   }
   updateStat();
 }
 
 function updateStat(){
-  const hard = getHardZoneForRender();
+  const hard = stopRegionState?.hardUnion || getHardZoneForRender();
   const km2=hard?(turf.area(hard)/1e6).toFixed(1):'0';
   document.getElementById('zone-stat').textContent=`${km2} km²`;
   document.getElementById('zone-area').textContent=`${km2} km² in play`;
@@ -150,7 +269,11 @@ function updateStat(){
 
 function resetZone(){
   applyHideRadius();
-  clearSave();
+  outgoingQuestions = {};
+  clearTimeout(_saveGameTimer);
+  _saveGameTimer = null;
+  localStorage.removeItem(SAVE_KEY);
+  saveGame();
   toast('Zone reset to hide-radius area');
 }
 
@@ -196,9 +319,13 @@ function onMapClick(e){
     updatePreview();
     return;
   }
-  if(pickStep<0||pickStep>=pickStepDefs.length) return;
-  const {lat,lng}=e.latlng;
-  applyPickedPoint(lat, lng);
+  if(pickStep>=0&&pickStep<pickStepDefs.length){
+    const {lat,lng}=e.latlng;
+    applyPickedPoint(lat, lng);
+    return;
+  }
+  if(handleYellowRegionTap(e.latlng)) return;
+  dismissYellowRegionMenu();
 }
 
 // ══════════════════════════════════════════════════════

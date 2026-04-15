@@ -43,6 +43,7 @@ let seekerPinMarkers = []; // seeker location dots — preserved across POI cate
 let thermoHandleMarker = null;
 let validZone = cloneGeo(INIT_POLY);
 let softZone = null;
+let stopRegionState = null;
 let constraints = [];
 let qtype=null, qparams={}, pickStep=-1, pickStepDefs=[];
 let currentBuiltQuestion = null;
@@ -152,6 +153,138 @@ function safeUnion(a, b){
   }catch(e){
     return a || b;
   }
+}
+
+function geometryToPolygonFeatures(feature, baseProps={}){
+  if(!feature) return [];
+  const wrapped = feature.type === 'Feature'
+    ? feature
+    : (feature.geometry ? {type:'Feature', properties:feature.properties || {}, geometry:feature.geometry} : {type:'Feature', properties:{}, geometry:feature});
+  try{
+    const flat = turf.flatten(wrapped);
+    return (flat?.features || [])
+      .filter(item => item?.geometry?.type === 'Polygon')
+      .map((item, idx) => ({
+        type:'Feature',
+        properties:{
+          ...baseProps,
+          ...(item.properties || {}),
+          regionId: `${baseProps.regionKind || 'region'}_${idx}`,
+        },
+        geometry: cloneGeo(item.geometry),
+      }));
+  }catch(e){
+    if(wrapped?.geometry?.type === 'Polygon'){
+      return [{
+        type:'Feature',
+        properties:{
+          ...baseProps,
+          ...(wrapped.properties || {}),
+          regionId: `${baseProps.regionKind || 'region'}_0`,
+        },
+        geometry: cloneGeo(wrapped.geometry),
+      }];
+    }
+  }
+  return [];
+}
+
+let _stopBaseRegionCache = { miles: null, stopCount: 0, entries: null };
+
+function buildStopBaseRegionEntries(){
+  const entries = Object.entries(stopLineMap);
+  if(
+    _stopBaseRegionCache.entries &&
+    _stopBaseRegionCache.miles === hideRadiusMi &&
+    _stopBaseRegionCache.stopCount === entries.length
+  ){
+    return _stopBaseRegionCache.entries;
+  }
+
+  const nextEntries = entries.map(([id, stop]) => {
+    const baseRegion = exactIsect(INIT_POLY, makeCircle(stop, hideRadiusMi, 'miles'));
+    return {
+      id,
+      stop:{
+        name: stop.name,
+        lat: stop.lat,
+        lng: stop.lng,
+        lines: stop.lines instanceof Set ? [...stop.lines] : [...(stop.lines || [])],
+      },
+      baseRegion,
+    };
+  }).filter(entry => entry.baseRegion);
+
+  _stopBaseRegionCache = {
+    miles: hideRadiusMi,
+    stopCount: entries.length,
+    entries: nextEntries,
+  };
+  return nextEntries;
+}
+
+function deriveStopRegionState(hardZone, list){
+  if(!hardZone) return null;
+  const baseEntries = buildStopBaseRegionEntries();
+  if(!baseEntries.length) return null;
+
+  const softConstraints = normalizeConstraintList(list).filter(q =>
+    q &&
+    q.type !== '_setup' &&
+    q.type !== '_veto' &&
+    q.type !== '_randomize_card' &&
+    getConstraintEffect(q) === 'soft' &&
+    !!QDEFS[q.type]
+  );
+
+  const byStop = {};
+  const greenFeatures = [];
+  const yellowFeatures = [];
+
+  baseEntries.forEach(({id, stop, baseRegion}) => {
+    const hardRegion = exactIsect(hardZone, baseRegion);
+    if(!hardRegion){
+      byStop[id] = {stop, inPlay:false, hardRegion:null, greenRegion:null, yellowRegion:null};
+      return;
+    }
+
+    let yellowRegion = null;
+    for(const q of softConstraints){
+      const def = QDEFS[q.type];
+      const kept = def.applyToZone(hardRegion, q);
+      const excluded = kept ? exactDiff(hardRegion, kept) : null;
+      if(excluded){
+        yellowRegion = yellowRegion ? safeUnion(yellowRegion, excluded) : excluded;
+      }
+    }
+    if(yellowRegion){
+      yellowRegion = exactIsect(yellowRegion, hardRegion) || null;
+    }
+
+    const greenRegion = yellowRegion ? exactDiff(hardRegion, yellowRegion) : hardRegion;
+
+    if(greenRegion) greenFeatures.push(...geometryToPolygonFeatures(greenRegion, {regionKind:'green', stopId:id}));
+    if(yellowRegion) yellowFeatures.push(...geometryToPolygonFeatures(yellowRegion, {regionKind:'yellow', stopId:id, menuLabel:'Exclude region'}));
+
+    byStop[id] = {
+      stop,
+      inPlay:true,
+      hardRegion,
+      greenRegion: greenRegion || null,
+      yellowRegion: yellowRegion || null,
+      hasGreen: !!greenRegion,
+      hasYellow: !!yellowRegion,
+    };
+  });
+
+  return {
+    byStop,
+    hardUnion: hardZone,
+    greenUnion: null,
+    yellowUnion: null,
+    greenFeatures,
+    yellowFeatures,
+  };
 }
 
 function deriveZoneStateFromConstraints(baseZone, list){
@@ -335,6 +468,7 @@ function loadSave(){
 function clearSave(){
   outgoingQuestions = {};
   softZone = null;
+  stopRegionState = null;
   clearTimeout(_saveGameTimer);
   _saveGameTimer = null;
   localStorage.removeItem(SAVE_KEY);
@@ -626,6 +760,7 @@ function resumeGame(){
   hiderStation = save.hiderStation || null;
   validZone = cloneGeo(save.validZone);
   softZone = save.softZone ? cloneGeo(save.softZone) : null;
+  stopRegionState = null;
   constraints = normalizeConstraintList(save.constraints);
   outgoingQuestions = save.outgoingQuestions || {};
 
@@ -638,8 +773,7 @@ function resumeGame(){
   // Wait for MBTA data then restore
   const restore = () => {
     applyHideRadiusVisuals();
-    renderZone();
-    renderLog();
+    recomputeZoneFromConstraints();
     applyGameMode();
     // Restore hider station pin if saved
     if(hiderStation){
@@ -857,7 +991,9 @@ const QDEFS = {
         ? safeIsect(zone, q.boundary_geojson)
         : safeDiff(zone, q.boundary_geojson);
     },
-    describe:q=>`<b>${q.mode==='include'?'INCLUDE':'EXCLUDE'}</b> custom boundary`
+    describe:q=>q._label
+      ? `<b>${String(q._label).toUpperCase()}</b>`
+      : `<b>${q.mode==='include'?'INCLUDE':'EXCLUDE'}</b> custom boundary`
   }
 };
 
