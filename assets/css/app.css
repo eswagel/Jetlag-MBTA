@@ -33,6 +33,7 @@
     .stop-popup { padding: 12px 14px 10px; min-width: 140px; }
     .stop-popup-name { font-size: 12px; font-weight: 700; color: var(--text); margin-bottom: 8px; line-height: 1.3; padding-right: 16px; }
     .stop-popup-lines { display: flex; flex-wrap: wrap; gap: 5px; }
+    .yellow-region-menu-btn { width: 100%; margin-top: 10px; justify-content: center; }
     .measure-line-label {
       background: rgba(8,13,18,0.92);
       border: 1px solid var(--border);
@@ -74,7 +75,8 @@
     .zk-item { display: flex; align-items: center; gap: 6px; }
     .zk-swatch { width: 12px; height: 12px; border-radius: 3px; }
     .zk-valid { background: rgba(32,192,96,0.4); border: 1.5px solid #20c060; }
-    .zk-elim  { background: rgba(232,64,64,0.3); }
+    .zk-temp  { background: rgba(240,160,48,0.28); border: 1.5px solid #f0a030; }
+    .zk-elim  { background: rgba(232,64,64,0.3); border: 1.5px solid #e84040; }
     #zone-area { color: var(--gold); }
 
     #legend {

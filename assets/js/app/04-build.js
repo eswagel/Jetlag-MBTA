@@ -2158,12 +2158,17 @@ function clearZonePreview(){
   setPreviewMapMode(false);
 }
 
-function renderZonePreviewResult(result, label, color, shouldFit=true){
+function renderZonePreviewResult(result, label, color, shouldFit=true, answeredQuestion=null){
   if(!result) return;
   const hint = document.getElementById('simul-hint');
-  const previewQuestion = getLivePreviewQuestion() || currentBuiltQuestion;
-  const eliminated = safeDiff(validZone, result);
+  const previewQuestion = answeredQuestion || getLivePreviewQuestion() || currentBuiltQuestion;
+  const previewState = previewQuestion ? deriveStopRegionStateFromConstraints([...constraints, previewQuestion]) : null;
+  const hard = previewState?.hardUnion || result;
+  const greenFeatures = previewState?.greenFeatures || geometryToPolygonFeatures(hard, {regionKind:'green'});
+  const yellowFeatures = previewState?.yellowFeatures || [];
+  const eliminated = exactDiff(validZone, hard);
   setPreviewMapMode(true);
+  if(tentaclePreviewLayer) tentaclePreviewLayer.clearLayers();
   simulLayer.clearLayers();
   simulMaskLayer.clearLayers();
   simulLayer.options.style = {
@@ -2172,20 +2177,41 @@ function renderZonePreviewResult(result, label, color, shouldFit=true){
   simulMaskLayer.options.style = {
     color: '#ff6b6b', weight: 2, fillColor: '#ff5a5a', fillOpacity: 0.30, interactive: false
   };
-  simulLayer.addData(result);
+  if(greenFeatures.length) simulLayer.addData(turf.featureCollection(greenFeatures));
+  else simulLayer.addData(hard);
+  if(yellowFeatures.length && tentaclePreviewLayer){
+    tentaclePreviewLayer.addData({
+      type:'FeatureCollection',
+      features:yellowFeatures.map(feature => ({
+        ...cloneGeo(feature),
+        properties:{
+          ...(feature.properties || {}),
+          color:'#f0a030',
+          strokeColor:'#f0a030',
+          fillColor:'#f0a030',
+          fillOpacity:0.24,
+          weight:2,
+          opacity:0.95,
+          dashArray:'6 4',
+        },
+      })),
+    });
+  }
   if(eliminated) simulMaskLayer.addData(eliminated);
   if(shouldFit){
-    try{ map.fitBounds(L.geoJSON(result).getBounds().pad(0.12)); }catch(e){}
+    try{ map.fitBounds(L.geoJSON(hard).getBounds().pad(0.12)); }catch(e){}
   }
-  const area = (turf.area(result)/1e6).toFixed(1);
-  const pctRemain = validZone ? Math.round(turf.area(result)/turf.area(validZone)*100) : '?';
+  const area = (turf.area(hard)/1e6).toFixed(1);
+  const pctRemain = validZone ? Math.round(turf.area(hard)/turf.area(validZone)*100) : '?';
   const pctElim = typeof pctRemain === 'number' ? 100 - pctRemain : '?';
   if(hint){
     hint.innerHTML = `<b>${label}:</b> ${area} km² remain <span style="color:${color}">(${pctElim}% eliminated)</span><br><span style="font-size:8px;color:var(--dim)">Green stays in play. Red is eliminated by this answer.</span>`;
     hint.className = 'simul-result-hint visible';
+    hint.innerHTML = `<b>${label}:</b> ${area} km² remain <span style="color:${color}">(${pctElim}% eliminated)</span><br><span style="font-size:8px;color:var(--dim)">Green is possible now. Yellow is temporary. Red is fully eliminated.</span>`;
   }
   const msb = document.getElementById('msb-area');
   if(msb) msb.innerHTML = `<b style="color:var(--green)">${pctRemain}%</b> stays · <b style="color:#e84040">${pctElim}%</b> cut`;
+  if(msb) msb.innerHTML = `<b style="color:var(--green)">green</b> stays · <b style="color:var(--gold)">yellow</b> temporary · <b style="color:#e84040">red</b> cut`;
   if(previewQuestion?.type === 'tentacles') document.getElementById('map-simul-bar').classList.remove('visible');
   else document.getElementById('map-simul-bar').classList.add('visible');
 }
@@ -2279,7 +2305,7 @@ function refreshActiveAnswerPreview(){
     const q = {...liveQ, answer:_simulActive, answer_label: opt.label};
     const result = def.applyToZone(validZone, q);
     if(!result) return;
-    renderZonePreviewResult(result, `${opt.icon} ${opt.label}`, opt.color, false);
+    renderZonePreviewResult(result, `${opt.icon} ${opt.label}`, opt.color, false, q);
   }catch(e){}
 }
 
@@ -2424,7 +2450,7 @@ function previewAnswer(val){
         const q = opt ? {...baseQ, answer: val, answer_label: opt.label} : {...baseQ, answer: val};
         const result = def.applyToZone(validZone, q);
         if(!result){ toast('Nothing left in zone for this answer'); return; }
-        renderZonePreviewResult(result, opt ? `${opt.icon} ${opt.label}` : val, col);
+        renderZonePreviewResult(result, opt ? `${opt.icon} ${opt.label}` : val, col, true, q);
       }catch(e){
         toast('Preview error: '+e.message);
       }
@@ -2490,6 +2516,7 @@ function applyCustomBoundary(){
   if(!nz){ toast('Zone empty — contradiction?'); return; }
   validZone = nz;
   constraints.push(q);
+  syncZoneStateFromConstraints();
   renderZone();
   renderLog();
   saveGame();

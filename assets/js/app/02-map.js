@@ -25,6 +25,7 @@ function initMap(){
 
   // Zone layers behind T lines
   maskLayer  =L.geoJSON(null,{interactive:false,style:{color:'transparent',weight:0,fillColor:'#cc1010',fillOpacity:0.42}}).addTo(map);
+  softLayer  =L.geoJSON(null,{interactive:false,style:{color:'#f0a030',weight:2,fillColor:'#f0a030',fillOpacity:0.24,dashArray:'6 4'}}).addTo(map);
   borderLayer=L.geoJSON(null,{interactive:false,style:{color:'#18b050',weight:3,fillColor:'#18b050',fillOpacity:0.10,dashArray:'7 4'}}).addTo(map);
 
   radiusLayer = L.layerGroup().addTo(map);

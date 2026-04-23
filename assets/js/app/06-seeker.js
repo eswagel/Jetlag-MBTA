@@ -727,10 +727,16 @@ function applyAnswerObject(q, onSuccess){
   const def = QDEFS[q.type];
   if(!def){ toast(`Unknown type: "${q.type}"`); return; }
   try{
-    const nz = def.applyToZone(validZone, q);
-    if(!nz){ toast('Zone empty - contradiction?'); return; }
-    validZone = nz;
+    const prevZone = validZone ? cloneGeo(validZone) : null;
+    const prevStopRegionState = stopRegionState ? cloneForStorage(stopRegionState) : null;
     constraints.push(q);
+    if(!syncZoneStateFromConstraints()){
+      constraints.pop();
+      validZone = prevZone;
+      stopRegionState = prevStopRegionState;
+      toast('Zone empty - contradiction?');
+      return;
+    }
     forgetOutgoingQuestion(q.id);
     renderZone();
     renderLog();
@@ -831,6 +837,9 @@ function renderLog(){
       const def = QDEFS[q._qtype];
       return `<div class="citem"><span class="ctag" style="background:rgba(160,96,255,0.2);color:var(--purple)">RANDOM</span><div class="cdesc"><b>Randomize card played</b> - preloaded question: <b>${q._preset_label || (def ? def.label : q._qtype)}</b></div>${delBtn}</div>`;
     }
+    if(q.type === '_yellow_harden'){
+      return `<div class="citem"><span class="ctag" style="background:rgba(232,64,64,0.15);color:var(--accent)">HARD</span><div class="cdesc"><b>${q._label || 'Yellow region made red'}</b></div>${delBtn}</div>`;
+    }
     const def = QDEFS[q.type];
     return `<div class="citem"><span class="ctag ${def ? def.colorTag : 'tag-radar'}">${def ? def.label : q.type}</span><div class="cdesc">${def ? def.describe(q) : JSON.stringify(q)}</div>${delBtn}</div>`;
   }).join('');
@@ -899,13 +908,13 @@ function recomputeZoneFromConstraints(){
     toast('Could not rebuild base zone');
     return false;
   }
-  validZone = baseZone;
   drawHideRadiusVisuals();
-  for(const q of constraints){
-    if(q.type === '_setup' || q.type === '_veto' || q.type === '_randomize_card') continue;
-    const def = QDEFS[q.type];
-    if(!def) continue;
-    validZone = def.applyToZone(validZone, q) || validZone;
+  if(!syncZoneStateFromConstraints()){
+    validZone = baseZone;
+    stopRegionState = deriveStopRegionStateFromConstraints(constraints);
+    if(!stopRegionState?.hardUnion){
+      return false;
+    }
   }
   renderZone();
   renderLog();

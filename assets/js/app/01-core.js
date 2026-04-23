@@ -35,13 +35,14 @@ const INIT_POLY = turf.polygon([[
   [-71.70,41.85],[-70.40,41.85],[-70.40,42.80],[-71.70,42.80],[-71.70,41.85]
 ]]);
 
-let map, maskLayer, borderLayer, radiusLayer, previewLayer, tentaclePreviewLayer, simulLayer, simulMaskLayer, pickedMarkers=[];
+let map, maskLayer, softLayer, borderLayer, radiusLayer, previewLayer, tentaclePreviewLayer, simulLayer, simulMaskLayer, pickedMarkers=[];
 let townLayer, countyLayer, boundaryHighlightLayer;
 const commuterRailStops = new Set();
 const commuterRailStopsList = [];
 let seekerPinMarkers = []; // seeker location dots — preserved across POI category changes
 let thermoHandleMarker = null;
 let validZone = cloneGeo(INIT_POLY);
+let stopRegionState = null;
 let constraints = [];
 let qtype=null, qparams={}, pickStep=-1, pickStepDefs=[];
 let currentBuiltQuestion = null;
@@ -184,6 +185,173 @@ function exactIsect(a,b){
   }catch(e){
     return null;
   }
+}
+
+function exactDiff(a,b){
+  try{
+    return turf.difference(a,b) || null;
+  }catch(e){
+    return null;
+  }
+}
+
+function unionGeo(a,b){
+  if(!a) return b || null;
+  if(!b) return a || null;
+  try{
+    return turf.union(a,b) || a || b;
+  }catch(e){
+    return a || b;
+  }
+}
+
+function geometryToPolygonFeatures(feature, baseProps={}){
+  if(!feature) return [];
+  const wrapped = feature.type === 'Feature'
+    ? feature
+    : (feature.geometry ? {type:'Feature', properties:feature.properties || {}, geometry:feature.geometry} : {type:'Feature', properties:{}, geometry:feature});
+  try{
+    const flat = turf.flatten(wrapped);
+    return (flat?.features || [])
+      .filter(item => item?.geometry?.type === 'Polygon')
+      .map((item, idx) => ({
+        type:'Feature',
+        properties:{...baseProps, ...(item.properties || {}), regionId:`${baseProps.regionKind || 'region'}_${idx}`},
+        geometry: cloneGeo(item.geometry),
+      }));
+  }catch(e){
+    if(wrapped?.geometry?.type === 'Polygon'){
+      return [{
+        type:'Feature',
+        properties:{...baseProps, ...(wrapped.properties || {}), regionId:`${baseProps.regionKind || 'region'}_0`},
+        geometry: cloneGeo(wrapped.geometry),
+      }];
+    }
+  }
+  return [];
+}
+
+let _stopBaseRegionCache = { miles:null, stopCount:0, entries:null };
+
+function resetStopRegionCache(){
+  _stopBaseRegionCache = { miles:null, stopCount:0, entries:null };
+}
+
+function buildStopBaseRegionEntries(){
+  const entries = Object.entries(stopLineMap);
+  if(
+    _stopBaseRegionCache.entries &&
+    _stopBaseRegionCache.miles === hideRadiusMi &&
+    _stopBaseRegionCache.stopCount === entries.length
+  ){
+    return _stopBaseRegionCache.entries;
+  }
+  const nextEntries = entries.map(([id, stop]) => {
+    const baseRegion = exactIsect(INIT_POLY, makeCircle(stop, hideRadiusMi, 'miles'));
+    return {
+      id,
+      stop:{
+        name: stop.name,
+        lat: stop.lat,
+        lng: stop.lng,
+        lines: stop.lines instanceof Set ? [...stop.lines] : [...(stop.lines || [])],
+      },
+      baseRegion,
+    };
+  }).filter(entry => entry.baseRegion);
+  _stopBaseRegionCache = { miles:hideRadiusMi, stopCount:entries.length, entries:nextEntries };
+  return nextEntries;
+}
+
+function isZoneConstraint(q){
+  return !!(q && q.type && !['_setup','_veto','_randomize_card'].includes(q.type) && QDEFS[q.type]);
+}
+
+function isYellowHardenConstraint(q){
+  return !!(q && q.type === '_yellow_harden' && q.boundary_geojson);
+}
+
+function classifyStopConstraint(region, q){
+  const def = QDEFS[q.type];
+  if(!def || !region) return {kind:'none', kept:region, excluded:null};
+  const kept = def.applyToZone(region, q);
+  if(!kept) return {kind:'hard', kept:null, excluded:region};
+  const excluded = exactDiff(region, kept);
+  if(!excluded) return {kind:'none', kept:region, excluded:null};
+  return {kind:'soft', kept, excluded};
+}
+
+function deriveStopRegionStateFromConstraints(list){
+  const baseEntries = buildStopBaseRegionEntries();
+  if(!baseEntries.length) return null;
+
+  const byStop = {};
+  const greenFeatures = [];
+  const yellowFeatures = [];
+  let hardUnion = null;
+  let greenUnion = null;
+  let yellowUnion = null;
+
+  baseEntries.forEach(({id, stop, baseRegion}) => {
+    let hardRegion = baseRegion;
+    let yellowRegion = null;
+
+    for(const q of list){
+      if(!hardRegion) continue;
+      if(isYellowHardenConstraint(q)){
+        hardRegion = exactDiff(hardRegion, q.boundary_geojson);
+        if(yellowRegion) yellowRegion = hardRegion ? exactIsect(hardRegion, yellowRegion) : null;
+        continue;
+      }
+      if(!isZoneConstraint(q)) continue;
+      const result = classifyStopConstraint(hardRegion, q);
+      if(result.kind === 'hard'){
+        hardRegion = null;
+        yellowRegion = null;
+        break;
+      }
+      if(result.kind === 'soft' && result.excluded){
+        yellowRegion = unionGeo(yellowRegion, result.excluded);
+      }
+    }
+
+    if(!hardRegion){
+      byStop[id] = {stop, inPlay:false, hardRegion:null, greenRegion:null, yellowRegion:null, hasGreen:false, hasYellow:false};
+      return;
+    }
+
+    if(yellowRegion) yellowRegion = exactIsect(hardRegion, yellowRegion);
+    const greenRegion = yellowRegion ? exactDiff(hardRegion, yellowRegion) : hardRegion;
+
+    hardUnion = unionGeo(hardUnion, hardRegion);
+    if(greenRegion) greenUnion = unionGeo(greenUnion, greenRegion);
+    if(yellowRegion) yellowUnion = unionGeo(yellowUnion, yellowRegion);
+
+    if(greenRegion) greenFeatures.push(...geometryToPolygonFeatures(greenRegion, {regionKind:'green', stopId:id}));
+    if(yellowRegion) yellowFeatures.push(...geometryToPolygonFeatures(yellowRegion, {regionKind:'yellow', stopId:id, menuLabel:'Make red'}));
+
+    byStop[id] = {
+      stop,
+      inPlay:true,
+      hardRegion,
+      greenRegion: greenRegion || null,
+      yellowRegion: yellowRegion || null,
+      hasGreen: !!greenRegion,
+      hasYellow: !!yellowRegion,
+    };
+  });
+
+  return {byStop, hardUnion, greenUnion, yellowUnion, greenFeatures, yellowFeatures};
+}
+
+function syncZoneStateFromConstraints(){
+  stopRegionState = deriveStopRegionStateFromConstraints(constraints);
+  if(!stopRegionState?.hardUnion){
+    validZone = null;
+    return false;
+  }
+  validZone = stopRegionState.hardUnion;
+  return true;
 }
 
 function buildTentacleRegions(question, zone=null){
@@ -783,6 +951,7 @@ function resumeGame(){
 
   // Wait for MBTA data then restore
   const restore = () => {
+    syncZoneStateFromConstraints();
     applyHideRadiusVisuals();
     renderZone();
     renderLog();
@@ -945,7 +1114,7 @@ const QDEFS = {
           ? safeIsect(zone, q.boundary_geojson)
           : safeDiff(zone, q.boundary_geojson);
         if(result && turf.area(result) > 1000) return result;
-        return zone;
+        return null;
       } catch(e){ return zone; }
     },
     describe:q=>`<b>${q.answer==='Yes'?'SAME':'DIFFERENT'}</b> ${q.category_label} (seeker: ${q.seeker_val})`
@@ -975,7 +1144,7 @@ const QDEFS = {
           ? safeIsect(zone, q.voronoi_geojson)
           : safeDiff(zone, q.voronoi_geojson);
         if(result && turf.area(result) > 1000) return result;
-        return zone;
+        return null;
       }catch(e){ return zone; }
     },
     describe:q=>`Nearest ${q.category_label}: <b>${q.answer==='Yes'?'SAME':'DIFFERENT'}</b> (seeker's: ${q.seeker_poi?.name})`
@@ -1022,8 +1191,8 @@ function fmt(p){return`${p.lat.toFixed(3)},${p.lng.toFixed(3)}`;}
 function toPt(p){return turf.point([p.lng,p.lat]);}
 function turfDist(a,b){return turf.distance(toPt(a),toPt(b),{units:'miles'});}
 function makeCircle(c,r,u){return turf.circle([c.lng,c.lat],r,{units:u,steps:72});}
-function safeIsect(z,o){try{const r=turf.intersect(z,o);return r||z;}catch(e){return z;}}
-function safeDiff(z,o){try{const r=turf.difference(z,o);return r||z;}catch(e){return z;}}
+function safeIsect(z,o){try{return turf.intersect(z,o)||null;}catch(e){return z;}}
+function safeDiff(z,o){try{return turf.difference(z,o)||null;}catch(e){return z;}}
 
 function compassHalf(ref,dir){
   const D=14,la=ref.lat,lo=ref.lng;

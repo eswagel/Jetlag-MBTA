@@ -6,6 +6,7 @@ function selectRadius(el){
   el.classList.add('selected');
   hideRadiusMi = parseFloat(el.dataset.mi);
   _hideRadiusZoneCache = { miles: null, stopCount: 0, zone: null };
+  if(typeof resetStopRegionCache === 'function') resetStopRegionCache();
 }
 
 function startGame(){
@@ -34,6 +35,166 @@ function promptHiderStationPick(){
 }
 
 let _hideRadiusZoneCache = { miles: null, stopCount: 0, zone: null };
+let _pendingYellowRegionFeature = null;
+let _yellowMultiSelectActive = false;
+let _yellowSelectedFeatures = [];
+
+function canSelectYellowRegions(){
+  const setupOverlay = document.getElementById('setup-overlay');
+  if(setupOverlay && !setupOverlay.classList.contains('hidden')) return false;
+  if(_pickingHiderStation) return false;
+  if(typeof _hiderPickingLocation !== 'undefined' && _hiderPickingLocation) return false;
+  if(qtype === 'custom_boundary' && qparams._drawingBoundary) return false;
+  if(pickStep >= 0 && pickStep < pickStepDefs.length) return false;
+  return !!stopRegionState?.yellowFeatures?.length;
+}
+
+function findYellowRegionFeatureAtLatLng(latlng){
+  if(!canSelectYellowRegions()) return null;
+  const pt = turf.point([latlng.lng, latlng.lat]);
+  return (stopRegionState?.yellowFeatures || []).find(feature => {
+    try{ return turf.booleanPointInPolygon(pt, feature); }
+    catch(e){ return false; }
+  }) || null;
+}
+
+function dismissYellowRegionMenu(){
+  _pendingYellowRegionFeature = null;
+  if(map) map.closePopup();
+}
+
+function yellowFeatureKey(feature){
+  return JSON.stringify(feature?.geometry || feature);
+}
+
+function updateYellowSelectionOverlay(){
+  if(!tentaclePreviewLayer) return;
+  tentaclePreviewLayer.clearLayers();
+  if(!_yellowSelectedFeatures.length) return;
+  tentaclePreviewLayer.addData({
+    type:'FeatureCollection',
+    features:_yellowSelectedFeatures.map(feature => ({
+      ...cloneGeo(feature),
+      properties:{
+        ...(feature.properties || {}),
+        color:'#ffcf5a',
+        strokeColor:'#ffcf5a',
+        fillColor:'#ffcf5a',
+        fillOpacity:0.38,
+        weight:3,
+        opacity:1,
+      },
+    })),
+  });
+}
+
+function buildYellowHardenBoundary(features){
+  let union = null;
+  features.forEach(feature => { union = unionGeo(union, feature); });
+  return union;
+}
+
+function hardenYellowFeatures(features){
+  const chosen = (features || []).filter(Boolean);
+  if(!chosen.length) return;
+  const boundary = buildYellowHardenBoundary(chosen);
+  if(!boundary){ toast('Could not read selected yellow region'); return; }
+  const count = chosen.length;
+  const prevZone = validZone ? cloneGeo(validZone) : null;
+  const prevStopRegionState = stopRegionState ? cloneForStorage(stopRegionState) : null;
+  constraints.push({
+    type:'_yellow_harden',
+    boundary_geojson: boundary,
+    _label: count === 1 ? 'Yellow region made red' : `${count} yellow regions made red`,
+  });
+  if(syncZoneStateFromConstraints()){
+    _yellowMultiSelectActive = false;
+    _yellowSelectedFeatures = [];
+    if(tentaclePreviewLayer) tentaclePreviewLayer.clearLayers();
+    renderZone();
+    renderLog();
+    saveGame();
+    switchTab('log');
+    toast(count === 1 ? 'Yellow region made red' : `${count} yellow regions made red`);
+  }else{
+    constraints.pop();
+    validZone = prevZone;
+    stopRegionState = prevStopRegionState;
+    toast('Could not make yellow region red');
+  }
+}
+
+function hardenPendingYellowRegion(){
+  if(!_pendingYellowRegionFeature) return;
+  const feature = cloneGeo(_pendingYellowRegionFeature);
+  dismissYellowRegionMenu();
+  hardenYellowFeatures([feature]);
+}
+
+function startYellowMultiSelect(){
+  if(!_pendingYellowRegionFeature) return;
+  _yellowMultiSelectActive = true;
+  _yellowSelectedFeatures = [cloneGeo(_pendingYellowRegionFeature)];
+  dismissYellowRegionMenu();
+  updateYellowSelectionOverlay();
+  showBanner('Select yellow regions to make red, then use the popup to apply');
+}
+
+function toggleYellowRegionSelection(feature){
+  const key = yellowFeatureKey(feature);
+  const existing = _yellowSelectedFeatures.findIndex(item => yellowFeatureKey(item) === key);
+  if(existing >= 0 && _yellowSelectedFeatures.length > 1) _yellowSelectedFeatures.splice(existing, 1);
+  else if(existing < 0){
+    _yellowSelectedFeatures.push(cloneGeo(feature));
+  }
+  updateYellowSelectionOverlay();
+}
+
+function finishYellowMultiSelect(){
+  const selected = _yellowSelectedFeatures.map(cloneGeo);
+  hideBanner();
+  dismissYellowRegionMenu();
+  hardenYellowFeatures(selected);
+}
+
+function cancelYellowMultiSelect(){
+  _yellowMultiSelectActive = false;
+  _yellowSelectedFeatures = [];
+  if(tentaclePreviewLayer) tentaclePreviewLayer.clearLayers();
+  hideBanner();
+  dismissYellowRegionMenu();
+}
+
+function openYellowRegionMenu(latlng, feature){
+  if(!map || !feature) return;
+  _pendingYellowRegionFeature = cloneGeo(feature);
+  const selectedCount = _yellowSelectedFeatures.length;
+  const multiControls = _yellowMultiSelectActive
+    ? `<button class="btn btn-red yellow-region-menu-btn" type="button" onclick="finishYellowMultiSelect()">Make ${selectedCount} selected red</button>
+       <button class="btn btn-ghost yellow-region-menu-btn" type="button" onclick="cancelYellowMultiSelect()">Cancel multi-select</button>`
+    : `<button class="btn btn-red yellow-region-menu-btn" type="button" onclick="hardenPendingYellowRegion()">Make this region red</button>
+       <button class="btn btn-ghost yellow-region-menu-btn" type="button" onclick="startYellowMultiSelect()">Select multiple</button>`;
+  L.popup({closeButton:true, autoPan:true, offset:[0, -4]})
+    .setLatLng(latlng)
+    .setContent(`
+      <div class="stop-popup">
+        <div class="stop-popup-name">Yellow Region</div>
+        <div style="font-size:9px;color:var(--dim);line-height:1.55">
+          This area is ruled out right now, but the stop is still possible. You can make it red permanently.
+        </div>
+        ${multiControls}
+      </div>
+    `)
+    .openOn(map);
+}
+
+function handleYellowRegionTap(latlng){
+  const feature = findYellowRegionFeatureAtLatLng(latlng);
+  if(!feature) return false;
+  if(_yellowMultiSelectActive) toggleYellowRegionSelection(feature);
+  openYellowRegionMenu(latlng, feature);
+  return true;
+}
 
 function buildHideRadiusZone(){
   const stops = Object.values(stopLineMap);
@@ -87,6 +248,7 @@ function applyHideRadius(){
     answer:'applied',
     _label:`Hide radius: ${hideRadiusMi < 1 ? (hideRadiusMi*5280).toFixed(0)+' ft' : hideRadiusMi+' mi'} from any station`
   }];
+  syncZoneStateFromConstraints();
   renderZone();
   renderLog();
   const km2 = (turf.area(validZone)/1e6).toFixed(1);
@@ -99,17 +261,25 @@ function applyHideRadius(){
 // ══════════════════════════════════════════════════════
 function renderZone(){
   maskLayer.clearLayers();
+  if(softLayer) softLayer.clearLayers();
   borderLayer.clearLayers();
+  dismissYellowRegionMenu();
   if(!validZone) return;
-  // Red tinted mask = everything OUTSIDE valid zone
-  try{ const mask=turf.difference(INIT_POLY,validZone); if(mask) maskLayer.addData(mask); }catch(e){}
-  // Green outline = valid zone
-  borderLayer.addData(validZone);
+  const hard = stopRegionState?.hardUnion || validZone;
+  const greenFeatures = stopRegionState?.greenFeatures || geometryToPolygonFeatures(hard, {regionKind:'green'});
+  const yellowFeatures = stopRegionState?.yellowFeatures || [];
+  const maskBase = buildHideRadiusZone() || INIT_POLY;
+
+  try{ const mask=exactDiff(maskBase, hard); if(mask) maskLayer.addData(mask); }catch(e){}
+  if(yellowFeatures.length && softLayer) softLayer.addData(turf.featureCollection(yellowFeatures));
+  if(greenFeatures.length) borderLayer.addData(turf.featureCollection(greenFeatures));
+  else borderLayer.addData(hard);
   updateStat();
 }
 
 function updateStat(){
-  const km2=validZone?(turf.area(validZone)/1e6).toFixed(1):'0';
+  const hard = stopRegionState?.hardUnion || validZone;
+  const km2=hard?(turf.area(hard)/1e6).toFixed(1):'0';
   document.getElementById('zone-stat').textContent=`${km2} km²`;
   document.getElementById('zone-area').textContent=`${km2} km² in play`;
 }
@@ -117,6 +287,7 @@ function updateStat(){
 function resetZone(){
   applyHideRadius();
   clearSave();
+  cancelYellowMultiSelect();
   toast('Zone reset to hide-radius area');
 }
 
@@ -162,6 +333,7 @@ function onMapClick(e){
     updatePreview();
     return;
   }
+  if(handleYellowRegionTap(e.latlng)) return;
   if(pickStep<0||pickStep>=pickStepDefs.length) return;
   const {lat,lng}=e.latlng;
   applyPickedPoint(lat, lng);
