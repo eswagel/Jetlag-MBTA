@@ -2527,7 +2527,20 @@ function applyCustomBoundary(){
 }
 
 function copyQ(){
-  navigator.clipboard.writeText(document.getElementById('json-out').value).then(()=>{
+  const out = document.getElementById('json-out');
+  let text = out.value;
+  try{
+    const parsed = JSON.parse(text);
+    const source = currentBuiltQuestion?.id && currentBuiltQuestion.id === parsed?.id
+      ? currentBuiltQuestion
+      : parsed;
+    const compact = buildQuestionPacket(source);
+    if(compact){
+      text = JSON.stringify(compact, null, 2);
+      out.value = text;
+    }
+  }catch(e){}
+  navigator.clipboard.writeText(text).then(()=>{
     const fl=document.getElementById('cf');fl.classList.add('on');setTimeout(()=>fl.classList.remove('on'),2200);
     toast('Copied! Send to your friend.');
   }).catch(()=>toast('Tap the text area and copy manually'));
