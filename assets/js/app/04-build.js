@@ -2511,6 +2511,7 @@ function applyCustomBoundary(){
     type:'custom_boundary',
     boundary_geojson: poly,
     mode: qparams.custom_boundary_mode,
+    points: (qparams.custom_boundary_points || []).map(p => ({lat:p.lat, lng:p.lng})),
   };
   const nz = QDEFS.custom_boundary.applyToZone(validZone, q);
   if(!nz){ toast('Zone empty — contradiction?'); return; }

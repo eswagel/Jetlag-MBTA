@@ -146,9 +146,14 @@ function hardenYellowFeatures(features){
   const count = chosen.length;
   const prevZone = validZone ? cloneGeo(validZone) : null;
   const prevStopRegionState = stopRegionState ? cloneForStorage(stopRegionState) : null;
+  const selectedYellow = chosen.map(feature => ({
+    stop_id: feature?.properties?.stopId || null,
+    geometry_key: yellowFeatureKey(feature),
+  })).filter(item => item.stop_id && item.geometry_key);
   constraints.push({
     type:'_yellow_harden',
     boundary_geojson: boundary,
+    selected_yellow:selectedYellow,
     _label: count === 1 ? 'Yellow region made red' : `${count} yellow regions made red`,
   });
   if(syncZoneStateFromConstraints()){
