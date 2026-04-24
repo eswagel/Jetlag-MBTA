@@ -35,7 +35,7 @@ const INIT_POLY = turf.polygon([[
   [-71.70,41.85],[-70.40,41.85],[-70.40,42.80],[-71.70,42.80],[-71.70,41.85]
 ]]);
 
-let map, maskLayer, softLayer, borderLayer, radiusLayer, previewLayer, tentaclePreviewLayer, simulLayer, simulMaskLayer, pickedMarkers=[];
+let map, maskLayer, softLayer, yellowSelectLayer, borderLayer, radiusLayer, previewLayer, tentaclePreviewLayer, simulLayer, simulMaskLayer, pickedMarkers=[];
 let townLayer, countyLayer, boundaryHighlightLayer;
 const commuterRailStops = new Set();
 const commuterRailStopsList = [];

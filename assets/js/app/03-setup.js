@@ -67,10 +67,22 @@ function yellowFeatureKey(feature){
   return JSON.stringify(feature?.geometry || feature);
 }
 
+function isYellowFeatureSelected(feature){
+  const key = yellowFeatureKey(feature);
+  return _yellowSelectedFeatures.some(item => yellowFeatureKey(item) === key);
+}
+
 function updateYellowSelectionOverlay(){
-  if(!tentaclePreviewLayer) return;
-  tentaclePreviewLayer.clearLayers();
-  if(!_yellowSelectedFeatures.length) return;
+  if(tentaclePreviewLayer) tentaclePreviewLayer.clearLayers();
+  if(yellowSelectLayer) yellowSelectLayer.clearLayers();
+
+  const yellowFeatures = stopRegionState?.yellowFeatures || [];
+  if(_yellowMultiSelectActive && yellowSelectLayer && yellowFeatures.length){
+    yellowSelectLayer.addData(turf.featureCollection(yellowFeatures));
+    if(yellowSelectLayer.bringToFront) yellowSelectLayer.bringToFront();
+  }
+
+  if(!tentaclePreviewLayer || !_yellowSelectedFeatures.length) return;
   tentaclePreviewLayer.addData({
     type:'FeatureCollection',
     features:_yellowSelectedFeatures.map(feature => ({
@@ -86,6 +98,38 @@ function updateYellowSelectionOverlay(){
       },
     })),
   });
+}
+
+function getYellowRegionCount(){
+  return stopRegionState?.yellowFeatures?.length || 0;
+}
+
+function updateYellowReviewBar(){
+  const bar = document.getElementById('yellow-review-bar');
+  if(!bar) return;
+  const count = getYellowRegionCount();
+  if(!count){
+    bar.classList.remove('visible');
+    bar.innerHTML = '';
+    if(_yellowMultiSelectActive) cancelYellowMultiSelect();
+    return;
+  }
+  const selected = _yellowSelectedFeatures.length;
+  if(_yellowMultiSelectActive){
+    bar.innerHTML = `
+      <span class="yr-count">${selected || 0} selected</span>
+      <button class="yr-btn primary" type="button" onclick="finishYellowMultiSelect()" ${selected ? '' : 'disabled'}>Make red</button>
+      <button class="yr-btn" type="button" onclick="selectAllYellowRegions()">Select all</button>
+      <button class="yr-btn" type="button" onclick="cancelYellowMultiSelect()">Cancel</button>
+    `;
+  }else{
+    bar.innerHTML = `
+      <span class="yr-count">${count} temporary</span>
+      <button class="yr-btn primary" type="button" onclick="startYellowMultiSelect()">Select</button>
+      <button class="yr-btn danger" type="button" onclick="hardenAllYellowRegions()">All red</button>
+    `;
+  }
+  bar.classList.add('visible');
 }
 
 function buildYellowHardenBoundary(features){
@@ -110,11 +154,10 @@ function hardenYellowFeatures(features){
   if(syncZoneStateFromConstraints()){
     _yellowMultiSelectActive = false;
     _yellowSelectedFeatures = [];
-    if(tentaclePreviewLayer) tentaclePreviewLayer.clearLayers();
+    updateYellowSelectionOverlay();
     renderZone();
     renderLog();
     saveGame();
-    switchTab('log');
     toast(count === 1 ? 'Yellow region made red' : `${count} yellow regions made red`);
   }else{
     constraints.pop();
@@ -132,12 +175,13 @@ function hardenPendingYellowRegion(){
 }
 
 function startYellowMultiSelect(){
-  if(!_pendingYellowRegionFeature) return;
+  if(!canSelectYellowRegions()) return;
   _yellowMultiSelectActive = true;
-  _yellowSelectedFeatures = [cloneGeo(_pendingYellowRegionFeature)];
+  _yellowSelectedFeatures = _pendingYellowRegionFeature ? [cloneGeo(_pendingYellowRegionFeature)] : [];
+  _pendingYellowRegionFeature = null;
   dismissYellowRegionMenu();
   updateYellowSelectionOverlay();
-  showBanner('Select yellow regions to make red, then use the popup to apply');
+  updateYellowReviewBar();
 }
 
 function toggleYellowRegionSelection(feature){
@@ -148,6 +192,7 @@ function toggleYellowRegionSelection(feature){
     _yellowSelectedFeatures.push(cloneGeo(feature));
   }
   updateYellowSelectionOverlay();
+  updateYellowReviewBar();
 }
 
 function finishYellowMultiSelect(){
@@ -160,20 +205,30 @@ function finishYellowMultiSelect(){
 function cancelYellowMultiSelect(){
   _yellowMultiSelectActive = false;
   _yellowSelectedFeatures = [];
-  if(tentaclePreviewLayer) tentaclePreviewLayer.clearLayers();
+  updateYellowSelectionOverlay();
   hideBanner();
   dismissYellowRegionMenu();
+  updateYellowReviewBar();
+}
+
+function selectAllYellowRegions(){
+  if(!_yellowMultiSelectActive) return;
+  _yellowSelectedFeatures = (stopRegionState?.yellowFeatures || []).map(cloneGeo);
+  updateYellowSelectionOverlay();
+  updateYellowReviewBar();
+}
+
+function hardenAllYellowRegions(){
+  const features = stopRegionState?.yellowFeatures || [];
+  if(!features.length) return;
+  const ok = window.confirm(`Make all ${features.length} temporary region${features.length === 1 ? '' : 's'} red?`);
+  if(!ok) return;
+  hardenYellowFeatures(features);
 }
 
 function openYellowRegionMenu(latlng, feature){
   if(!map || !feature) return;
   _pendingYellowRegionFeature = cloneGeo(feature);
-  const selectedCount = _yellowSelectedFeatures.length;
-  const multiControls = _yellowMultiSelectActive
-    ? `<button class="btn btn-red yellow-region-menu-btn" type="button" onclick="finishYellowMultiSelect()">Make ${selectedCount} selected red</button>
-       <button class="btn btn-ghost yellow-region-menu-btn" type="button" onclick="cancelYellowMultiSelect()">Cancel multi-select</button>`
-    : `<button class="btn btn-red yellow-region-menu-btn" type="button" onclick="hardenPendingYellowRegion()">Make this region red</button>
-       <button class="btn btn-ghost yellow-region-menu-btn" type="button" onclick="startYellowMultiSelect()">Select multiple</button>`;
   L.popup({closeButton:true, autoPan:true, offset:[0, -4]})
     .setLatLng(latlng)
     .setContent(`
@@ -182,7 +237,8 @@ function openYellowRegionMenu(latlng, feature){
         <div style="font-size:9px;color:var(--dim);line-height:1.55">
           This area is ruled out right now, but the stop is still possible. You can make it red permanently.
         </div>
-        ${multiControls}
+        <button class="btn btn-red yellow-region-menu-btn" type="button" onclick="hardenPendingYellowRegion()">Make this red</button>
+        <button class="btn btn-ghost yellow-region-menu-btn" type="button" onclick="startYellowMultiSelect()">Select on map</button>
       </div>
     `)
     .openOn(map);
@@ -191,9 +247,17 @@ function openYellowRegionMenu(latlng, feature){
 function handleYellowRegionTap(latlng){
   const feature = findYellowRegionFeatureAtLatLng(latlng);
   if(!feature) return false;
-  if(_yellowMultiSelectActive) toggleYellowRegionSelection(feature);
+  if(_yellowMultiSelectActive){
+    toggleYellowRegionSelection(feature);
+    return true;
+  }
   openYellowRegionMenu(latlng, feature);
   return true;
+}
+
+function handleYellowSelectionFeatureClick(feature){
+  if(!_yellowMultiSelectActive) return;
+  toggleYellowRegionSelection(feature);
 }
 
 function buildHideRadiusZone(){
@@ -274,7 +338,9 @@ function renderZone(){
   if(yellowFeatures.length && softLayer) softLayer.addData(turf.featureCollection(yellowFeatures));
   if(greenFeatures.length) borderLayer.addData(turf.featureCollection(greenFeatures));
   else borderLayer.addData(hard);
+  updateYellowSelectionOverlay();
   updateStat();
+  updateYellowReviewBar();
 }
 
 function updateStat(){

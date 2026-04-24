@@ -78,6 +78,32 @@
     .zk-temp  { background: rgba(240,160,48,0.28); border: 1.5px solid #f0a030; }
     .zk-elim  { background: rgba(232,64,64,0.3); border: 1.5px solid #e84040; }
     #zone-area { color: var(--gold); }
+    #yellow-review-bar {
+      position: fixed; top: 50px; left: 50%; transform: translate(-50%, -8px);
+      z-index: 710; display: none; align-items: center; gap: 8px;
+      max-width: calc(100vw - 24px); padding: 6px 8px 6px 10px;
+      background: rgba(8,13,18,0.92); border: 1px solid rgba(240,160,48,0.38);
+      border-radius: 99px; box-shadow: 0 4px 18px rgba(0,0,0,0.45);
+      backdrop-filter: blur(10px); white-space: nowrap;
+      font-size: 8.5px; color: var(--dim);
+    }
+    #yellow-review-bar.visible { display: flex; transform: translate(-50%, 0); }
+    .yr-count { color: var(--gold); font-family: 'IBM Plex Mono', monospace; }
+    .yr-btn {
+      border: 1px solid var(--border); background: var(--panel2); color: var(--text);
+      border-radius: 99px; padding: 5px 8px; font-family: 'Space Mono', monospace;
+      font-size: 8px; font-weight: 700; letter-spacing: 0.04em; cursor: pointer;
+      text-transform: uppercase;
+    }
+    .yr-btn.primary { border-color: rgba(240,160,48,0.52); color: var(--gold); background: rgba(240,160,48,0.12); }
+    .yr-btn.danger { border-color: rgba(232,64,64,0.42); color: #ff8c8c; background: rgba(232,64,64,0.10); }
+    .yr-btn:disabled { opacity: 0.38; cursor: default; }
+    .yr-btn:active { transform: scale(0.97); }
+    @media (max-width: 640px){
+      #yellow-review-bar { top: 48px; gap: 5px; padding: 6px; }
+      .yr-count { max-width: 118px; overflow: hidden; text-overflow: ellipsis; }
+      .yr-btn { padding: 5px 7px; font-size: 7.5px; }
+    }
 
     #legend {
       position: fixed; bottom: 72px; left: 10px; z-index: 700;
