@@ -335,14 +335,13 @@ function renderZone(){
   dismissYellowRegionMenu();
   if(!validZone) return;
   const hard = stopRegionState?.hardUnion || validZone;
-  const greenFeatures = stopRegionState?.greenFeatures || geometryToPolygonFeatures(hard, {regionKind:'green'});
-  const yellowFeatures = stopRegionState?.yellowFeatures || [];
+  const greenDisplay = stopRegionState ? stopRegionState.greenUnion : hard;
+  const yellowDisplay = stopRegionState?.yellowUnion || null;
   const maskBase = INIT_POLY;
 
   try{ const mask=exactDiff(maskBase, hard); if(mask) maskLayer.addData(mask); }catch(e){}
-  if(yellowFeatures.length && softLayer) softLayer.addData(turf.featureCollection(yellowFeatures));
-  if(greenFeatures.length) borderLayer.addData(turf.featureCollection(greenFeatures));
-  else borderLayer.addData(hard);
+  if(yellowDisplay && softLayer) softLayer.addData(yellowDisplay);
+  if(greenDisplay) borderLayer.addData(greenDisplay);
   updateYellowSelectionOverlay();
   updateStat();
   updateYellowReviewBar();
