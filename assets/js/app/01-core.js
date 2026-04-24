@@ -271,10 +271,19 @@ function isYellowHardenConstraint(q){
   return !!(q && q.type === '_yellow_harden' && q.boundary_geojson);
 }
 
-function classifyStopConstraint(region, q){
+function isYellowKeepConstraint(q){
+  return !!(q && q.type === '_yellow_keep' && q.boundary_geojson);
+}
+
+function classifyStopConstraint(region, q, measureScope=null){
   const def = QDEFS[q.type];
   if(!def || !region) return {kind:'none', kept:region, excluded:null};
-  const kept = def.applyToZone(region, q);
+  let effectiveQ = q;
+  if(q.type === 'measure' && !q._constraint_union){
+    const union = buildMeasureConstraintUnion(q, measureScope);
+    if(union) effectiveQ = {...q, _constraint_union:union};
+  }
+  const kept = def.applyToZone(region, effectiveQ);
   if(!kept) return {kind:'hard', kept:null, excluded:region};
   const excluded = exactDiff(region, kept);
   if(!excluded) return {kind:'none', kept:region, excluded:null};
@@ -288,6 +297,7 @@ function deriveStopRegionStateFromConstraints(list){
   const byStop = {};
   const greenFeatures = [];
   const yellowFeatures = [];
+  const measureScope = baseEntries.reduce((acc, entry) => unionGeo(acc, entry.baseRegion), null);
   let hardUnion = null;
   let greenUnion = null;
   let yellowUnion = null;
@@ -303,8 +313,12 @@ function deriveStopRegionStateFromConstraints(list){
         if(yellowRegion) yellowRegion = hardRegion ? exactIsect(hardRegion, yellowRegion) : null;
         continue;
       }
+      if(isYellowKeepConstraint(q)){
+        if(yellowRegion) yellowRegion = exactDiff(yellowRegion, q.boundary_geojson);
+        continue;
+      }
       if(!isZoneConstraint(q)) continue;
-      const result = classifyStopConstraint(hardRegion, q);
+      const result = classifyStopConstraint(hardRegion, q, measureScope);
       if(result.kind === 'hard'){
         hardRegion = null;
         yellowRegion = null;
@@ -1048,7 +1062,8 @@ const QDEFS = {
     }),
     applyToZone:(zone,q)=>{
       try{
-        const union = q._constraint_union || buildMeasureConstraintUnion(q, zone);
+        const isLinear = ['An Amtrak Line','A Coastline','A Body of Water'].includes(q.category_label || q.category);
+        const union = q._constraint_union || buildMeasureConstraintUnion(q, isLinear ? null : zone);
         if(!union) return zone;
         if(q.answer==='closer' || q.answer==='higher') return safeIsect(zone, union);
         return safeDiff(zone, union);
@@ -1360,14 +1375,16 @@ function buildMeasureConstraintUnion(q, zone=null){
     }
 
     if(!Number.isFinite(q.seeker_dist)) return null;
+    const isLinear = ['An Amtrak Line','A Coastline','A Body of Water'].includes(q.category_label || q.category);
     let union = null;
     if(q.linear_features?.length){
+      const clipZone = q._linear_clip_zone || INIT_POLY;
       const buffered = q.linear_features
         .map(item => coerceFeature(item, item.name))
         .filter(Boolean)
         .map(feature => {
           try{
-            const clipped = clipFeatureToZone(feature, zone, q.seeker_dist);
+            const clipped = clipFeatureToZone(feature, clipZone, q.seeker_dist);
             const simplified = simplifyMeasureFeature(clipped, q);
             return turf.buffer(simplified, q.seeker_dist, {units:'miles'});
           }catch(e){ return null; }
@@ -1377,6 +1394,8 @@ function buildMeasureConstraintUnion(q, zone=null){
       for(let i=1;i<buffered.length;i++){
         try{ union = turf.union(union, buffered[i]) || union; }catch(e){}
       }
+    } else if(isLinear){
+      return null;
     } else if(q.all_instances?.length){
       const circles = q.all_instances.map(p=>makeCircle(p, q.seeker_dist, 'miles'));
       union = circles[0] || null;

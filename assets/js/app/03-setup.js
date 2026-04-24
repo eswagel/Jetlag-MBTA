@@ -67,6 +67,15 @@ function yellowFeatureKey(feature){
   return JSON.stringify(feature?.geometry || feature);
 }
 
+function yellowFeatureDescriptor(feature){
+  const stopId = feature?.properties?.stopId || null;
+  if(!stopId) return null;
+  const key = yellowFeatureKey(feature);
+  const sameStop = (stopRegionState?.yellowFeatures || []).filter(item => item?.properties?.stopId === stopId);
+  const index = sameStop.findIndex(item => yellowFeatureKey(item) === key);
+  return {stop_id:stopId, region_index:index >= 0 ? index : 0};
+}
+
 function isYellowFeatureSelected(feature){
   const key = yellowFeatureKey(feature);
   return _yellowSelectedFeatures.some(item => yellowFeatureKey(item) === key);
@@ -118,7 +127,8 @@ function updateYellowReviewBar(){
   if(_yellowMultiSelectActive){
     bar.innerHTML = `
       <span class="yr-count">${selected || 0} selected</span>
-      <button class="yr-btn primary" type="button" onclick="finishYellowMultiSelect()" ${selected ? '' : 'disabled'}>Make red</button>
+      <button class="yr-btn primary" type="button" onclick="finishYellowMultiSelect('green')" ${selected ? '' : 'disabled'}>Make green</button>
+      <button class="yr-btn danger" type="button" onclick="finishYellowMultiSelect('red')" ${selected ? '' : 'disabled'}>Make red</button>
       <button class="yr-btn" type="button" onclick="selectAllYellowRegions()">Select all</button>
       <button class="yr-btn" type="button" onclick="cancelYellowMultiSelect()">Cancel</button>
     `;
@@ -146,10 +156,7 @@ function hardenYellowFeatures(features){
   const count = chosen.length;
   const prevZone = validZone ? cloneGeo(validZone) : null;
   const prevStopRegionState = stopRegionState ? cloneForStorage(stopRegionState) : null;
-  const selectedYellow = chosen.map(feature => ({
-    stop_id: feature?.properties?.stopId || null,
-    geometry_key: yellowFeatureKey(feature),
-  })).filter(item => item.stop_id && item.geometry_key);
+  const selectedYellow = chosen.map(yellowFeatureDescriptor).filter(Boolean);
   constraints.push({
     type:'_yellow_harden',
     boundary_geojson: boundary,
@@ -172,11 +179,49 @@ function hardenYellowFeatures(features){
   }
 }
 
+function keepYellowFeatures(features){
+  const chosen = (features || []).filter(Boolean);
+  if(!chosen.length) return;
+  const boundary = buildYellowHardenBoundary(chosen);
+  if(!boundary){ toast('Could not read selected yellow region'); return; }
+  const count = chosen.length;
+  const prevZone = validZone ? cloneGeo(validZone) : null;
+  const prevStopRegionState = stopRegionState ? cloneForStorage(stopRegionState) : null;
+  const selectedYellow = chosen.map(yellowFeatureDescriptor).filter(Boolean);
+  constraints.push({
+    type:'_yellow_keep',
+    boundary_geojson: boundary,
+    selected_yellow:selectedYellow,
+    _label: count === 1 ? 'Future-possible region made green' : `${count} future-possible regions made green`,
+  });
+  if(syncZoneStateFromConstraints()){
+    _yellowMultiSelectActive = false;
+    _yellowSelectedFeatures = [];
+    updateYellowSelectionOverlay();
+    renderZone();
+    renderLog();
+    saveGame();
+    toast(count === 1 ? 'Future-possible region made green' : `${count} future-possible regions made green`);
+  }else{
+    constraints.pop();
+    validZone = prevZone;
+    stopRegionState = prevStopRegionState;
+    toast('Could not make future-possible region green');
+  }
+}
+
 function hardenPendingYellowRegion(){
   if(!_pendingYellowRegionFeature) return;
   const feature = cloneGeo(_pendingYellowRegionFeature);
   dismissYellowRegionMenu();
   hardenYellowFeatures([feature]);
+}
+
+function keepPendingYellowRegion(){
+  if(!_pendingYellowRegionFeature) return;
+  const feature = cloneGeo(_pendingYellowRegionFeature);
+  dismissYellowRegionMenu();
+  keepYellowFeatures([feature]);
 }
 
 function startYellowMultiSelect(){
@@ -200,11 +245,12 @@ function toggleYellowRegionSelection(feature){
   updateYellowReviewBar();
 }
 
-function finishYellowMultiSelect(){
+function finishYellowMultiSelect(action='red'){
   const selected = _yellowSelectedFeatures.map(cloneGeo);
   hideBanner();
   dismissYellowRegionMenu();
-  hardenYellowFeatures(selected);
+  if(action === 'green') keepYellowFeatures(selected);
+  else hardenYellowFeatures(selected);
 }
 
 function cancelYellowMultiSelect(){
@@ -242,6 +288,7 @@ function openYellowRegionMenu(latlng, feature){
         <div style="font-size:9px;color:var(--dim);line-height:1.55">
           This area is ruled out right now, but the stop is still future possible. You can make it red permanently.
         </div>
+        <button class="btn btn-sec yellow-region-menu-btn" type="button" onclick="keepPendingYellowRegion()">Make this green</button>
         <button class="btn btn-red yellow-region-menu-btn" type="button" onclick="hardenPendingYellowRegion()">Make this red</button>
         <button class="btn btn-ghost yellow-region-menu-btn" type="button" onclick="startYellowMultiSelect()">Select on map</button>
       </div>

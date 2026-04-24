@@ -840,6 +840,9 @@ function renderLog(){
     if(q.type === '_yellow_harden'){
       return `<div class="citem"><span class="ctag" style="background:rgba(232,64,64,0.15);color:var(--accent)">HARD</span><div class="cdesc"><b>${q._label || 'Yellow region made red'}</b></div>${delBtn}</div>`;
     }
+    if(q.type === '_yellow_keep'){
+      return `<div class="citem"><span class="ctag" style="background:rgba(24,176,80,0.15);color:var(--green)">GREEN</span><div class="cdesc"><b>${q._label || 'Future-possible region made green'}</b></div>${delBtn}</div>`;
+    }
     const def = QDEFS[q.type];
     return `<div class="citem"><span class="ctag ${def ? def.colorTag : 'tag-radar'}">${def ? def.label : q.type}</span><div class="cdesc">${def ? def.describe(q) : JSON.stringify(q)}</div>${delBtn}</div>`;
   }).join('');
@@ -864,15 +867,16 @@ function compactConstraintForExport(q){
   if(q.type === '_veto' || q.type === '_randomize_card'){
     return cloneForStorage(q);
   }
-  if(q.type === '_yellow_harden'){
+  if(q.type === '_yellow_harden' || q.type === '_yellow_keep'){
     const selected = Array.isArray(q.selected_yellow) ? q.selected_yellow.map(item => ({
       stop_id:item.stop_id,
-      geometry_key:item.geometry_key,
-    })).filter(item => item.stop_id && item.geometry_key) : [];
+      region_index:Number.isInteger(item.region_index) ? item.region_index : null,
+      ...(item.geometry_key ? {geometry_key:item.geometry_key} : {}),
+    })).filter(item => item.stop_id) : [];
     const compact = {
-      type:'_yellow_harden',
+      type:q.type,
       selected_yellow:selected,
-      _label:q._label || 'Yellow region made red',
+      _label:q._label || (q.type === '_yellow_keep' ? 'Future-possible region made green' : 'Yellow region made red'),
     };
     if(!selected.length && q.boundary_geojson) compact.boundary_geojson = cloneForStorage(q.boundary_geojson);
     return compact;
@@ -943,17 +947,18 @@ async function hydrateCompactLogConstraint(raw, index, prefix){
     if(Number.isFinite(Number(q.hide_radius_miles))) hideRadiusMi = Number(q.hide_radius_miles);
     return {type:'_setup', answer:q.answer || 'applied', _label:q._label || `Hide radius: ${hideRadiusMi} mi from any station`};
   }
-  if(q.type === '_yellow_harden'){
+  if(q.type === '_yellow_harden' || q.type === '_yellow_keep'){
     if(q.boundary_geojson) return q;
     const selected = Array.isArray(q.selected_yellow) ? q.selected_yellow : [];
     const state = deriveStopRegionStateFromConstraints(prefix);
     const yellowFeatures = state?.yellowFeatures || [];
     const features = selected.map(sel => {
       const sameStop = yellowFeatures.filter(feature => feature?.properties?.stopId === sel.stop_id);
+      if(Number.isInteger(sel.region_index) && sameStop[sel.region_index]) return sameStop[sel.region_index];
       return sameStop.find(feature => yellowFeatureKey(feature) === sel.geometry_key) || sameStop[0] || null;
     }).filter(Boolean);
     const boundary = buildYellowHardenBoundary(features);
-    if(!boundary) throw new Error('Could not rebuild yellow hardening selection');
+    if(!boundary) throw new Error('Could not rebuild future-possible selection');
     return {...q, boundary_geojson:boundary};
   }
   if(q.type === 'custom_boundary'){
