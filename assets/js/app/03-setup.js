@@ -337,7 +337,7 @@ function renderZone(){
   const hard = stopRegionState?.hardUnion || validZone;
   const greenFeatures = stopRegionState?.greenFeatures || geometryToPolygonFeatures(hard, {regionKind:'green'});
   const yellowFeatures = stopRegionState?.yellowFeatures || [];
-  const maskBase = buildHideRadiusZone() || INIT_POLY;
+  const maskBase = INIT_POLY;
 
   try{ const mask=exactDiff(maskBase, hard); if(mask) maskLayer.addData(mask); }catch(e){}
   if(yellowFeatures.length && softLayer) softLayer.addData(turf.featureCollection(yellowFeatures));
