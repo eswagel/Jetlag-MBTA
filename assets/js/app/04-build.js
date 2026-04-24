@@ -772,7 +772,7 @@ function syncCustomBoundaryPreview(){
       hint.className = 'simul-result-hint';
     }
     const msb = document.getElementById('msb-area');
-    if(msb) msb.innerHTML = 'green stays · red goes';
+    if(msb) msb.innerHTML = 'green keeps · yellow future possible · red cuts';
     return;
   }
   previewCustomBoundary(qparams.custom_boundary_mode);
@@ -2164,8 +2164,8 @@ function renderZonePreviewResult(result, label, color, shouldFit=true, answeredQ
   const previewQuestion = answeredQuestion || getLivePreviewQuestion() || currentBuiltQuestion;
   const previewState = previewQuestion ? deriveStopRegionStateFromConstraints([...constraints, previewQuestion]) : null;
   const hard = previewState?.hardUnion || result;
-  const greenFeatures = previewState?.greenFeatures || geometryToPolygonFeatures(hard, {regionKind:'green'});
-  const yellowFeatures = previewState?.yellowFeatures || [];
+  const greenDisplay = previewState ? previewState.greenUnion : hard;
+  const yellowDisplay = previewState?.yellowUnion || null;
   const eliminated = exactDiff(validZone, hard);
   setPreviewMapMode(true);
   if(tentaclePreviewLayer) tentaclePreviewLayer.clearLayers();
@@ -2177,24 +2177,20 @@ function renderZonePreviewResult(result, label, color, shouldFit=true, answeredQ
   simulMaskLayer.options.style = {
     color: '#ff6b6b', weight: 2, fillColor: '#ff5a5a', fillOpacity: 0.30, interactive: false
   };
-  if(greenFeatures.length) simulLayer.addData(turf.featureCollection(greenFeatures));
-  else simulLayer.addData(hard);
-  if(yellowFeatures.length && tentaclePreviewLayer){
+  if(greenDisplay) simulLayer.addData(greenDisplay);
+  if(yellowDisplay && tentaclePreviewLayer){
     tentaclePreviewLayer.addData({
-      type:'FeatureCollection',
-      features:yellowFeatures.map(feature => ({
-        ...cloneGeo(feature),
-        properties:{
-          ...(feature.properties || {}),
-          color:'#f0a030',
-          strokeColor:'#f0a030',
-          fillColor:'#f0a030',
-          fillOpacity:0.24,
-          weight:2,
-          opacity:0.95,
-          dashArray:'6 4',
-        },
-      })),
+      ...cloneGeo(yellowDisplay),
+      properties:{
+        ...(yellowDisplay.properties || {}),
+        color:'#f0a030',
+        strokeColor:'#f0a030',
+        fillColor:'#f0a030',
+        fillOpacity:0.24,
+        weight:2,
+        opacity:0.95,
+        dashArray:'6 4',
+      },
     });
   }
   if(eliminated) simulMaskLayer.addData(eliminated);
@@ -2205,13 +2201,11 @@ function renderZonePreviewResult(result, label, color, shouldFit=true, answeredQ
   const pctRemain = validZone ? Math.round(turf.area(hard)/turf.area(validZone)*100) : '?';
   const pctElim = typeof pctRemain === 'number' ? 100 - pctRemain : '?';
   if(hint){
-    hint.innerHTML = `<b>${label}:</b> ${area} km² remain <span style="color:${color}">(${pctElim}% eliminated)</span><br><span style="font-size:8px;color:var(--dim)">Green stays in play. Red is eliminated by this answer.</span>`;
     hint.className = 'simul-result-hint visible';
-    hint.innerHTML = `<b>${label}:</b> ${area} km² remain <span style="color:${color}">(${pctElim}% eliminated)</span><br><span style="font-size:8px;color:var(--dim)">Green is possible now. Yellow is temporary. Red is fully eliminated.</span>`;
+    hint.innerHTML = `<b>${label}:</b> ${area} km² remain <span style="color:${color}">(${pctElim}% eliminated)</span><br><span style="font-size:8px;color:var(--dim)">Green keeps. Yellow is future possible. Red cuts.</span>`;
   }
   const msb = document.getElementById('msb-area');
-  if(msb) msb.innerHTML = `<b style="color:var(--green)">${pctRemain}%</b> stays · <b style="color:#e84040">${pctElim}%</b> cut`;
-  if(msb) msb.innerHTML = `<b style="color:var(--green)">green</b> stays · <b style="color:var(--gold)">yellow</b> temporary · <b style="color:#e84040">red</b> cut`;
+  if(msb) msb.innerHTML = `<b style="color:var(--green)">green</b> keeps · <b style="color:var(--gold)">yellow</b> future possible · <b style="color:#e84040">red</b> cuts`;
   if(previewQuestion?.type === 'tentacles') document.getElementById('map-simul-bar').classList.remove('visible');
   else document.getElementById('map-simul-bar').classList.add('visible');
 }
@@ -2340,7 +2334,7 @@ function renderSimulBtns(json){
     container.innerHTML='';
     msbBtns.innerHTML='';
     bar.classList.remove('visible');
-    if(msbArea) msbArea.innerHTML = 'green stays · red goes';
+    if(msbArea) msbArea.innerHTML = 'green keeps · yellow future possible · red cuts';
     return;
   }
   if(question?.type === 'tentacles'){
@@ -2387,7 +2381,7 @@ function renderSimulBtns(json){
     if(mbtn) mbtn.classList.add('active');
     refreshActiveAnswerPreview();
   } else {
-    if(msbArea) msbArea.innerHTML = 'green stays · red goes';
+    if(msbArea) msbArea.innerHTML = 'green keeps · yellow future possible · red cuts';
   }
 }
 
@@ -2410,7 +2404,7 @@ function previewAnswer(val){
     }
     if(msbArea) msbArea.innerHTML = baseQuestion?.type === 'tentacles'
       ? 'tap a tentacle pin on the map'
-      : 'green stays · red goes';
+      : 'green keeps · yellow future possible · red cuts';
     return;
   }
 
@@ -2427,7 +2421,7 @@ function previewAnswer(val){
     }
     if(msbArea) msbArea.innerHTML = baseQuestion?.type === 'tentacles'
       ? 'tap a tentacle pin on the map'
-      : 'green stays · red goes';
+      : 'green keeps · yellow future possible · red cuts';
     return;
   }
 

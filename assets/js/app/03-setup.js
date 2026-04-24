@@ -124,7 +124,7 @@ function updateYellowReviewBar(){
     `;
   }else{
     bar.innerHTML = `
-      <span class="yr-count">${count} temporary</span>
+      <span class="yr-count">${count} future possible</span>
       <button class="yr-btn primary" type="button" onclick="startYellowMultiSelect()">Select</button>
       <button class="yr-btn danger" type="button" onclick="hardenAllYellowRegions()">All red</button>
     `;
@@ -226,7 +226,7 @@ function selectAllYellowRegions(){
 function hardenAllYellowRegions(){
   const features = stopRegionState?.yellowFeatures || [];
   if(!features.length) return;
-  const ok = window.confirm(`Make all ${features.length} temporary region${features.length === 1 ? '' : 's'} red?`);
+  const ok = window.confirm(`Make all ${features.length} future-possible region${features.length === 1 ? '' : 's'} red?`);
   if(!ok) return;
   hardenYellowFeatures(features);
 }
@@ -240,7 +240,7 @@ function openYellowRegionMenu(latlng, feature){
       <div class="stop-popup">
         <div class="stop-popup-name">Yellow Region</div>
         <div style="font-size:9px;color:var(--dim);line-height:1.55">
-          This area is ruled out right now, but the stop is still possible. You can make it red permanently.
+          This area is ruled out right now, but the stop is still future possible. You can make it red permanently.
         </div>
         <button class="btn btn-red yellow-region-menu-btn" type="button" onclick="hardenPendingYellowRegion()">Make this red</button>
         <button class="btn btn-ghost yellow-region-menu-btn" type="button" onclick="startYellowMultiSelect()">Select on map</button>
