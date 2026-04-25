@@ -75,10 +75,32 @@ async function resolveMeasureValue(question, loc){
   };
 }
 
+async function hydrateHiderQuestionContext(q){
+  if(!q || typeof q !== 'object' || !q.type) return q;
+  try{
+    if(q.type === 'matching' && (!q.boundary_geojson || !q.seeker_val) && typeof rebuildMatchingQuestion === 'function'){
+      return {...await rebuildMatchingQuestion(q), answer:q.answer, answer_label:q.answer_label};
+    }
+    if(q.type === 'nearest' && (!q.voronoi_geojson || !q.seeker_poi) && typeof rebuildNearestQuestion === 'function'){
+      return {...await rebuildNearestQuestion(q), answer:q.answer, answer_label:q.answer_label};
+    }
+    if(q.type === 'measure' && (
+      (q.mode === 'elevation' && !Number.isFinite(Number(q.seeker_elevation_ft))) ||
+      (q.mode !== 'elevation' && q.seeker_dist == null)
+    ) && typeof rebuildMeasureQuestion === 'function'){
+      return {...await rebuildMeasureQuestion(q), answer:q.answer, answer_label:q.answer_label};
+    }
+  }catch(e){
+    console.warn('Could not hydrate compact hider question', e);
+  }
+  return q;
+}
+
 async function hiderLoadQuestion(){
   const raw = document.getElementById('hider-json-in').value.trim();
   if(!raw){ toast('Paste a question JSON first'); return; }
   let q; try{ q=JSON.parse(raw); }catch(e){ toast('Invalid JSON'); return; }
+  q = await hydrateHiderQuestionContext(q);
   if(q?.type === 'tentacles'){
     const center = normalizeLatLng(q.center);
     const radius = Number(q.radius_miles || 1);

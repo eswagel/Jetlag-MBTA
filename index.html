@@ -89,19 +89,17 @@
 
 <div id="zone-key">
   <div class="zk-item"><div class="zk-swatch zk-valid"></div><span>Still In Play</span></div>
+  <div class="zk-item"><div class="zk-swatch zk-temp"></div><span>Future Possible</span></div>
   <div class="zk-item"><div class="zk-swatch zk-elim"></div><span>Eliminated</span></div>
   <span id="zone-area"></span>
 </div>
+<div id="yellow-review-bar"></div>
 
 <div id="legend">
-  <div class="leg-row"><div class="leg-line" style="background:#DA291C"></div>Red · Ashmont</div>
-  <div class="leg-row"><div class="leg-line" style="background:#DA291C;opacity:0.6"></div>Red · Braintree</div>
+  <div class="leg-row"><div class="leg-line" style="background:#DA291C"></div>Red (Ashmont/Braintree)</div>
   <div class="leg-row"><div class="leg-line" style="background:#ED8B00"></div>Orange</div>
   <div class="leg-row"><div class="leg-line" style="background:#003DA5"></div>Blue</div>
-  <div class="leg-row"><div class="leg-line" style="background:#00843D"></div>Green B</div>
-  <div class="leg-row"><div class="leg-line" style="background:#00843D;opacity:0.78"></div>Green C</div>
-  <div class="leg-row"><div class="leg-line" style="background:#00843D;opacity:0.6"></div>Green D</div>
-  <div class="leg-row"><div class="leg-line" style="background:#00843D;opacity:0.45"></div>Green E</div>
+  <div class="leg-row"><div class="leg-line" style="background:#00843D"></div>Green (B/C/D/E)</div>
   <div class="leg-row"><div class="leg-line" style="background:#DA291C;opacity:0.4;border-top:2px dashed #DA291C;background:none"></div>Mattapan</div>
   <div id="leg-status" class="leg-row" style="color:#f0a030;font-size:7px;margin-top:2px">⟳ Loading…</div>
 </div>
@@ -114,8 +112,9 @@
   <div id="msb-btns"></div>
   <div class="msb-divider"></div>
   <div id="msb-key" class="msb-key">
-    <span class="msb-key-item" style="color:#72df93"><span class="msb-swatch msb-swatch-keep" style="background:rgba(24,176,80,0.42);border:1.5px solid #4fe07c"></span>keeps</span>
-    <span class="msb-key-item" style="color:#ff7a7a"><span class="msb-swatch msb-swatch-cut" style="background:rgba(232,64,64,0.42);border:1.5px solid #ff6b6b"></span>cuts</span>
+    <span class="msb-key-item msb-key-item-keep"><span class="msb-swatch msb-swatch-keep"></span>keeps</span>
+    <span class="msb-key-item msb-key-item-cut"><span class="msb-swatch msb-swatch-cut"></span>cuts</span>
+    <span class="msb-key-item msb-key-item-future" tabindex="0" title="Future possible: ruled out by this answer for now, but its stop is not fully eliminated and could become possible after the hider moves." data-tooltip="Ruled out now, but the stop remains possible later."><span class="msb-swatch msb-swatch-future"></span>future possible</span>
   </div>
   <div class="msb-divider"></div>
   <div class="msb-area" id="msb-area">tap to preview</div>

@@ -6,6 +6,7 @@ function selectRadius(el){
   el.classList.add('selected');
   hideRadiusMi = parseFloat(el.dataset.mi);
   _hideRadiusZoneCache = { miles: null, stopCount: 0, zone: null };
+  if(typeof resetStopRegionCache === 'function') resetStopRegionCache();
 }
 
 function startGame(){
@@ -34,6 +35,291 @@ function promptHiderStationPick(){
 }
 
 let _hideRadiusZoneCache = { miles: null, stopCount: 0, zone: null };
+let _pendingYellowRegionFeature = null;
+let _yellowMultiSelectActive = false;
+let _yellowSelectedFeatures = [];
+
+function canSelectYellowRegions(){
+  const setupOverlay = document.getElementById('setup-overlay');
+  if(setupOverlay && !setupOverlay.classList.contains('hidden')) return false;
+  if(_pickingHiderStation) return false;
+  if(typeof _hiderPickingLocation !== 'undefined' && _hiderPickingLocation) return false;
+  if(qtype === 'custom_boundary' && qparams._drawingBoundary) return false;
+  if(pickStep >= 0 && pickStep < pickStepDefs.length) return false;
+  return !!stopRegionState?.yellowFeatures?.length;
+}
+
+function findYellowRegionFeatureAtLatLng(latlng){
+  if(!canSelectYellowRegions()) return null;
+  const pt = turf.point([latlng.lng, latlng.lat]);
+  return (stopRegionState?.yellowFeatures || []).find(feature => {
+    try{ return turf.booleanPointInPolygon(pt, feature); }
+    catch(e){ return false; }
+  }) || null;
+}
+
+function dismissYellowRegionMenu(){
+  _pendingYellowRegionFeature = null;
+  if(map) map.closePopup();
+}
+
+function yellowFeatureKey(feature){
+  return JSON.stringify(feature?.geometry || feature);
+}
+
+function yellowFeatureDescriptor(feature){
+  const stopId = feature?.properties?.stopId || null;
+  if(!stopId) return null;
+  const key = yellowFeatureKey(feature);
+  const sameStop = (stopRegionState?.yellowFeatures || []).filter(item => item?.properties?.stopId === stopId);
+  const index = sameStop.findIndex(item => yellowFeatureKey(item) === key);
+  return {stop_id:stopId, region_index:index >= 0 ? index : 0};
+}
+
+function isYellowFeatureSelected(feature){
+  const key = yellowFeatureKey(feature);
+  return _yellowSelectedFeatures.some(item => yellowFeatureKey(item) === key);
+}
+
+function updateYellowSelectionOverlay(){
+  if(tentaclePreviewLayer) tentaclePreviewLayer.clearLayers();
+  if(yellowSelectLayer) yellowSelectLayer.clearLayers();
+
+  const yellowFeatures = stopRegionState?.yellowFeatures || [];
+  if(_yellowMultiSelectActive && yellowSelectLayer && yellowFeatures.length){
+    yellowSelectLayer.addData(turf.featureCollection(yellowFeatures));
+    if(yellowSelectLayer.bringToFront) yellowSelectLayer.bringToFront();
+  }
+
+  if(!tentaclePreviewLayer || !_yellowSelectedFeatures.length) return;
+  tentaclePreviewLayer.addData({
+    type:'FeatureCollection',
+    features:_yellowSelectedFeatures.map(feature => ({
+      ...cloneGeo(feature),
+      properties:{
+        ...(feature.properties || {}),
+        color:'#ffcf5a',
+        strokeColor:'#ffcf5a',
+        fillColor:'#ffcf5a',
+        fillOpacity:0.38,
+        weight:3,
+        opacity:1,
+      },
+    })),
+  });
+}
+
+function getYellowRegionCount(){
+  return stopRegionState?.yellowFeatures?.length || 0;
+}
+
+function updateYellowReviewBar(){
+  const bar = document.getElementById('yellow-review-bar');
+  if(!bar) return;
+  const count = getYellowRegionCount();
+  if(!count){
+    bar.classList.remove('visible');
+    bar.innerHTML = '';
+    if(_yellowMultiSelectActive) cancelYellowMultiSelect();
+    return;
+  }
+  const selected = _yellowSelectedFeatures.length;
+  if(_yellowMultiSelectActive){
+    bar.innerHTML = `
+      <span class="yr-count">${selected || 0} selected</span>
+      <button class="yr-btn primary" type="button" onclick="finishYellowMultiSelect('green')" ${selected ? '' : 'disabled'}>Make green</button>
+      <button class="yr-btn danger" type="button" onclick="finishYellowMultiSelect('red')" ${selected ? '' : 'disabled'}>Make red</button>
+      <button class="yr-btn" type="button" onclick="selectAllYellowRegions()">Select all</button>
+      <button class="yr-btn" type="button" onclick="cancelYellowMultiSelect()">Cancel</button>
+    `;
+  }else{
+    bar.innerHTML = `
+      <span class="yr-count">${count} future possible</span>
+      <button class="yr-btn primary" type="button" onclick="startYellowMultiSelect()">Select</button>
+      <button class="yr-btn" type="button" onclick="keepAllYellowRegions()">All green</button>
+      <button class="yr-btn danger" type="button" onclick="hardenAllYellowRegions()">All red</button>
+    `;
+  }
+  bar.classList.add('visible');
+}
+
+function buildYellowHardenBoundary(features){
+  let union = null;
+  features.forEach(feature => { union = unionGeo(union, feature); });
+  return union;
+}
+
+function hardenYellowFeatures(features){
+  const chosen = (features || []).filter(Boolean);
+  if(!chosen.length) return;
+  const boundary = buildYellowHardenBoundary(chosen);
+  if(!boundary){ toast('Could not read selected yellow region'); return; }
+  const count = chosen.length;
+  const prevZone = validZone ? cloneGeo(validZone) : null;
+  const prevStopRegionState = stopRegionState ? cloneForStorage(stopRegionState) : null;
+  const selectedYellow = chosen.map(yellowFeatureDescriptor).filter(Boolean);
+  constraints.push({
+    type:'_yellow_harden',
+    boundary_geojson: boundary,
+    selected_yellow:selectedYellow,
+    _label: count === 1 ? 'Yellow region made red' : `${count} yellow regions made red`,
+  });
+  if(syncZoneStateFromConstraints()){
+    _yellowMultiSelectActive = false;
+    _yellowSelectedFeatures = [];
+    updateYellowSelectionOverlay();
+    renderZone();
+    renderLog();
+    saveGame();
+    toast(count === 1 ? 'Yellow region made red' : `${count} yellow regions made red`);
+  }else{
+    constraints.pop();
+    validZone = prevZone;
+    stopRegionState = prevStopRegionState;
+    toast('Could not make yellow region red');
+  }
+}
+
+function keepYellowFeatures(features){
+  const chosen = (features || []).filter(Boolean);
+  if(!chosen.length) return;
+  const boundary = buildYellowHardenBoundary(chosen);
+  if(!boundary){ toast('Could not read selected yellow region'); return; }
+  const count = chosen.length;
+  const prevZone = validZone ? cloneGeo(validZone) : null;
+  const prevStopRegionState = stopRegionState ? cloneForStorage(stopRegionState) : null;
+  const selectedYellow = chosen.map(yellowFeatureDescriptor).filter(Boolean);
+  constraints.push({
+    type:'_yellow_keep',
+    boundary_geojson: boundary,
+    selected_yellow:selectedYellow,
+    _label: count === 1 ? 'Future-possible region made green' : `${count} future-possible regions made green`,
+  });
+  if(syncZoneStateFromConstraints()){
+    _yellowMultiSelectActive = false;
+    _yellowSelectedFeatures = [];
+    updateYellowSelectionOverlay();
+    renderZone();
+    renderLog();
+    saveGame();
+    toast(count === 1 ? 'Future-possible region made green' : `${count} future-possible regions made green`);
+  }else{
+    constraints.pop();
+    validZone = prevZone;
+    stopRegionState = prevStopRegionState;
+    toast('Could not make future-possible region green');
+  }
+}
+
+function hardenPendingYellowRegion(){
+  if(!_pendingYellowRegionFeature) return;
+  const feature = cloneGeo(_pendingYellowRegionFeature);
+  dismissYellowRegionMenu();
+  hardenYellowFeatures([feature]);
+}
+
+function keepPendingYellowRegion(){
+  if(!_pendingYellowRegionFeature) return;
+  const feature = cloneGeo(_pendingYellowRegionFeature);
+  dismissYellowRegionMenu();
+  keepYellowFeatures([feature]);
+}
+
+function startYellowMultiSelect(){
+  if(!canSelectYellowRegions()) return;
+  _yellowMultiSelectActive = true;
+  _yellowSelectedFeatures = _pendingYellowRegionFeature ? [cloneGeo(_pendingYellowRegionFeature)] : [];
+  _pendingYellowRegionFeature = null;
+  dismissYellowRegionMenu();
+  updateYellowSelectionOverlay();
+  updateYellowReviewBar();
+}
+
+function toggleYellowRegionSelection(feature){
+  const key = yellowFeatureKey(feature);
+  const existing = _yellowSelectedFeatures.findIndex(item => yellowFeatureKey(item) === key);
+  if(existing >= 0 && _yellowSelectedFeatures.length > 1) _yellowSelectedFeatures.splice(existing, 1);
+  else if(existing < 0){
+    _yellowSelectedFeatures.push(cloneGeo(feature));
+  }
+  updateYellowSelectionOverlay();
+  updateYellowReviewBar();
+}
+
+function finishYellowMultiSelect(action='red'){
+  const selected = _yellowSelectedFeatures.map(cloneGeo);
+  hideBanner();
+  dismissYellowRegionMenu();
+  if(action === 'green') keepYellowFeatures(selected);
+  else hardenYellowFeatures(selected);
+}
+
+function cancelYellowMultiSelect(){
+  _yellowMultiSelectActive = false;
+  _yellowSelectedFeatures = [];
+  updateYellowSelectionOverlay();
+  hideBanner();
+  dismissYellowRegionMenu();
+  updateYellowReviewBar();
+}
+
+function selectAllYellowRegions(){
+  if(!_yellowMultiSelectActive) return;
+  _yellowSelectedFeatures = (stopRegionState?.yellowFeatures || []).map(cloneGeo);
+  updateYellowSelectionOverlay();
+  updateYellowReviewBar();
+}
+
+function hardenAllYellowRegions(){
+  const features = stopRegionState?.yellowFeatures || [];
+  if(!features.length) return;
+  const ok = window.confirm(`Make all ${features.length} future-possible region${features.length === 1 ? '' : 's'} red?`);
+  if(!ok) return;
+  hardenYellowFeatures(features);
+}
+
+function keepAllYellowRegions(){
+  const features = stopRegionState?.yellowFeatures || [];
+  if(!features.length) return;
+  const ok = window.confirm(`Make all ${features.length} future-possible region${features.length === 1 ? '' : 's'} green?`);
+  if(!ok) return;
+  keepYellowFeatures(features);
+}
+
+function openYellowRegionMenu(latlng, feature){
+  if(!map || !feature) return;
+  _pendingYellowRegionFeature = cloneGeo(feature);
+  L.popup({closeButton:true, autoPan:true, offset:[0, -4]})
+    .setLatLng(latlng)
+    .setContent(`
+      <div class="stop-popup">
+        <div class="stop-popup-name">Yellow Region</div>
+        <div style="font-size:9px;color:var(--dim);line-height:1.55">
+          This area is ruled out right now, but the stop is still future possible. You can make it red permanently.
+        </div>
+        <button class="btn btn-sec yellow-region-menu-btn" type="button" onclick="keepPendingYellowRegion()">Make this green</button>
+        <button class="btn btn-red yellow-region-menu-btn" type="button" onclick="hardenPendingYellowRegion()">Make this red</button>
+        <button class="btn btn-ghost yellow-region-menu-btn" type="button" onclick="startYellowMultiSelect()">Select on map</button>
+      </div>
+    `)
+    .openOn(map);
+}
+
+function handleYellowRegionTap(latlng){
+  const feature = findYellowRegionFeatureAtLatLng(latlng);
+  if(!feature) return false;
+  if(_yellowMultiSelectActive){
+    toggleYellowRegionSelection(feature);
+    return true;
+  }
+  openYellowRegionMenu(latlng, feature);
+  return true;
+}
+
+function handleYellowSelectionFeatureClick(feature){
+  if(!_yellowMultiSelectActive) return;
+  toggleYellowRegionSelection(feature);
+}
 
 function buildHideRadiusZone(){
   const stops = Object.values(stopLineMap);
@@ -87,6 +373,7 @@ function applyHideRadius(){
     answer:'applied',
     _label:`Hide radius: ${hideRadiusMi < 1 ? (hideRadiusMi*5280).toFixed(0)+' ft' : hideRadiusMi+' mi'} from any station`
   }];
+  syncZoneStateFromConstraints();
   renderZone();
   renderLog();
   const km2 = (turf.area(validZone)/1e6).toFixed(1);
@@ -99,17 +386,26 @@ function applyHideRadius(){
 // ══════════════════════════════════════════════════════
 function renderZone(){
   maskLayer.clearLayers();
+  if(softLayer) softLayer.clearLayers();
   borderLayer.clearLayers();
+  dismissYellowRegionMenu();
   if(!validZone) return;
-  // Red tinted mask = everything OUTSIDE valid zone
-  try{ const mask=turf.difference(INIT_POLY,validZone); if(mask) maskLayer.addData(mask); }catch(e){}
-  // Green outline = valid zone
-  borderLayer.addData(validZone);
+  const hard = stopRegionState?.hardUnion || validZone;
+  const greenDisplay = stopRegionState ? stopRegionState.greenUnion : hard;
+  const yellowDisplay = stopRegionState?.yellowUnion || null;
+  const maskBase = INIT_POLY;
+
+  try{ const mask=exactDiff(maskBase, hard); if(mask) maskLayer.addData(mask); }catch(e){}
+  if(yellowDisplay && softLayer) softLayer.addData(yellowDisplay);
+  if(greenDisplay) borderLayer.addData(greenDisplay);
+  updateYellowSelectionOverlay();
   updateStat();
+  updateYellowReviewBar();
 }
 
 function updateStat(){
-  const km2=validZone?(turf.area(validZone)/1e6).toFixed(1):'0';
+  const hard = stopRegionState?.hardUnion || validZone;
+  const km2=hard?(turf.area(hard)/1e6).toFixed(1):'0';
   document.getElementById('zone-stat').textContent=`${km2} km²`;
   document.getElementById('zone-area').textContent=`${km2} km² in play`;
 }
@@ -117,6 +413,7 @@ function updateStat(){
 function resetZone(){
   applyHideRadius();
   clearSave();
+  cancelYellowMultiSelect();
   toast('Zone reset to hide-radius area');
 }
 
@@ -162,6 +459,7 @@ function onMapClick(e){
     updatePreview();
     return;
   }
+  if(handleYellowRegionTap(e.latlng)) return;
   if(pickStep<0||pickStep>=pickStepDefs.length) return;
   const {lat,lng}=e.latlng;
   applyPickedPoint(lat, lng);

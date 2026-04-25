@@ -772,7 +772,7 @@ function syncCustomBoundaryPreview(){
       hint.className = 'simul-result-hint';
     }
     const msb = document.getElementById('msb-area');
-    if(msb) msb.innerHTML = 'green stays · red goes';
+    if(msb) msb.innerHTML = 'green keeps · yellow future possible · red cuts';
     return;
   }
   previewCustomBoundary(qparams.custom_boundary_mode);
@@ -2158,12 +2158,17 @@ function clearZonePreview(){
   setPreviewMapMode(false);
 }
 
-function renderZonePreviewResult(result, label, color, shouldFit=true){
+function renderZonePreviewResult(result, label, color, shouldFit=true, answeredQuestion=null){
   if(!result) return;
   const hint = document.getElementById('simul-hint');
-  const previewQuestion = getLivePreviewQuestion() || currentBuiltQuestion;
-  const eliminated = safeDiff(validZone, result);
+  const previewQuestion = answeredQuestion || getLivePreviewQuestion() || currentBuiltQuestion;
+  const previewState = previewQuestion ? deriveStopRegionStateFromConstraints([...constraints, previewQuestion]) : null;
+  const hard = previewState?.hardUnion || result;
+  const greenDisplay = previewState ? previewState.greenUnion : hard;
+  const yellowDisplay = previewState?.yellowUnion || null;
+  const eliminated = exactDiff(validZone, hard);
   setPreviewMapMode(true);
+  if(tentaclePreviewLayer) tentaclePreviewLayer.clearLayers();
   simulLayer.clearLayers();
   simulMaskLayer.clearLayers();
   simulLayer.options.style = {
@@ -2172,20 +2177,35 @@ function renderZonePreviewResult(result, label, color, shouldFit=true){
   simulMaskLayer.options.style = {
     color: '#ff6b6b', weight: 2, fillColor: '#ff5a5a', fillOpacity: 0.30, interactive: false
   };
-  simulLayer.addData(result);
+  if(greenDisplay) simulLayer.addData(greenDisplay);
+  if(yellowDisplay && tentaclePreviewLayer){
+    tentaclePreviewLayer.addData({
+      ...cloneGeo(yellowDisplay),
+      properties:{
+        ...(yellowDisplay.properties || {}),
+        color:'#f0a030',
+        strokeColor:'#f0a030',
+        fillColor:'#f0a030',
+        fillOpacity:0.24,
+        weight:2,
+        opacity:0.95,
+        dashArray:'6 4',
+      },
+    });
+  }
   if(eliminated) simulMaskLayer.addData(eliminated);
   if(shouldFit){
-    try{ map.fitBounds(L.geoJSON(result).getBounds().pad(0.12)); }catch(e){}
+    try{ map.fitBounds(L.geoJSON(hard).getBounds().pad(0.12)); }catch(e){}
   }
-  const area = (turf.area(result)/1e6).toFixed(1);
-  const pctRemain = validZone ? Math.round(turf.area(result)/turf.area(validZone)*100) : '?';
+  const area = (turf.area(hard)/1e6).toFixed(1);
+  const pctRemain = validZone ? Math.round(turf.area(hard)/turf.area(validZone)*100) : '?';
   const pctElim = typeof pctRemain === 'number' ? 100 - pctRemain : '?';
   if(hint){
-    hint.innerHTML = `<b>${label}:</b> ${area} km² remain <span style="color:${color}">(${pctElim}% eliminated)</span><br><span style="font-size:8px;color:var(--dim)">Green stays in play. Red is eliminated by this answer.</span>`;
     hint.className = 'simul-result-hint visible';
+    hint.innerHTML = `<b>${label}:</b> ${area} km² remain <span style="color:${color}">(${pctElim}% eliminated)</span><br><span style="font-size:8px;color:var(--dim)">Green keeps. Yellow is future possible. Red cuts.</span>`;
   }
   const msb = document.getElementById('msb-area');
-  if(msb) msb.innerHTML = `<b style="color:var(--green)">${pctRemain}%</b> stays · <b style="color:#e84040">${pctElim}%</b> cut`;
+  if(msb) msb.innerHTML = `<b style="color:var(--green)">green</b> keeps · <b style="color:var(--gold)">yellow</b> future possible · <b style="color:#e84040">red</b> cuts`;
   if(previewQuestion?.type === 'tentacles') document.getElementById('map-simul-bar').classList.remove('visible');
   else document.getElementById('map-simul-bar').classList.add('visible');
 }
@@ -2279,7 +2299,7 @@ function refreshActiveAnswerPreview(){
     const q = {...liveQ, answer:_simulActive, answer_label: opt.label};
     const result = def.applyToZone(validZone, q);
     if(!result) return;
-    renderZonePreviewResult(result, `${opt.icon} ${opt.label}`, opt.color, false);
+    renderZonePreviewResult(result, `${opt.icon} ${opt.label}`, opt.color, false, q);
   }catch(e){}
 }
 
@@ -2314,7 +2334,7 @@ function renderSimulBtns(json){
     container.innerHTML='';
     msbBtns.innerHTML='';
     bar.classList.remove('visible');
-    if(msbArea) msbArea.innerHTML = 'green stays · red goes';
+    if(msbArea) msbArea.innerHTML = 'green keeps · yellow future possible · red cuts';
     return;
   }
   if(question?.type === 'tentacles'){
@@ -2361,7 +2381,7 @@ function renderSimulBtns(json){
     if(mbtn) mbtn.classList.add('active');
     refreshActiveAnswerPreview();
   } else {
-    if(msbArea) msbArea.innerHTML = 'green stays · red goes';
+    if(msbArea) msbArea.innerHTML = 'green keeps · yellow future possible · red cuts';
   }
 }
 
@@ -2384,7 +2404,7 @@ function previewAnswer(val){
     }
     if(msbArea) msbArea.innerHTML = baseQuestion?.type === 'tentacles'
       ? 'tap a tentacle pin on the map'
-      : 'green stays · red goes';
+      : 'green keeps · yellow future possible · red cuts';
     return;
   }
 
@@ -2401,7 +2421,7 @@ function previewAnswer(val){
     }
     if(msbArea) msbArea.innerHTML = baseQuestion?.type === 'tentacles'
       ? 'tap a tentacle pin on the map'
-      : 'green stays · red goes';
+      : 'green keeps · yellow future possible · red cuts';
     return;
   }
 
@@ -2424,7 +2444,7 @@ function previewAnswer(val){
         const q = opt ? {...baseQ, answer: val, answer_label: opt.label} : {...baseQ, answer: val};
         const result = def.applyToZone(validZone, q);
         if(!result){ toast('Nothing left in zone for this answer'); return; }
-        renderZonePreviewResult(result, opt ? `${opt.icon} ${opt.label}` : val, col);
+        renderZonePreviewResult(result, opt ? `${opt.icon} ${opt.label}` : val, col, true, q);
       }catch(e){
         toast('Preview error: '+e.message);
       }
@@ -2485,11 +2505,13 @@ function applyCustomBoundary(){
     type:'custom_boundary',
     boundary_geojson: poly,
     mode: qparams.custom_boundary_mode,
+    points: (qparams.custom_boundary_points || []).map(p => ({lat:p.lat, lng:p.lng})),
   };
   const nz = QDEFS.custom_boundary.applyToZone(validZone, q);
   if(!nz){ toast('Zone empty — contradiction?'); return; }
   validZone = nz;
   constraints.push(q);
+  syncZoneStateFromConstraints();
   renderZone();
   renderLog();
   saveGame();
@@ -2499,7 +2521,20 @@ function applyCustomBoundary(){
 }
 
 function copyQ(){
-  navigator.clipboard.writeText(document.getElementById('json-out').value).then(()=>{
+  const out = document.getElementById('json-out');
+  let text = out.value;
+  try{
+    const parsed = JSON.parse(text);
+    const source = currentBuiltQuestion?.id && currentBuiltQuestion.id === parsed?.id
+      ? currentBuiltQuestion
+      : parsed;
+    const compact = buildQuestionPacket(source);
+    if(compact){
+      text = JSON.stringify(compact, null, 2);
+      out.value = text;
+    }
+  }catch(e){}
+  navigator.clipboard.writeText(text).then(()=>{
     const fl=document.getElementById('cf');fl.classList.add('on');setTimeout(()=>fl.classList.remove('on'),2200);
     toast('Copied! Send to your friend.');
   }).catch(()=>toast('Tap the text area and copy manually'));

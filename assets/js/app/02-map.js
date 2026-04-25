@@ -10,6 +10,9 @@ function initMap(){
   }).addTo(map);
 
   L.control.zoom({position:'topleft'}).addTo(map);
+  map.createPane('yellowSelectPane');
+  map.getPane('yellowSelectPane').style.zIndex = 650;
+  map.getPane('yellowSelectPane').style.pointerEvents = 'auto';
 
   // ── Administrative boundary layers (below zone) ──
   countyLayer = L.geoJSON(null,{interactive:false,style:{
@@ -25,6 +28,29 @@ function initMap(){
 
   // Zone layers behind T lines
   maskLayer  =L.geoJSON(null,{interactive:false,style:{color:'transparent',weight:0,fillColor:'#cc1010',fillOpacity:0.42}}).addTo(map);
+  softLayer  =L.geoJSON(null,{interactive:false,style:{color:'#f0a030',weight:2,fillColor:'#f0a030',fillOpacity:0.24,dashArray:'6 4'}}).addTo(map);
+  yellowSelectLayer=L.geoJSON(null,{
+    pane:'yellowSelectPane',
+    interactive:true,
+    style:feature=>{
+      const selected = typeof isYellowFeatureSelected === 'function' && isYellowFeatureSelected(feature);
+      return {
+        color:selected ? '#ffe27a' : '#ffc04a',
+        weight:selected ? 4 : 2.5,
+        fillColor:selected ? '#ffcf5a' : '#f0a030',
+        fillOpacity:selected ? 0.38 : 0.22,
+        dashArray:selected ? null : '6 4',
+      };
+    },
+    onEachFeature:(feature, layer)=>{
+      layer.on('click', e=>{
+        L.DomEvent.stop(e);
+        if(typeof handleYellowSelectionFeatureClick === 'function'){
+          handleYellowSelectionFeatureClick(feature);
+        }
+      });
+    },
+  }).addTo(map);
   borderLayer=L.geoJSON(null,{interactive:false,style:{color:'#18b050',weight:3,fillColor:'#18b050',fillOpacity:0.10,dashArray:'7 4'}}).addTo(map);
 
   radiusLayer = L.layerGroup().addTo(map);
