@@ -3,20 +3,17 @@
 Generate runtime landmass data from hand-drawn gameplay regions.
 
 Input:
-- data/landmass-regions.geojson
-  Contains three polygons:
-  - Across the Mystic
-  - Across the Charles
-  - Across the Neponset
+- data/landmass-regions.geojson (hand-drawn priors)
+- data/boundaries.json (municipal polygons with coastline/river-aware boundaries)
+- data/mbta-data.json (stop locations)
 
 Output:
 - data/landmasses.json
-  Contains those three regions plus a synthetic Mainland Boston fallback
-  and a stop -> region assignment map for the browser app.
+  Cached runtime payload with polygons + stop -> region assignment.
 """
 
 import json
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 from shapely.geometry import GeometryCollection, MultiPolygon, Point, Polygon, mapping, shape
@@ -29,6 +26,9 @@ SOURCE = ROOT / "data" / "landmass-regions.geojson"
 OUTPUT = ROOT / "data" / "landmasses.json"
 
 SIMPLIFY_TOLERANCE = 0.0003
+PRIOR_BUFFER_DEG = 0.0025
+OVERLAP_WEIGHT = 1.0
+STOP_WEIGHT = 0.35
 MAINLAND_ID = 3
 MAINLAND_NAME = "Mainland Boston"
 EXPECTED_SOURCE_REGIONS = [
@@ -36,6 +36,31 @@ EXPECTED_SOURCE_REGIONS = [
     {"id": 1, "name": "Across the Charles"},
     {"id": 2, "name": "Across the Neponset"},
 ]
+
+
+def polygonal_part(geom):
+    if isinstance(geom, (Polygon, MultiPolygon)):
+        return geom
+    if isinstance(geom, GeometryCollection):
+        polys = [part for part in geom.geoms if isinstance(part, (Polygon, MultiPolygon))]
+        if not polys:
+            return None
+        return unary_union(polys)
+    return None
+
+
+def clean_polygonal(geom):
+    if geom is None:
+        return None
+    poly = polygonal_part(geom)
+    if poly is None or poly.is_empty:
+        return None
+    if not poly.is_valid:
+        poly = poly.buffer(0)
+    poly = polygonal_part(poly)
+    if poly is None or poly.is_empty:
+        return None
+    return poly.simplify(SIMPLIFY_TOLERANCE, preserve_topology=True)
 
 
 def load_source_regions():
@@ -49,14 +74,9 @@ def load_source_regions():
 
     regions = []
     for idx, (feature, expected) in enumerate(zip(features, EXPECTED_SOURCE_REGIONS)):
-        geom = shape(feature["geometry"])
-        if not isinstance(geom, (Polygon, MultiPolygon)):
-            raise RuntimeError(f"Source feature {idx} must be Polygon or MultiPolygon")
-        if not geom.is_valid:
-            geom = geom.buffer(0)
-        geom = geom.simplify(SIMPLIFY_TOLERANCE, preserve_topology=True)
-        if not geom.is_valid:
-            geom = geom.buffer(0)
+        geom = clean_polygonal(shape(feature["geometry"]))
+        if geom is None:
+            raise RuntimeError(f"Source feature {idx} has no polygonal geometry")
         regions.append(
             {
                 "id": expected["id"],
@@ -76,9 +96,9 @@ def load_city_polygons():
         if not name or not geom:
             continue
         try:
-            city_geom = shape(geom)
-            if not city_geom.is_valid:
-                city_geom = city_geom.buffer(0)
+            city_geom = clean_polygonal(shape(geom))
+            if city_geom is None:
+                continue
             cities[name] = city_geom
         except Exception as exc:
             print(f"  Warning: could not parse geometry for {name}: {exc}")
@@ -102,15 +122,6 @@ def load_stops():
     return list(seen.values())
 
 
-def assign_region_id(stop, explicit_regions):
-    pt = Point(stop["lng"], stop["lat"])
-    for region in explicit_regions:
-        geom = region["geometry"]
-        if geom.contains(pt) or geom.touches(pt):
-            return region["id"]
-    return MAINLAND_ID
-
-
 def containing_city_name(stop, city_polygons):
     pt = Point(stop["lng"], stop["lat"])
     for name, geom in city_polygons.items():
@@ -119,57 +130,128 @@ def containing_city_name(stop, city_polygons):
     return None
 
 
-def polygonal_part(geom):
-    if isinstance(geom, (Polygon, MultiPolygon)):
-        return geom
-    if isinstance(geom, GeometryCollection):
-        polys = [part for part in geom.geoms if isinstance(part, (Polygon, MultiPolygon))]
-        if not polys:
-            return None
-        return unary_union(polys)
-    return None
+def assign_prior_region_id(stop, prior_regions):
+    pt = Point(stop["lng"], stop["lat"])
+    for region in prior_regions:
+        if region["geometry"].contains(pt) or region["geometry"].touches(pt):
+            return region["id"]
+    return MAINLAND_ID
+
+
+def iter_polygons(geom):
+    if isinstance(geom, Polygon):
+        return [geom]
+    if isinstance(geom, MultiPolygon):
+        return list(geom.geoms)
+    return []
+
+
+def build_playable_land(stops, city_polygons):
+    city_names = []
+    for stop in stops:
+        city_name = containing_city_name(stop, city_polygons)
+        if city_name and city_name not in city_names:
+            city_names.append(city_name)
+
+    city_geoms = [city_polygons[name] for name in city_names if name in city_polygons]
+    if not city_geoms:
+        raise RuntimeError("Could not derive playable land geometry from city boundaries")
+
+    playable_land = clean_polygonal(unary_union(city_geoms))
+    if playable_land is None:
+        raise RuntimeError("Playable land union is empty")
+    return playable_land, city_names
+
+
+def refine_regions_from_land(prior_regions, playable_land, stops, prior_assignments):
+    buffered_priors = {
+        region["id"]: clean_polygonal(region["geometry"].buffer(PRIOR_BUFFER_DEG))
+        for region in prior_regions
+    }
+    components = [clean_polygonal(poly) for poly in iter_polygons(playable_land)]
+    components = [poly for poly in components if poly is not None and not poly.is_empty]
+
+    assignments = {region["id"]: [] for region in prior_regions}
+    assignments[MAINLAND_ID] = []
+
+    for comp in components:
+        comp_area = comp.area if comp.area > 0 else 1e-12
+        comp_stop_ids = [
+            stop["id"]
+            for stop in stops
+            if comp.contains(Point(stop["lng"], stop["lat"])) or comp.touches(Point(stop["lng"], stop["lat"]))
+        ]
+
+        # Preserve gameplay intent first: if a component contains stops, trust the
+        # hand-drawn prior stop assignment majority (including Mainland) over pure geometry score.
+        if comp_stop_ids:
+            stop_votes = {}
+            for sid in comp_stop_ids:
+                rid = prior_assignments.get(sid, MAINLAND_ID)
+                stop_votes[rid] = stop_votes.get(rid, 0) + 1
+            vote_region, vote_count = max(stop_votes.items(), key=lambda item: item[1])
+            vote_ratio = vote_count / len(comp_stop_ids)
+            if vote_region == MAINLAND_ID or vote_ratio >= 0.5:
+                assignments[vote_region].append(comp)
+                continue
+
+        best_region = MAINLAND_ID
+        best_score = 0.0
+        for region in prior_regions:
+            rid = region["id"]
+            buffered = buffered_priors.get(rid)
+            if buffered is None:
+                continue
+            overlap = clean_polygonal(comp.intersection(buffered))
+            overlap_ratio = (overlap.area / comp_area) if overlap is not None else 0.0
+
+            stop_hits = sum(1 for sid in comp_stop_ids if prior_assignments.get(sid) == rid)
+            stop_ratio = (stop_hits / len(comp_stop_ids)) if comp_stop_ids else 0.0
+            score = (OVERLAP_WEIGHT * overlap_ratio) + (STOP_WEIGHT * stop_ratio)
+
+            if score > best_score:
+                best_score = score
+                best_region = rid
+
+        assignments[best_region].append(comp)
+
+    refined = []
+    for region in prior_regions:
+        rid = region["id"]
+        region_geom = clean_polygonal(unary_union(assignments.get(rid) or []))
+        if region_geom is None:
+            region_geom = clean_polygonal(playable_land.intersection(region["geometry"]))
+        if region_geom is None:
+            continue
+        refined.append({"id": rid, "name": region["name"], "geometry": region_geom})
+
+    used_union = clean_polygonal(unary_union([r["geometry"] for r in refined]))
+    mainland_geom = clean_polygonal(playable_land.difference(used_union)) if used_union else playable_land
+    if mainland_geom is None:
+        mainland_geom = playable_land
+
+    return refined, mainland_geom
+
+
+def assign_stops_to_regions(stops, explicit_regions):
+    assignments = {}
+    for stop in stops:
+        pt = Point(stop["lng"], stop["lat"])
+        region_id = MAINLAND_ID
+        for region in explicit_regions:
+            geom = region["geometry"]
+            if geom.contains(pt) or geom.touches(pt):
+                region_id = region["id"]
+                break
+        assignments[stop["id"]] = region_id
+    return assignments
 
 
 def geom_to_json(geom):
-    if isinstance(geom, Polygon):
-        return mapping(geom)
-    if isinstance(geom, MultiPolygon):
-        return mapping(geom)
-    poly = polygonal_part(geom)
-    if poly is None:
+    geom = clean_polygonal(geom)
+    if geom is None:
         raise RuntimeError("Geometry has no polygonal part")
-    if isinstance(poly, Polygon):
-        return mapping(poly)
-    return mapping(poly)
-
-
-def build_mainland_geometry(stops, assignments, city_polygons, explicit_regions):
-    mainland_stops = [stop for stop in stops if assignments[stop["id"]] == MAINLAND_ID]
-    if not mainland_stops:
-        raise RuntimeError("No stops assigned to Mainland Boston")
-
-    mainland_city_names = []
-    for stop in mainland_stops:
-        city_name = containing_city_name(stop, city_polygons)
-        if city_name and city_name not in mainland_city_names:
-            mainland_city_names.append(city_name)
-
-    city_geoms = [city_polygons[name] for name in mainland_city_names if name in city_polygons]
-    if not city_geoms:
-        raise RuntimeError("Could not derive mainland geometry from city boundaries")
-
-    mainland_union = unary_union(city_geoms)
-    excluded = unary_union([
-        region["geometry"] if region["geometry"].is_valid else region["geometry"].buffer(0)
-        for region in explicit_regions
-    ])
-    mainland_geom = mainland_union.difference(excluded)
-    mainland_geom = polygonal_part(mainland_geom)
-    if mainland_geom is None or mainland_geom.is_empty:
-        raise RuntimeError("Derived mainland geometry is empty")
-
-    mainland_geom = mainland_geom.simplify(SIMPLIFY_TOLERANCE, preserve_topology=True)
-    return mainland_geom, mainland_city_names
+    return mapping(geom)
 
 
 def summarise(stops, assignments, regions):
@@ -181,14 +263,13 @@ def summarise(stops, assignments, regions):
             stop["name"] for stop in stops if stop["id"] in by_region.get(region["id"], [])
         )
         print(f"  Region {region['id']} ({region['name']}): {len(region_stop_names)} stops")
-        print(f"    {', '.join(region_stop_names)}")
+        if region_stop_names:
+            print(f"    {', '.join(region_stop_names)}")
 
 
 def main():
-    print(f"Loading drawn regions from {SOURCE.name}...")
-    explicit_regions = load_source_regions()
-    for region in explicit_regions:
-        print(f"  Region {region['id']}: {region['name']} ({region['geometry'].geom_type})")
+    print(f"Loading drawn region priors from {SOURCE.name}...")
+    prior_regions = load_source_regions()
 
     print("Loading boundaries and MBTA stops...")
     city_polygons = load_city_polygons()
@@ -196,16 +277,19 @@ def main():
     print(f"  Loaded {len(city_polygons)} city polygons")
     print(f"  Loaded {len(stops)} unique stops")
 
-    print("Assigning stops to explicit regions or Mainland Boston...")
-    assignments = {stop["id"]: assign_region_id(stop, explicit_regions) for stop in stops}
+    print("Computing prior stop assignments (guidance only)...")
+    prior_assignments = {stop["id"]: assign_prior_region_id(stop, prior_regions) for stop in stops}
 
-    print("Building Mainland Boston fallback geometry...")
-    mainland_geom, mainland_city_names = build_mainland_geometry(
-        stops, assignments, city_polygons, explicit_regions
+    print("Building coastline/river-aware playable land from municipal polygons...")
+    playable_land, city_names = build_playable_land(stops, city_polygons)
+    print(f"  Playable land derived from cities: {', '.join(city_names)}")
+
+    print("Refining hand-drawn priors onto automatic land components...")
+    refined_explicit_regions, mainland_geom = refine_regions_from_land(
+        prior_regions, playable_land, stops, prior_assignments
     )
-    print(f"  Mainland derived from cities: {', '.join(mainland_city_names)}")
 
-    regions = explicit_regions + [
+    regions = refined_explicit_regions + [
         {
             "id": MAINLAND_ID,
             "name": MAINLAND_NAME,
@@ -213,10 +297,12 @@ def main():
         }
     ]
 
+    print("Assigning stops against refined geometries...")
+    assignments = assign_stops_to_regions(stops, refined_explicit_regions)
     summarise(stops, assignments, regions)
 
     payload = {
-        "generatedAt": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
+        "generatedAt": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
         "pieces": [
             {
                 "id": region["id"],
