@@ -520,6 +520,34 @@ function normKey(value){
     .trim();
 }
 
+function normalizePostcode(value){
+  const raw = String(value || '');
+  const zip5 = raw.match(/\b\d{5}\b/)?.[0];
+  return zip5 || raw.trim();
+}
+
+function normalizeNeighborhoodName(value){
+  return String(value || '')
+    .toLowerCase()
+    .replace(/[^\w\s-]/g, ' ')
+    .replace(/\b(neighborhood|neighbourhood|district|area)\b/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function matchingValuesEqual(cat, a, b){
+  if(cat === 'postcode'){
+    return normalizePostcode(a) === normalizePostcode(b);
+  }
+  if(cat === 'neighborhood'){
+    const na = normalizeNeighborhoodName(a);
+    const nb = normalizeNeighborhoodName(b);
+    if(!na || !nb) return false;
+    return na === nb || na.includes(nb) || nb.includes(na);
+  }
+  return normKey(a) === normKey(b);
+}
+
 function deepClone(value){
   return value == null ? value : JSON.parse(JSON.stringify(value));
 }
@@ -607,7 +635,8 @@ function resolveBoundaryFromPreloaded(cat, center){
     if(!feature) continue;
     try{
       if(turf.booleanPointInPolygon(pt, feature)){
-        const val = item.name || feature.properties?.name || null;
+        let val = item.name || feature.properties?.name || null;
+        if(cat === 'postcode') val = normalizePostcode(val);
         return val ? { val, boundary: feature } : null;
       }
     }catch(e){}

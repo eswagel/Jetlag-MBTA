@@ -251,10 +251,11 @@ async function hiderAutoMatchLookup(){
         const hiderVal = hiderResolved?.val;
         const seekerVal = seekerResolved?.val;
         if(!hiderVal || !seekerVal){ toast('Could not determine '+q.category_label); return; }
-        q.seeker_val = seekerVal;
-        const match = normKey(hiderVal) === normKey(seekerVal);
+        q.seeker_val = q.category === 'postcode' ? normalizePostcode(seekerVal) : seekerVal;
+        const shownHiderVal = q.category === 'postcode' ? normalizePostcode(hiderVal) : hiderVal;
+        const match = matchingValuesEqual(q.category, hiderVal, seekerVal);
         const answer = match ? 'Yes' : 'No';
-        const expl = `Your ${q.category_label}: <b>${hiderVal}</b> / Seeker's: <b>${q.seeker_val}</b> → <b>${answer.toUpperCase()}</b>`;
+        const expl = `Your ${q.category_label}: <b>${shownHiderVal}</b> / Seeker's: <b>${q.seeker_val}</b> → <b>${answer.toUpperCase()}</b>`;
         hiderPickAnswer(answer, expl);
       } catch(e){ toast('Lookup failed: '+e.message); }
     },
