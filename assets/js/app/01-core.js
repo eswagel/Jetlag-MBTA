@@ -324,6 +324,9 @@ function deriveStopRegionStateFromConstraints(list){
         yellowRegion = null;
         break;
       }
+      if(result.kind === 'soft' && yellowRegion && result.kept){
+        yellowRegion = exactDiff(yellowRegion, result.kept);
+      }
       if(result.kind === 'soft' && result.excluded){
         yellowRegion = unionGeo(yellowRegion, result.excluded);
       }

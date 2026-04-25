@@ -136,6 +136,7 @@ function updateYellowReviewBar(){
     bar.innerHTML = `
       <span class="yr-count">${count} future possible</span>
       <button class="yr-btn primary" type="button" onclick="startYellowMultiSelect()">Select</button>
+      <button class="yr-btn" type="button" onclick="keepAllYellowRegions()">All green</button>
       <button class="yr-btn danger" type="button" onclick="hardenAllYellowRegions()">All red</button>
     `;
   }
@@ -275,6 +276,14 @@ function hardenAllYellowRegions(){
   const ok = window.confirm(`Make all ${features.length} future-possible region${features.length === 1 ? '' : 's'} red?`);
   if(!ok) return;
   hardenYellowFeatures(features);
+}
+
+function keepAllYellowRegions(){
+  const features = stopRegionState?.yellowFeatures || [];
+  if(!features.length) return;
+  const ok = window.confirm(`Make all ${features.length} future-possible region${features.length === 1 ? '' : 's'} green?`);
+  if(!ok) return;
+  keepYellowFeatures(features);
 }
 
 function openYellowRegionMenu(latlng, feature){
