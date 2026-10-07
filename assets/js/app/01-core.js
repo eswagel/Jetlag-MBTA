@@ -788,6 +788,7 @@ function getPreloadedBorderPoints(type){
 }
 
 async function getCategoryInstances(catObj, center, radiusM){
+  if(adaptivePointConfig(catObj.label)) return normalizePlaces(await loadPointDistanceData(catObj.label),catObj.label);
   if(catObj.instances){
     try{
       const items = normalizePlaces(await catObj.instances(center, radiusM), catObj.label);
@@ -835,6 +836,7 @@ async function resumeGame(){
     if(questions.some(q=>adaptiveLinearConfig(q)) || ACTIVE_CITY.measureFilters?.[save.buildState?.qparams?.measure_cat]){
       if(!await loadPoiData()) throw new Error('Distance geography could not be loaded. Retry when the dataset is available.');
     }
+    for(const question of questions) if(adaptivePointConfig(question)) await loadPointDistanceData(question);
     validateSavedCityQuestions(save);
   }catch(e){ toast(e.message); return; }
   clearTimeout(_saveGameTimer);
@@ -944,9 +946,10 @@ const QDEFS = {
       seeker_dist:p.measure_seeker_dist,          // seeker's distance to their nearest
       seeker_elevation_ft:p.measure_seeker_elevation_ft ?? null,
       seeker_elevation_m:p.measure_seeker_elevation_m ?? null,
-      all_instances:p.measure_all_instances||[],  // all known instances for zone geometry
+      all_instances:adaptivePointConfig(p.measure_cat_label || p.measure_cat) ? [] : p.measure_all_instances||[],  // all known instances for zone geometry
       linear_features:ACTIVE_CITY.measureFilters?.[p.measure_cat] ? [] : (p.measure_linear_features||[]),
-      ...(ACTIVE_CITY.measureFilters?.[p.measure_cat_label || p.measure_cat] ? {linear_filter_version:ACTIVE_CITY.measureFilters[p.measure_cat_label || p.measure_cat].version} : {}),
+      ...(ACTIVE_CITY.measureFilters?.[p.measure_cat_label || p.measure_cat]?.mode==='adaptive-linear' ? {linear_filter_version:ACTIVE_CITY.measureFilters[p.measure_cat_label || p.measure_cat].version} : {}),
+      ...pointDistanceMetadata(p.measure_cat_label || p.measure_cat),
       question:(p.measure_mode === 'elevation')
         ? `Are you at a higher or lower elevation than me? I am ${p.measure_seeker_elevation_ft.toFixed(0)} ft above sea level.`
         : `Compared to me, are you closer to or further from your nearest ${p.measure_cat_label}? I am ${p.measure_seeker_dist.toFixed(2)} mi from mine.`,
@@ -957,7 +960,7 @@ const QDEFS = {
         if(adaptiveLinearConfig(q)){
           const filter = buildAdaptiveLinearConstraint(q, zone);
           const excluded = q.answer === 'closer' ? filter.excludeForCloser : filter.excludeForFurther;
-          return excluded ? turf.difference(zone, excluded) : zone;
+          return excluded ? (turf.difference(zone, excluded) || {type:'Feature',properties:{},geometry:{type:'MultiPolygon',coordinates:[]}}) : zone;
         }
         const union = q._constraint_union || buildMeasureConstraintUnion(q, zone);
         if(!union) return zone;
@@ -1270,11 +1273,62 @@ function buildElevationConstraintFeature(q, zone=null){
 function adaptiveLinearConfig(question){
   if(question?.type !== 'measure') return null;
   const config = ACTIVE_CITY.measureFilters?.[question.category] || ACTIVE_CITY.measureFilters?.[question.category_label];
-  return config?.mode === 'adaptive-linear' ? config : null;
+  return ['adaptive-linear','adaptive-point'].includes(config?.mode) ? config : null;
+}
+
+function adaptivePointConfig(questionOrLabel){
+  const question=typeof questionOrLabel==='string'?{type:'measure',category:questionOrLabel}:questionOrLabel;
+  const config=adaptiveLinearConfig(question);
+  return config?.mode==='adaptive-point'?config:null;
+}
+
+function pointDatasetReference(config){
+  const source=preloadedData[config.dataset];
+  const versions=config.versionPaths.map(path=>path.split('.').reduce((value,key)=>value?.[key],source));
+  if(versions.some(value=>typeof value!=='string'||!value)) throw new Error('Point dataset version is unavailable');
+  return {dataset:config.dataset,key:config.dataKey,version:versions.join(':')};
+}
+
+function pointDistanceMetadata(label){
+  const config=adaptivePointConfig(label);
+  return config?{point_filter_version:config.version,point_dataset:pointDatasetReference(config)}:{};
+}
+
+async function loadPointDistanceData(questionOrLabel){
+  const config=adaptivePointConfig(questionOrLabel);
+  if(!config) return null;
+  if(config.dataset==='pois') await loadPoiData();
+  else if(!preloadedData[config.dataset]){
+    const response=await fetch(ACTIVE_CITY.dataFiles[config.dataset]);
+    if(!response.ok) throw new Error('Local point dataset could not be loaded');
+    preloadedData[config.dataset]=await response.json();
+  }
+  const points=preloadedData[config.dataset]?.[config.dataKey];
+  if(!Array.isArray(points)||!points.length) throw new Error('Local point dataset is unavailable');
+  pointDatasetReference(config);
+  return points;
+}
+
+const pointFilterFeatures=new WeakMap();
+function localPointFeatures(config){
+  const points=preloadedData[config.dataset]?.[config.dataKey];
+  if(!Array.isArray(points)||!points.length) throw new Error('Local point dataset is unavailable');
+  if(!pointFilterFeatures.has(points)) pointFilterFeatures.set(points,points.map(point=>
+    ({type:'Feature',properties:{},geometry:{type:'Point',coordinates:[Number(point.lng??point.lon),Number(point.lat)]}})));
+  return pointFilterFeatures.get(points);
 }
 
 function validateAdaptiveLinearQuestion(question){
   const config = adaptiveLinearConfig(question);
+  if(config?.mode==='adaptive-point'){
+    if(question.point_filter_version!==config.version || !question.point_dataset){
+      throw new Error('This point-distance question uses an old map-filter version. Rebuild the question.');
+    }
+    if(preloadedData[config.dataset] && ['dataset','key','version'].some(key=>question.point_dataset[key]!==pointDatasetReference(config)[key])){
+      throw new Error('This point-distance question uses a different local dataset. Use matching datasets to play.');
+    }
+    return;
+  }
   if(config && question.linear_filter_version !== config.version){
     throw new Error('This distance question uses a different map-filter version. Rebuild the question.');
   }
@@ -1284,7 +1338,7 @@ function buildAdaptiveLinearConstraint(question, zone){
   validateAdaptiveLinearQuestion(question);
   const config = adaptiveLinearConfig(question);
   if(!config || typeof LinearDistanceFilter === 'undefined') throw new Error('Distance filter is unavailable');
-  const features = preloadedData.pois?.[config.dataKey] || question.linear_features;
+  const features = config.mode==='adaptive-point' ? localPointFeatures(config) : preloadedData.pois?.[config.dataKey] || question.linear_features;
   return LinearDistanceFilter.build(features, question.seeker_dist, zone);
 }
 

@@ -28,6 +28,11 @@ const CHICAGO_LINES = [
   const physicalLineId = line.id.startsWith('Green-') ? 'Green' : line.id;
   return {weight:4, ...line, physicalLineId, branchId:line.id === physicalLineId ? null : line.id.slice(physicalLineId.length + 1), displayLabel:`${physicalLineId} Line`};
 });
+// Point categories share one engine and reference local datasets, independently of city.
+function pointMeasureFilters(categories, dataset='pois', versionPaths=['sources.poi-osm.snapshotSha256']){
+  return Object.fromEntries(Object.entries(categories).map(([label,dataKey]) =>
+    [label,{mode:'adaptive-point',version:'adaptive-point-v1',dataKey,dataset,versionPaths}]));
+}
 const CITY_PROFILES = Object.freeze({
   boston: {
     id:'boston', name:'Boston', networkLabel:'MBTA', timezone:'America/New_York',
@@ -40,8 +45,13 @@ const CITY_PROFILES = Object.freeze({
   chicago: {
     id:'chicago', name:'Chicago', networkLabel:'CTA', timezone:'America/Chicago',
     datasetVersion:'chicago-v1', center:[41.90,-87.69],
-    measureFilters:{'A Body of Water':{mode:'adaptive-linear',version:'adaptive-linear-v1',dataKey:'bodiesOfWaterLines'}},
-    previewNote:'Some questions are still unavailable. Purple uses a saved timetable when live data is unavailable. ZIP matching uses Census ZIP areas (ZCTAs).',
+    measureFilters:{...pointMeasureFilters({
+      'A Park':'parks','An Amusement Park':'amusementParks','A Zoo / Aquarium':'zooAquariums',
+      'A Golf Course':'golfCourses','A Museum':'museums','A Movie Theater':'movieTheaters',
+      'A Hospital':'hospitals','A Library':'libraries','A Foreign Consulate':'foreignConsulates',
+    }),...pointMeasureFilters({'A Commuter Rail Station':'commuterRail'},'mbta',['sources.metra.sha256','sources.southshore.sha256']),
+    'A Body of Water':{mode:'adaptive-linear',version:'adaptive-linear-v1',dataKey:'bodiesOfWaterLines'}},
+    previewNote:'Purple uses a saved timetable when live data is unavailable. ZIP matching uses Census ZIP areas (ZCTAs).',
     bounds:{south:41.60,west:-88.00,north:42.12,east:-87.48},
     dataFiles:{mbta:'data/chicago/transit.json',pois:'data/chicago/pois.json',boundaries:'data/chicago/boundaries.json',landmasses:'data/chicago/landmasses.json',elevation:'data/chicago/elevation-grid.json'},
     lines:CHICAGO_LINES,

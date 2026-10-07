@@ -38,7 +38,14 @@
     const segments=[];
     for(const feature of features){
       const g=feature.geometry;
-      if(!g || !['LineString','MultiLineString'].includes(g.type)) throw new Error('Expected line geometry');
+      if(g?.type === 'Point'){
+        const p=g.coordinates;
+        if(!Array.isArray(p)||!Number.isFinite(p[0])||!Number.isFinite(p[1])) throw new Error('Invalid point coordinate');
+        if(segments.length>=250000) throw new Error('Point source exceeds the bounded filter size');
+        segments.push({a:p,b:p,point:true});
+        continue;
+      }
+      if(!g || !['LineString','MultiLineString'].includes(g.type)) throw new Error('Expected point or line geometry');
       const lines=g.type==='LineString'?[g.coordinates]:g.coordinates;
       for(const points of lines){
         for(const p of points) if(!Array.isArray(p)||!Number.isFinite(p[0])||!Number.isFinite(p[1])) throw new Error('Invalid line coordinate');
@@ -57,7 +64,11 @@
       }
       if(!validBounds(bounds)) throw new Error('Adaptive line filtering needs a local geographic extent without an antimeridian crossing');
       const out=cap(bounds);
-      if(items.length<=8) out.feature=turf.multiLineString(items.map(item=>[item.a,item.b]));
+      if(items.length<=8){
+        out.points=items.filter(item=>item.point).map(item=>item.a);
+        const lines=items.filter(item=>!item.point);
+        if(lines.length) out.feature=turf.multiLineString(lines.map(item=>[item.a,item.b]));
+      }
       else{
         const axis=(bounds[2]-bounds[0])*.75>bounds[3]-bounds[1]?0:1;
         items.sort((a,b)=>(a.a[axis]+a.b[axis])-(b.a[axis]+b.b[axis]));
@@ -72,7 +83,9 @@
       const p=turf.point(point);
       function visit(branch){
         if(distance(branch.center,point)-branch.radius>best+1e-9) return;
-        if(branch.feature){
+        if(branch.points){
+          for(const pointCoordinate of branch.points) best=Math.min(best,distance(pointCoordinate,point));
+          if(!branch.feature) return;
           const d=turf.nearestPointOnLine(branch.feature,p,{units:'miles'}).properties.dist;
           if(!Number.isFinite(d)) throw new Error('Cannot calculate line distance');
           best=Math.min(best,d); return;

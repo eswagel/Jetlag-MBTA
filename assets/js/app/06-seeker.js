@@ -353,7 +353,7 @@ async function rebuildMeasureQuestion(payload){
       measure_cat_label:payload.category_label || catObj.label,
       measure_seeker_nearest:nearest,
       measure_seeker_dist:turfDist(center, nearest),
-      measure_all_instances:instances.slice(0,200),
+      measure_all_instances:adaptivePointConfig(catObj.label) ? [] : instances.slice(0,200),
       measure_linear_features:[],
     }),
   };
@@ -381,6 +381,7 @@ async function hydrateOutgoingQuestionContent(payload){
 async function hydrateOutgoingQuestion(payload){
   const error = cityCompatibilityError(payload);
   if(error) throw new Error(error);
+  if(adaptivePointConfig(payload)) await loadPointDistanceData(payload);
   validateQuestionForCity(payload);
   if(adaptiveLinearConfig(payload) && !await loadPoiData()) throw new Error('Distance geography could not be loaded');
   return stampCityPayload(await hydrateOutgoingQuestionContent(payload));
@@ -443,6 +444,7 @@ function questionToBuildParams(question){
         measure_seeker_dist:question.seeker_dist ?? null,
         measure_seeker_elevation_ft:question.seeker_elevation_ft ?? null,
         measure_seeker_elevation_m:question.seeker_elevation_m ?? null,
+        measure_instance_count:question.point_dataset ? preloadedData[question.point_dataset.dataset]?.[question.point_dataset.key]?.length : question.all_instances?.length,
         measure_all_instances:question.all_instances || [],
         measure_linear_features:question.linear_features || [],
         measure_constraint_union:question._constraint_union || null,

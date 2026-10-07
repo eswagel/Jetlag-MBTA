@@ -378,9 +378,9 @@ function renderMeasureParams(){
     h+=`<div class="found-result" style="margin-top:8px">
       📍 <b>${qparams.measure_seeker_nearest.name}</b><br>
       <span style="color:var(--dim)">${qparams.measure_seeker_dist.toFixed(2)} mi from you</span><br>
-      <span style="font-size:8px;color:var(--dim)">${qparams.measure_all_instances?.length||1} instances found for zone</span>
+      <span style="font-size:8px;color:var(--dim)">${qparams.measure_instance_count||qparams.measure_all_instances?.length||1} instances found for zone</span>
     </div>`;
-  if(ACTIVE_CITY.measureFilters?.[qparams.measure_cat]) h+='<p style="font-size:9px;color:var(--dim);line-height:1.5">Distance answers use the nearest edge. Uncertain map cells remain in play for either answer.</p>';
+  if(ACTIVE_CITY.measureFilters?.[qparams.measure_cat]) h+='<p style="font-size:9px;color:var(--dim);line-height:1.5">Distance answers use the nearest mapped feature. Uncertain map cells remain in play for either answer.</p>';
   return h;
 }
 
@@ -1614,7 +1614,7 @@ async function selectMeasureCat(catObj){
   qparams._mcat=catObj.label; qparams._mcatlabel=catObj.label; qparams._msearching=true;
   qparams.measure_cat=catObj.label; qparams.measure_cat_label=catObj.label;
   qparams.measure_mode='distance';
-  qparams.measure_seeker_nearest=null; qparams.measure_seeker_dist=null; qparams.measure_seeker_elevation_ft=null; qparams.measure_seeker_elevation_m=null; qparams.measure_all_instances=null; qparams.measure_linear_features=null; qparams.measure_constraint_union=null;
+  qparams.measure_seeker_nearest=null; qparams.measure_seeker_dist=null; qparams.measure_seeker_elevation_ft=null; qparams.measure_seeker_elevation_m=null; qparams.measure_all_instances=null; qparams.measure_instance_count=null; qparams.measure_linear_features=null; qparams.measure_constraint_union=null;
   if(catObj.label==='A County Border') highlightBoundary('county');
   else if(catObj.label==='A City Border') highlightBoundary('city');
   else if(catObj.label==='A Ward Border') highlightBoundary('ward');
@@ -1678,7 +1678,7 @@ async function selectMeasureCat(catObj){
         geometry:item.feature.geometry,
       }));
       qparams.measure_all_instances=[{lat:best.lat,lng:best.lng,name:best.name}];
-      if(ACTIVE_CITY.measureFilters?.[catObj.label]) toast('Water distances use actual edges. Map filtering keeps uncertain boundary cells in play for either answer.', 7000);
+      if(ACTIVE_CITY.measureFilters?.[catObj.label]) toast('Distances use mapped edges. Map filtering keeps uncertain boundary cells in play for either answer.', 7000);
 
       clearPoiMarkers();
       if(catObj.label === 'An Amtrak Line'){
@@ -1704,7 +1704,8 @@ async function selectMeasureCat(catObj){
     qparams._msearching=false;
     qparams.measure_seeker_nearest={lat:nearest.lat,lng:nearest.lng,name:nearest.name};
     qparams.measure_seeker_dist=dist;
-    qparams.measure_all_instances=instances.slice(0,200); // cap for zone geometry
+    qparams.measure_instance_count=instances.length;
+    qparams.measure_all_instances=adaptivePointConfig(catObj.label) ? [] : instances.slice(0,200); // Profile-enabled filters resolve the complete local source.
 
     // Drop teardrop pins — gold #1 for nearest, teal for rest
     clearPoiMarkers();
@@ -1849,6 +1850,7 @@ function buildQuestionPacketContent(question){
       category:q.category,
       category_label:q.category_label,
       ...(q.linear_filter_version ? {linear_filter_version:q.linear_filter_version} : {}),
+      ...(q.point_filter_version ? {point_filter_version:q.point_filter_version,point_dataset:cloneForStorage(q.point_dataset)} : {}),
     };
   }
   if(q.type === 'tentacles'){
@@ -1984,7 +1986,7 @@ function runSlowMeasureAction(question, work){
     work();
     return;
   }
-  toast(adaptiveLinearConfig(question) ? 'Calculating water-distance regions; uncertain boundary cells stay in play.' : 'Coastline measure can take a bit the first time', 6000);
+  toast(adaptiveLinearConfig(question) ? 'Calculating distance regions; uncertain boundary cells stay in play.' : 'Coastline measure can take a bit the first time', 6000);
   setTimeout(work, 0);
 }
 

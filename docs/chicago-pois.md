@@ -33,3 +33,9 @@ The large PBF stays outside the repository. The generator updates only the POI c
 - `available` means populated from this source, not a complete official directory. OSM omissions, incorrect tags, and stale business listings remain possible. Empty categories stay unavailable.
 
 Data attribution: © OpenStreetMap contributors, ODbL 1.0, https://www.openstreetmap.org/copyright. Extract provider: Geofabrik, https://download.geofabrik.de/.
+
+## Distance-question filtering
+
+Profile-enabled point measures use every facility in the local category, including commuter-rail stations. They do not truncate at 200 points or use a seeker-centered 35 km search. A shared spatial index and bounded adaptive-cell engine handle both point and edge distances. Only certified contradictory cells are excluded; uncertain cells remain in play for either answer.
+
+Question packets and saved questions reference the category and source version instead of copying facility arrays. POIs reference the OSM snapshot SHA-256; commuter rail references both Metra and South Shore source hashes. Import rejects mismatched source/filter versions. Old Chicago point questions must be rebuilt; Boston's existing point-question behavior and saves are unchanged. The same profile capability can be enabled by future cities without a separate filtering algorithm.
