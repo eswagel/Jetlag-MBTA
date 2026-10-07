@@ -3,7 +3,28 @@
 let _pendingResultAction = null;
 
 function isLatLngLike(value){
-  return Number.isFinite(Number(value?.lat)) && Number.isFinite(Number(value?.lng));
+  const valid = n => n != null && n !== '' && Number.isFinite(Number(n));
+  return valid(value?.lat) && valid(value?.lng) && Math.abs(Number(value.lat)) <= 90 && Math.abs(Number(value.lng)) <= 180;
+}
+
+function validateQuestionInputs(q){
+  if(['radar','thermo','measure','matching','nearest','tentacles'].includes(q?.type) && !isLatLngLike(q.center)){
+    throw new Error('Question needs valid latitude and longitude');
+  }
+  if(['radar','tentacles'].includes(q?.type)){
+    const radius = q.radius_miles ?? (q.type === 'tentacles' ? 1 : null);
+    if(radius == null || radius === '' || !Number.isFinite(Number(radius)) || Number(radius) <= 0){
+      throw new Error('Question radius must be a positive number');
+    }
+  }
+  if(q?.type === 'thermo' && (!isLatLngLike(q.thermo_dest) || !Number.isFinite(Number(q.travel_miles)) || Number(q.travel_miles) <= 0)){
+    throw new Error('Thermometer needs a valid destination and positive travel distance');
+  }
+  if(q?.answer != null){
+    const options = {radar:['yes','no'],thermo:['closer','further'],matching:['Yes','No'],nearest:['Yes','No'],
+      measure:q.mode === 'elevation' ? ['higher','lower'] : ['closer','further']}[q.type];
+    if(options && !options.includes(q.answer)) throw new Error('Question has an invalid answer');
+  }
 }
 
 function normalizeLatLng(value){
@@ -362,6 +383,7 @@ async function rebuildMeasureQuestion(payload){
 async function hydrateOutgoingQuestionContent(payload){
   if(!payload || typeof payload !== 'object') throw new Error('JSON must be an object');
   if(payload.answer) throw new Error('Paste the original question JSON, not the answer');
+  validateQuestionInputs(payload);
   if(payload.type === 'veto' || payload.type === 'randomize_card') throw new Error('Card results are not loadable questions');
   if(!payload.type) throw new Error('Question is missing a type');
 
@@ -700,21 +722,14 @@ function restoreSerializableBuildState(state){
 
 function resolveAnsweredQuestion(payload){
   if(payload.type === 'veto' || payload.type === 'randomize_card') return payload;
-  if(!payload?.answer){ return null; }
-  if(payload.type){
-    const def = QDEFS[payload.type];
-    const extraKeys = Object.keys(payload).filter(k => !['id','type','answer','answer_label'].includes(k));
-    if(def && extraKeys.length) return payload;
+  if(!payload?.answer) return null;
+  const base = payload.id && ((currentBuiltQuestion?.id === payload.id)
+    ? cloneForStorage(currentBuiltQuestion) : getOutgoingQuestion(payload.id));
+  if(base){
+    if(payload.type && payload.type !== base.type) return null;
+    return {...base, ...payload};
   }
-  if(!payload.id) return null;
-  const base = (currentBuiltQuestion && currentBuiltQuestion.id === payload.id)
-    ? cloneForStorage(currentBuiltQuestion)
-    : getOutgoingQuestion(payload.id);
-  if(!base) return null;
-  const extras = {...payload};
-  delete extras.id;
-  delete extras.answer;
-  return {...base, answer: payload.answer, ...extras};
+  return QDEFS[payload.type] ? payload : null;
 }
 
 function applyAnswerObject(q, onSuccess){
@@ -799,7 +814,7 @@ function applyAnswerFromRaw(raw, onSuccess){
       : 'Invalid answer JSON - missing question context');
     return;
   }
-  try{ validateQuestionForCity(q); }catch(e){ toast(e.message); return; }
+  try{ validateQuestionForCity(q); validateQuestionInputs(q); }catch(e){ toast(e.message); return; }
   applyAnswerObject(q, onSuccess);
 }
 
@@ -879,8 +894,9 @@ function renderLog(){
 function exportQuestionLog(){
   const payload = {
     kind:'jetlag_question_log',
-    version:3,
+    version:4,
     ...cityMetadata(),
+    hide_radius_miles:hideRadiusMi,
     exported_at:new Date().toISOString(),
     constraints: cloneForStorage(constraints),
   };
@@ -892,55 +908,90 @@ function exportQuestionLog(){
     .catch(()=>toast('Question log exported (copy manually)'));
 }
 
-function importQuestionLog(){
-  const input = document.getElementById('log-transfer-json');
-  const raw = (input?.value || '').trim();
-  if(!raw){
-    toast('Paste an exported question log first');
-    return;
-  }
-  let parsed;
-  try{
-    parsed = JSON.parse(raw);
-  }catch(e){
-    toast('Invalid JSON - check format');
-    return;
-  }
-
-  const compatibilityError = cityCompatibilityError(parsed);
-  if(compatibilityError){ toast(compatibilityError); return; }
-  const importedConstraints = Array.isArray(parsed)
-    ? parsed
-    : (Array.isArray(parsed?.constraints) ? parsed.constraints : null);
-  if(!importedConstraints){
-    toast('Invalid question log payload');
-    return;
-  }
-  if(!importedConstraints.every(item => item && typeof item === 'object' && typeof item.type === 'string')){
-    toast('Question log entries are malformed');
-    return;
-  }
-
-  for(const item of importedConstraints){
-    if(item.city_id || item.dataset_version){
-      const error = cityCompatibilityError(item);
-      if(error){ toast(error); return; }
+function importedLogRadius(parsed, entries){
+  let radius = parsed?.hide_radius_miles;
+  if(radius == null){
+    const setup = entries.find(q=>q.type === '_setup');
+    radius = setup?.hide_radius_miles;
+    // Versions 1–3 stored the radius only in the setup description.
+    if(radius == null && setup?._label){
+      const match = /^Hide radius: ([\d.]+) (ft|mi) from any station$/.exec(setup._label);
+      if(!match) throw new Error('Cannot read the hiding radius in this older log. Export it again from its original game.');
+      radius = Number(match[1]) / (match[2] === 'ft' ? 5280 : 1);
     }
-    try{ validateQuestionForCity(item); }catch(e){ toast(e.message); return; }
   }
-  const shouldImport = window.confirm('Importing this question log will replace your current questions and answers. Continue?');
-  if(!shouldImport) return;
-
-  constraints = normalizeConstraintList(importedConstraints);
-
-  if(recomputeZoneFromConstraints()){
-    scheduleSaveGame();
-    renderLog();
-    switchTab('log');
-    toast('Question log imported - previous log replaced');
-  }else{
-    toast('Could not import log - invalid setup data');
+  if(radius == null) radius = hideRadiusMi; // Legacy logs without setup retain the current radius.
+  if(typeof radius !== 'number' || !Number.isFinite(radius) || radius <= 0 || radius > 100){
+    throw new Error('Question log has an invalid hiding radius');
   }
+  return radius;
+}
+
+async function prepareQuestionLog(parsed){
+  const compatibilityError = cityCompatibilityError(parsed);
+  if(compatibilityError) throw new Error(compatibilityError);
+  if(parsed?.version > 4) throw new Error('Question log uses a newer format');
+  const entries = Array.isArray(parsed) ? parsed : parsed?.constraints;
+  if(!Array.isArray(entries) || !entries.every(q=>q && typeof q === 'object' && typeof q.type === 'string')){
+    throw new Error('Question log entries are malformed');
+  }
+  const radius = importedLogRadius(parsed, entries);
+  const hydrated = [];
+  for(const entry of entries){
+    if(entry.city_id || entry.dataset_version){
+      const error = cityCompatibilityError(entry);
+      if(error) throw new Error(error);
+    }
+    if(['_setup','_veto','_randomize_card'].includes(entry.type)){
+      hydrated.push(entry.type === '_setup' ? {...cloneForStorage(entry), hide_radius_miles:radius,
+        _label:`Hide radius: ${radius < 1 ? (radius*5280).toFixed(0)+' ft' : radius+' mi'} from any station`} : cloneForStorage(entry));
+      continue;
+    }
+    if(!QDEFS[entry.type]) throw new Error(`Unknown question type: ${entry.type}`);
+    if(entry.type === 'custom_boundary'){
+      if(!['include','exclude'].includes(entry.mode) || !entry.boundary_geojson || !Number.isFinite(turf.area(entry.boundary_geojson))){
+        throw new Error('Question log contains an invalid custom boundary');
+      }
+      hydrated.push(cloneForStorage(entry));
+      continue;
+    }
+    if(entry.answer == null) throw new Error('Question log contains an unanswered question');
+    validateQuestionInputs(entry);
+    const original = {...cityMetadata(), ...entry};
+    delete original.answer;
+    // Hydration loads and checks referenced local datasets before any game mutation.
+    const question = await hydrateOutgoingQuestion(original);
+    hydrated.push({...question, answer:entry.answer, constraint_effect:getConstraintEffect(entry),
+      ...(entry._label ? {_label:entry._label} : {})});
+  }
+  const nextConstraints = normalizeConstraintList(hydrated);
+  const previousRadius = hideRadiusMi;
+  let state;
+  try{
+    hideRadiusMi = radius;
+    const base = buildHideRadiusZone();
+    if(!base) throw new Error('Could not rebuild the imported hiding area');
+    state = deriveZoneStateFromConstraints(base, nextConstraints);
+    if(!state?.validZone) throw new Error('Could not rebuild the imported zone');
+  }finally{
+    hideRadiusMi = previousRadius;
+  }
+  return {constraints:nextConstraints, radius, zone:state.validZone};
+}
+
+async function importQuestionLog(){
+  const raw = (document.getElementById('log-transfer-json')?.value || '').trim();
+  if(!raw){ toast('Paste an exported question log first'); return; }
+  let parsed;
+  try{ parsed=JSON.parse(raw); }catch(e){ toast('Invalid JSON - check format'); return; }
+  let prepared;
+  try{ prepared=await prepareQuestionLog(parsed); }
+  catch(e){ toast(`Could not import log: ${e.message}`); return; }
+  if(!window.confirm('Importing this question log will replace your current questions, answers, and hiding radius. Continue?')) return;
+  hideRadiusMi = prepared.radius;
+  commitZoneState(prepared.zone, prepared.constraints);
+  switchTab('log');
+  toast('Question log imported - previous log replaced');
 }
 
 function recomputeZoneFromConstraints(){

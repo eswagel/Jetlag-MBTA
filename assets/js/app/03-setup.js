@@ -211,6 +211,7 @@ function applyHideRadius(){
   constraints = [{
     type:'_setup',
     answer:'applied',
+    hide_radius_miles:hideRadiusMi,
     _label:`Hide radius: ${hideRadiusMi < 1 ? (hideRadiusMi*5280).toFixed(0)+' ft' : hideRadiusMi+' mi'} from any station`
   }];
   stopRegionState = deriveStopRegionState(validZone, constraints);
