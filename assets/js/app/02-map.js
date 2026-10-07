@@ -2,9 +2,8 @@
 //  MAP INIT
 // ══════════════════════════════════════════════════════
 function initMap(){
-  map=L.map('map',{center:CENTER,zoom:12,zoomControl:false,attributionControl:false});
+  map=L.map('map',{center:CENTER,zoom:12,zoomSnap:0.25,zoomControl:false,attributionControl:false});
   L.control.attribution({position:'topleft'}).addTo(map);
-  if(ACTIVE_CITY.id === 'chicago') map.fitBounds([[S,W],[N,E]]);
 
   L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png',{
     attribution:'&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
@@ -469,6 +468,12 @@ function finalizeMBTALoad(legStatus){
   }
 
   mbdataReady = stopCount > 0;
+  if(mbdataReady && ACTIVE_CITY.id === 'chicago'){
+    // Frame CTA stops, not the larger envelope used to collect reference data.
+    const bounds = L.latLngBounds(Object.values(stopLineMap).map(stop => [stop.lat, stop.lng]));
+    const desktop = window.innerWidth > 768;
+    map.fitBounds(bounds, {paddingTopLeft:[32,56], paddingBottomRight:[desktop ? 392 : 32,48], animate:false});
+  }
   const dot = document.getElementById('setup-dot');
   const txt = document.getElementById('setup-status-text');
   const btn = document.getElementById('btn-start');

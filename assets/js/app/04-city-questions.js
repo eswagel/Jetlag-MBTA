@@ -201,6 +201,13 @@ if(isChicagoGame()){
     const features = (getBoundaryDataset(key) || []).map(item => coerceFeature(item, item.name)).filter(Boolean);
     if(features.length){
       boundaryHighlightLayer.addData({type:'FeatureCollection', features});
+      boundaryHighlightLayer.setStyle(feature => {
+        const selected = qparams.center && turf.booleanPointInPolygon(
+          turf.point([qparams.center.lng, qparams.center.lat]), feature);
+        return selected
+          ? {color:'#d48b25', weight:2.5, opacity:0.95, fill:false}
+          : {color:'#788b98', weight:0.8, opacity:0.35, fill:false};
+      });
       boundaryHighlightLayer.addTo(map);
     }
   };
