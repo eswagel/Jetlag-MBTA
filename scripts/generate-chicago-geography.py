@@ -94,7 +94,9 @@ def build_water():
     wide_clip = clip.buffer(0.02)
     water = unary_union([g.intersection(wide_clip) for _, g in waters + rivers])
     edges = water.boundary.simplify(0.00001, preserve_topology=True).intersection(clip)
-    pois = metadata()
+    existing_path = DATA / 'pois.json'
+    existing = json.loads(existing_path.read_text()) if existing_path.exists() else {}
+    pois = {**existing, **metadata()}
     pois.update({
         'reference_bbox': REFERENCE_BBOX,
         'coastlineLines': [linear_feature('Lake Michigan shoreline', shoreline)],
@@ -103,11 +105,17 @@ def build_water():
         'available': ['coastlineLines', 'bodiesOfWaterLines'],
         'unavailable': ['amtrakLines','parks','golfCourses','libraries','hospitals','medicalSites','museums','movieTheaters','zooAquariums','foreignConsulates','amusementParks','dunkin','starbucks','cvs','mcdonalds','gasStations'],
     })
-    for key in pois['unavailable']:
-        pois[key] = []
+    for key in list(pois['unavailable']):
+        if key in existing.get('available', []) and existing.get(key):
+            pois[key] = existing[key]
+            pois['available'].append(key)
+            pois['unavailable'].remove(key)
+        else:
+            pois[key] = []
     write_json('pois.json', pois)
-    write_json('elevation-grid.json', {**metadata(), 'available': False,
-        'unavailable': ['elevation'], 'reason': 'Chicago elevation grid has not been acquired or validated.'})
+    if not (DATA / 'elevation-grid.json').exists():
+        write_json('elevation-grid.json', {**metadata(), 'available': False,
+            'unavailable': ['elevation'], 'reason': 'Chicago elevation grid has not been acquired or validated.'})
 
 
 def build_landmasses():
