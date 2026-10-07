@@ -625,3 +625,7 @@
     /* confirm-card (smaller, centered on top of answer modal) */
     #confirm-overlay .modal-card { max-width:320px; }
     .confirm-icon { font-size:36px; margin-bottom:8px; display:block; }
+
+/* City is fixed for a page so layers and saved games stay isolated. */
+#city-selector { width:100%; padding:10px; margin-bottom:10px; color:var(--text); background:var(--bg); border:1px solid var(--dim); border-radius:6px; font:inherit; }
+#setup-network { color:inherit; }

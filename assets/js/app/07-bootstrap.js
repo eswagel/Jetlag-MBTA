@@ -57,6 +57,7 @@ function clearPoiMarkers(){
   if(thermoHandleMarker){ thermoHandleMarker.remove(); thermoHandleMarker = null; }
 }
 
+renderCityProfile();
 initMap();
 renderBuildBody();
 if(typeof renderBoundaryBody === 'function') renderBoundaryBody();

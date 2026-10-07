@@ -10,6 +10,7 @@ function selectRadius(el){
 }
 
 function startGame(){
+  if(!mbdataReady || !Object.keys(stopLineMap).length){ toast(`Wait for ${ACTIVE_CITY.networkLabel} station data before starting.`); return; }
   // Build union of all station buffers at chosen radius
   toast('Computing valid zone…');
   setTimeout(()=>{
@@ -18,6 +19,7 @@ function startGame(){
     const ov = document.getElementById('setup-overlay');
     ov.classList.add('hidden');
     setTimeout(()=>{ ov.style.display='none'; }, 420);
+    saveGame();
     applyGameMode();
     if(gameMode === 'hider' || gameMode === 'dev'){
       promptHiderStationPick();

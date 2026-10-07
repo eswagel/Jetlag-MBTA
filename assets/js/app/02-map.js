@@ -3,6 +3,7 @@
 // ══════════════════════════════════════════════════════
 function initMap(){
   map=L.map('map',{center:CENTER,zoom:12,zoomControl:false});
+  if(ACTIVE_CITY.id === 'chicago') map.fitBounds([[S,W],[N,E]]);
 
   L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png',{
     attribution:'© OpenStreetMap contributors © CARTO',
@@ -71,6 +72,7 @@ function decodePolyline(str){
 //  MBTA API — load shapes + stops per game line
 // ══════════════════════════════════════════════════════
 async function loadMBTADataLegacy(){
+  if(ACTIVE_CITY.id !== 'boston') return loadMBTAData();
   const BASE = 'https://api-v3.mbta.com';
   const legStatus = document.getElementById('leg-status');
   const allStops = {};
@@ -207,6 +209,7 @@ async function fetchMBTAJson(url){
 }
 
 async function fetchLiveMBTASnapshot(legStatus){
+  if(ACTIVE_CITY.id !== 'boston') throw new Error('MBTA service is only available in Boston');
   const BASE = 'https://api-v3.mbta.com';
   const ASHMONT_ONLY = new Set(['place-shmnl','place-fldcr','place-smmnl','place-asmnl']);
   const BRAINTREE_ONLY = new Set(['place-nqncy','place-wlsta','place-qnctr','place-qamnl','place-brntn']);
@@ -309,6 +312,21 @@ async function fetchLiveMBTASnapshot(legStatus){
 
 async function loadMBTAData(){
   const legStatus = document.getElementById('leg-status');
+  if(ACTIVE_CITY.id !== 'boston'){
+    const data = await fetchOptionalJSON(DATA_FILES.mbta, `${ACTIVE_CITY.networkLabel} snapshot`);
+    if(data?.lines?.some(line => line.stops?.length) && !cityCompatibilityError(data)){
+      preloadedData.mbta = data;
+      hydrateMBTAFromStatic(data, legStatus);
+      await loadLandmassData();
+    }else{
+      if(legStatus) legStatus.textContent = `⚠ ${ACTIVE_CITY.networkLabel} data unavailable`;
+      const status = document.getElementById('setup-status-text');
+      if(status) status.textContent = `${ACTIVE_CITY.name} station data is unavailable or incompatible. Reload after the dataset is installed.`;
+      document.getElementById('btn-start').disabled = true;
+      mbdataReady = false;
+    }
+    return;
+  }
 
   try{
     const liveData = await fetchLiveMBTASnapshot(legStatus);
@@ -362,12 +380,15 @@ function hydrateMBTAFromStatic(data, legStatus){
         lineCap:'round',
       }).bindTooltip(meta.label, {sticky:true}).addTo(map);
     }
+    // Scheduled express stops are not proof of active service. The service
+    // snapshot determines membership when a line question is asked.
+    if(meta.serviceDependent) return;
     (line.stops || []).forEach(stop => {
       if(!Number.isFinite(stop.lat) || !Number.isFinite(stop.lng)) return;
       const sid = stop.id;
       if(!allStops[sid]) allStops[sid] = {name:stop.name, lat:stop.lat, lng:stop.lng, lines:[], color:meta.color};
       if(!allStops[sid].lines.includes(meta.id)) allStops[sid].lines.push(meta.id);
-      if(!stopLineMap[sid]) stopLineMap[sid] = {name:stop.name, lat:stop.lat, lng:stop.lng, lines:new Set()};
+      if(!stopLineMap[sid]) stopLineMap[sid] = {id:sid, name:stop.name, lat:stop.lat, lng:stop.lng, lines:new Set()};
       stopLineMap[sid].lines.add(meta.id);
     });
   });
@@ -423,7 +444,7 @@ function drawStopMarkers(allStops){
       .bindPopup(popupHTML, {offset:[0,-2], maxWidth:240})
       .on('click', function(){
         if(_pickingHiderStation){
-          setHiderStation({name, lat, lng, lines:[...new Set(lines)]});
+          setHiderStation({id:sid, name, lat, lng, lines:[...new Set(lines)]});
           return;
         }
         const activeStep = pickStep >= 0 && pickStep < pickStepDefs.length ? pickStepDefs[pickStep] : null;
@@ -445,15 +466,15 @@ function finalizeMBTALoad(legStatus){
     setTimeout(() => { legStatus.style.display='none'; }, 3500);
   }
 
-  mbdataReady = true;
+  mbdataReady = stopCount > 0;
   const dot = document.getElementById('setup-dot');
   const txt = document.getElementById('setup-status-text');
   const btn = document.getElementById('btn-start');
-  if (dot) dot.classList.add('ready');
+  if (dot) dot.classList.toggle('ready', mbdataReady);
   if (txt) txt.textContent = stopCount > 0
     ? `${stopCount} stops loaded — ready!`
     : `⚠ Stops failed to load — check network`;
-  if (btn) btn.disabled = false;
+  if (btn) btn.disabled = !mbdataReady;
 }
 
 async function loadLandmassData(){

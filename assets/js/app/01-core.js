@@ -1,19 +1,5 @@
-// ══════════════════════════════════════════════════════
-//  GAME LINE DEFINITIONS
-// ══════════════════════════════════════════════════════
-// Red has one route ID ("Red") but two branches distinguished by route patterns.
-// All other lines map 1:1 to a route ID.
-const GAME_LINES = [
-  { id:'Red-Ashmont',   label:'Red · Ashmont',    color:'#DA291C', weight:5, routeId:'Red',     branchKeyword:'Ashmont'   },
-  { id:'Red-Braintree', label:'Red · Braintree',   color:'#DA291C', weight:5, routeId:'Red',     branchKeyword:'Braintree' },
-  { id:'Orange',        label:'Orange Line',        color:'#ED8B00', weight:5, routeId:'Orange'   },
-  { id:'Blue',          label:'Blue Line',          color:'#003DA5', weight:5, routeId:'Blue'     },
-  { id:'Green-B',       label:'Green Line · B',     color:'#00843D', weight:4, routeId:'Green-B'  },
-  { id:'Green-C',       label:'Green Line · C',     color:'#00843D', weight:4, routeId:'Green-C'  },
-  { id:'Green-D',       label:'Green Line · D',     color:'#00843D', weight:4, routeId:'Green-D'  },
-  { id:'Green-E',       label:'Green Line · E',     color:'#00843D', weight:4, routeId:'Green-E'  },
-  { id:'Mattapan',      label:'Mattapan Line',       color:'#DA291C', weight:4, routeId:'Mattapan' },
-];
+// Line definitions come from the active city profile.
+const GAME_LINES = ACTIVE_CITY.lines;
 
 // stopId → { name, lat, lng, lines: Set<lineId> }
 const stopLineMap = {};
@@ -21,19 +7,12 @@ const stopLineMap = {};
 // ══════════════════════════════════════════════════════
 //  CONSTANTS & STATE
 // ══════════════════════════════════════════════════════
-const CENTER = [42.3601,-71.0589];
-const S = 41.85, N = 42.80, W = -71.70, E = -70.40;
-const T_BBOX = {minLat:42.18, maxLat:42.67, minLng:-71.55, maxLng:-70.85};
-const DATA_FILES = {
-  mbta: 'data/mbta-data.json',
-  pois: 'data/pois.json',
-  boundaries: 'data/boundaries.json',
-  landmasses: 'data/landmasses.json',
-  elevation: 'data/elevation-grid.json',
-};
-const INIT_POLY = turf.polygon([[
-  [-71.70,41.85],[-70.40,41.85],[-70.40,42.80],[-71.70,42.80],[-71.70,41.85]
-]]);
+const CENTER = ACTIVE_CITY.center;
+const {south:S, north:N, west:W, east:E} = ACTIVE_CITY.bounds;
+const transitBounds = ACTIVE_CITY.transitBounds || ACTIVE_CITY.bounds;
+const T_BBOX = {minLat:transitBounds.south, maxLat:transitBounds.north, minLng:transitBounds.west, maxLng:transitBounds.east};
+const DATA_FILES = ACTIVE_CITY.dataFiles;
+const INIT_POLY = turf.polygon([[[W,S],[E,S],[E,N],[W,N],[W,S]]]);
 
 let map, maskLayer, softLayer, borderLayer, radiusLayer, previewLayer, tentaclePreviewLayer, simulLayer, simulMaskLayer, pickedMarkers=[];
 let townLayer, countyLayer, boundaryHighlightLayer;
@@ -110,7 +89,8 @@ function applyGameMode(){
     document.getElementById('tab-hider').classList.remove('hider-mode-fullscreen');
   }
 }
-const SAVE_KEY = 'jetlag_mbta_save';
+const SAVE_KEY = `jetlag_${ACTIVE_CITY.id}_save`;
+const LEGACY_SAVE_KEY = ACTIVE_CITY.id === 'boston' ? 'jetlag_mbta_save' : null;
 
 function cloneForStorage(value){
   return JSON.parse(JSON.stringify(value, (k,v)=>{
@@ -430,7 +410,8 @@ function saveGame(){
   if(setupOverlay && !setupOverlay.classList.contains('hidden')) return;
   try{
     const save = {
-      v: 2,
+      v: 3,
+      ...cityMetadata(),
       ts: Date.now(),
       gameMode,
       hideRadiusMi,
@@ -457,10 +438,10 @@ function scheduleSaveGame(delay=120){
 
 function loadSave(){
   try{
-    const raw = localStorage.getItem(SAVE_KEY);
+    const raw = localStorage.getItem(SAVE_KEY) || (LEGACY_SAVE_KEY && localStorage.getItem(LEGACY_SAVE_KEY));
     if(!raw) return null;
     const save = JSON.parse(raw);
-    if(!save.v || !save.constraints || !save.validZone) return null;
+    if(!save.v || !save.constraints || !save.validZone || cityCompatibilityError(save)) return null;
     return save;
   }catch(e){ return null; }
 }
@@ -472,6 +453,7 @@ function clearSave(){
   clearTimeout(_saveGameTimer);
   _saveGameTimer = null;
   localStorage.removeItem(SAVE_KEY);
+  if(LEGACY_SAVE_KEY) localStorage.removeItem(LEGACY_SAVE_KEY);
 }
 
 async function fetchOptionalJSON(path, label){
@@ -607,6 +589,8 @@ function featureToDisplayLines(feature){
 
 function getBoundaryDataset(cat){
   const data = preloadedData.boundaries || {};
+  if(cat === 'ward') return findFirstArray(data, ['wards']);
+  if(cat === 'community_area') return findFirstArray(data, ['communityAreas']);
   if(cat === 'county') return findFirstArray(data, ['counties']);
   if(cat === 'city') return findFirstArray(data, ['cities', 'towns', 'municipalities']);
   if(cat === 'neighborhood') return findFirstArray(data, ['neighborhoods']);
@@ -672,7 +656,7 @@ function getNamedPoiCollection(label){
     'Starbucks': ['starbucks'],
     'CVS': ['cvs'],
     "McDonald's": ['mcdonalds', 'mcDonalds'],
-    'Hospitals': ['medicalSites', 'medical_sites', 'hospitals'],
+    'Hospitals': ACTIVE_CITY.id === 'chicago' ? ['hospitals'] : ['medicalSites', 'medical_sites', 'hospitals'],
     'Libraries': ['libraries'],
     'Parks': ['parks'],
     'Gas station': ['gasStations', 'gas_stations'],
@@ -686,6 +670,8 @@ function getNamedPoiCollection(label){
 
 function getNamedLinearCollection(label){
   const keyMap = {
+    'Lake Michigan shoreline': ['coastlineLines'],
+    'A Body of Water': ACTIVE_CITY.id === 'chicago' ? ['bodiesOfWaterLines'] : [],
     'An Amtrak Line': ['amtrakLines', 'amtrak_lines'],
     'Sea Level': ['coastlineLines', 'coastline_lines'],
     'A Coastline': ['coastlineLines', 'coastline_lines'],
@@ -696,6 +682,8 @@ function getNamedLinearCollection(label){
 
 function getNamedLinearFeatures(label){
   const keyMap = {
+    'Lake Michigan shoreline': ['coastlineLines'],
+    'A Body of Water': ACTIVE_CITY.id === 'chicago' ? ['bodiesOfWaterLines'] : [],
     'An Amtrak Line': ['amtrakLines', 'amtrak_lines'],
     'Sea Level': ['coastlineLines', 'coastline_lines'],
     'A Coastline': ['coastlineLines', 'coastline_lines'],
@@ -752,6 +740,7 @@ function checkForResume(){
 function resumeGame(){
   const save = loadSave();
   if(!save){ discardAndNew(); return; }
+  if(!mbdataReady){ toast(`Wait for ${ACTIVE_CITY.networkLabel} station data before resuming.`); return; }
   clearTimeout(_saveGameTimer);
   _saveGameTimer = null;
 
@@ -916,6 +905,7 @@ const QDEFS = {
       category:p.matching_cat,
       category_label:p.matching_cat_label,
       seeker_val:p.matching_seeker_val,
+      service_snapshot:p.matching_service_snapshot || null,
       line_id:p.matching_cat === 'line' ? (p.matching_line_id || null) : null,
       hide_radius_miles:p.matching_cat === 'line' ? (p.matching_hide_radius_miles ?? hideRadiusMi) : null,
       boundary_geojson: p._matching_boundary_simplified || p.matching_boundary || null,
