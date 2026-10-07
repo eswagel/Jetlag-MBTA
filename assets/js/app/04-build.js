@@ -1383,16 +1383,14 @@ function hiderPin(){
     </div>`});
 }
 
-function amtrakLineColor(name){
-  if(/downeaster/i.test(name)) return '#4aa3ff';
-  if(/lake shore/i.test(name)) return '#a060ff';
-  return '#20c8b0';
+// Route presentation comes from source metadata; unknown routes never inherit
+// a Boston route identity. These defaults also support future cities.
+function amtrakLineColor(_name, properties={}){
+  return /^#[0-9a-f]{6}$/i.test(properties.color || '') ? properties.color : '#20c8b0';
 }
 
-function amtrakLineLabel(name){
-  if(/downeaster/i.test(name)) return 'Downeaster';
-  if(/lake shore/i.test(name)) return 'Lake Shore';
-  return 'NE Corridor';
+function amtrakLineLabel(name, properties={}){
+  return String(properties.shortName || name || 'Amtrak').replace(/^Amtrak\s+/i,'').trim() || 'Amtrak';
 }
 
 function measureNearestPopup(categoryLabel, nearestName){
@@ -1501,7 +1499,7 @@ function renderAmtrakMeasureLines(center, nearestName){
     }catch(e){}
     const name = item.name || feature.properties?.name || 'Amtrak';
     const active = name === nearestName;
-    const color = amtrakLineColor(name);
+    const color = amtrakLineColor(name, feature.properties);
     const lineLayer = L.geoJSON(displayFeature, {
       interactive: false,
       style: {
@@ -1524,7 +1522,7 @@ function renderAmtrakMeasureLines(center, nearestName){
       offset: [0,0],
     })
       .setLatLng([anchor.lat, anchor.lng])
-      .setContent(amtrakLineLabel(name))
+      .setContent(escapePreviewOptionLabel(amtrakLineLabel(name, feature.properties)))
       .addTo(map);
     pickedMarkers.push(label);
   });

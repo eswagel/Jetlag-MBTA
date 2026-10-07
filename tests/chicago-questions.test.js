@@ -142,3 +142,16 @@ test('single Purple question uses saved schedule fallback and replays its origin
   assert(reloaded.service_snapshot.stationIds.includes('41700'));
   assert.throws(()=>g.run("validateQuestionServiceSnapshot({type:'matching',category:'line',line_id:'Purple',service_snapshot:{...saved,stationIds:['41050']}})"),/does not match/);
 });
+
+
+test('Amtrak labels retain supplied route identity across cities and unknown routes',()=>{
+  for(const city of ['boston','chicago']){
+    const g=game(city);
+    for(const name of ['Hiawatha Service','California Zephyr','Southwest Chief','Future City Train']){
+      assert.equal(g.run(`amtrakLineLabel(${JSON.stringify(name)})`),name);
+    }
+    assert.equal(g.run("amtrakLineLabel('Amtrak Northeast Corridor')"),'Northeast Corridor');
+    assert.equal(g.run("amtrakLineLabel(null)"),'Amtrak');
+    assert.equal(g.run("amtrakLineLabel('Long Name',{shortName:'Source Label'})"),'Source Label');
+  }
+});

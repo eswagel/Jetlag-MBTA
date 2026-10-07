@@ -106,7 +106,7 @@ def build_water():
         'unavailable': ['amtrakLines','parks','golfCourses','libraries','hospitals','medicalSites','museums','movieTheaters','zooAquariums','foreignConsulates','amusementParks','dunkin','starbucks','cvs','mcdonalds','gasStations'],
     })
     for key in list(pois['unavailable']):
-        if key in existing.get('available', []) and existing.get(key):
+        if key in existing.get('available', []) and isinstance(existing.get(key), list):
             pois[key] = existing[key]
             pois['available'].append(key)
             pois['unavailable'].remove(key)

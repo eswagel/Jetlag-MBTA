@@ -5,15 +5,14 @@ const path=require('node:path');
 const zlib=require('node:zlib');
 const crypto=require('node:crypto');
 const turf=require('@turf/turf');
+const {clipLineSegments}=require('./lib/line-geometry.cjs');
 const ROOT=path.resolve(__dirname,'..');
 const CLIP=[-88.5,41.1,-87,42.6];
 function build(source){
   if(source.type!=='FeatureCollection'||source.exceededTransferLimit||!source.features?.length) throw Error('Incomplete Amtrak source');
   return source.features.map(f=>{
     if(!['LineString','MultiLineString'].includes(f.geometry?.type))throw Error('Non-track Amtrak geometry');
-    const clipped=turf.bboxClip(f,CLIP);
-    const lines=clipped.geometry.type==='LineString'?[clipped.geometry.coordinates]:clipped.geometry.coordinates;
-    const segments=lines.filter(l=>l.length>1);
+    const segments=clipLineSegments(f.geometry,CLIP,turf);
     if(!segments.length)return null;
     return {type:'Feature',properties:{name:f.properties.name,sourceId:f.properties.OBJECTID,routeUrl:f.properties.ROUTE_URL},geometry:{type:'MultiLineString',coordinates:segments}};
   }).filter(Boolean);
