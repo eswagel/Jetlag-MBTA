@@ -328,6 +328,7 @@ async function loadMBTAData(){
       if(status) status.textContent = `${ACTIVE_CITY.name} station data is unavailable or incompatible. Reload after the dataset is installed.`;
       document.getElementById('btn-start').disabled = true;
       mbdataReady = false;
+      if(typeof SessionLoading !== 'undefined') SessionLoading.fail(`${ACTIVE_CITY.name} station data is unavailable. Please reload to try again.`);
     }
     return;
   }
@@ -356,6 +357,7 @@ async function loadMBTAData(){
   if(legStatus) legStatus.textContent = '⚠ 0 stops — check MBTA data';
   const txt = document.getElementById('setup-status-text');
   if(txt) txt.textContent = '⚠ MBTA data failed to load';
+  if(typeof SessionLoading !== 'undefined') SessionLoading.fail('Station data could not be loaded. Please reload to try again.');
 }
 
 function transitSourceMetadata(line, definitions=GAME_LINES){

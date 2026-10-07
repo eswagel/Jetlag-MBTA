@@ -15,10 +15,12 @@ function startGame(){
     return;
   }
   if(!mbdataReady || !Object.keys(stopLineMap).length){ toast(`Wait for ${ACTIVE_CITY.networkLabel} station data before starting.`); return; }
+  SessionLoading.show(ACTIVE_CITY, 'Preparing station catchments…');
   // Build union of all station buffers at chosen radius
   toast('Computing valid zone…');
   setTimeout(()=>{
     applyHideRadius();
+    SessionLoading.ready();
     // Dismiss overlay
     const ov = document.getElementById('setup-overlay');
     ov.classList.add('hidden');

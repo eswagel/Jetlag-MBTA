@@ -60,10 +60,12 @@ function clearPoiMarkers(){
 function onGameSessionReady(){
   if(!IS_GAME_SESSION || !mbdataReady) return;
   if(document.getElementById('resume-overlay').classList.contains('hidden')) startGame();
+  else SessionLoading.ready();
 }
 renderCityProfile();
 if(IS_GAME_SESSION){
   document.body.classList.add('game-session');
+  SessionLoading.show(ACTIVE_CITY);
   const params = new URLSearchParams(window.location.search);
   const mode = [...document.querySelectorAll('.mode-card')].find(el=>el.dataset.mode===params.get('mode'));
   const radius = [...document.querySelectorAll('.radius-opt')].find(el=>Number(el.dataset.mi)===Number(params.get('radius')));

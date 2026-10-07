@@ -178,11 +178,40 @@ class CityPicker {
   }
 }
 
+class SessionLoading {
+  static show(profile, message='Preparing the map and station data.'){
+    document.getElementById('game-loading-title').textContent = `Loading ${profile.name}…`;
+    document.getElementById('game-loading-message').textContent = message;
+    document.getElementById('game-loading-retry').hidden = true;
+    document.getElementById('game-loading').classList.add('active');
+  }
+  static hide(){
+    document.documentElement.classList.remove('session-loading');
+    document.getElementById('game-loading').classList.remove('active');
+  }
+  static ready(){
+    this.hide();
+    if(window.parent !== window) window.parent.postMessage({type:'jetlag-session',state:'ready'},location.origin);
+  }
+  static fail(message){
+    document.getElementById('game-loading-title').textContent = 'Could not load the game';
+    document.getElementById('game-loading-message').textContent = message;
+    document.getElementById('game-loading-retry').hidden = false;
+    if(window.parent !== window) window.parent.postMessage({type:'jetlag-session',state:'error',message},location.origin);
+  }
+  static retry(){
+    const frame=document.getElementById('game-session');
+    if(frame) frame.contentWindow.location.reload();
+    else location.reload();
+  }
+}
+
 // The launcher stays mounted while browsing cities. A game has one isolated
 // document/state lifetime, so its city-specific saves and question definitions
 // cannot leak into the next city. No game map is created until Start Game.
 class GameSession {
   static open(profile, {mode, radius}) {
+    SessionLoading.show(profile);
     const url = new URL(window.location.href);
     url.searchParams.set('city',profile.id);
     url.searchParams.set('play','1');
@@ -193,6 +222,16 @@ class GameSession {
     frame.title = `${profile.name} game`;
     frame.src = url.href;
     document.getElementById('game-session')?.remove();
+    if(this.listener) window.removeEventListener('message',this.listener);
+    this.listener = event => {
+      if(event.origin !== location.origin || event.source !== frame.contentWindow || event.data?.type !== 'jetlag-session') return;
+      if(event.data.state === 'ready'){
+        SessionLoading.hide();
+        window.removeEventListener('message',this.listener);
+        this.listener = null;
+      }else if(event.data.state === 'error') SessionLoading.fail(event.data.message);
+    };
+    window.addEventListener('message',this.listener);
     document.body.append(frame);
   }
 }

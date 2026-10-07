@@ -3,6 +3,18 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <script>if(new URLSearchParams(location.search).get('play')==='1')document.documentElement.classList.add('session-document','session-loading');</script>
+  <style>
+    .session-document #setup-overlay { display:none !important; }
+    #game-loading { display:none; position:fixed; inset:0; z-index:6000; background:#080d12; color:#edf2f7; align-items:center; justify-content:center; text-align:center; font:14px monospace; }
+    .session-loading #game-loading, #game-loading.active { display:flex; }
+    #game-loading-retry[hidden] { display:none !important; }
+    #game-loading h1 { font-size:22px; margin:20px 0 12px; }
+    #game-loading p { color:#9baabd; line-height:1.7; }
+    .loading-pulse { width:48px; height:4px; margin:auto; border-radius:4px; background:#ef4040; animation:loading-pulse 1.2s ease-in-out infinite alternate; }
+    @keyframes loading-pulse { to { opacity:.25; transform:scaleX(.5); } }
+    @media(prefers-reduced-motion:reduce) { .loading-pulse { animation:none; } }
+  </style>
   <title>Jet Lag — MBTA Boston</title>
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
@@ -11,14 +23,16 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link href="https://fonts.googleapis.com/css2?family=Space+Mono:wght@400;700&family=IBM+Plex+Mono:ital,wght@0,300;0,400;0,500;1,300&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/Turf.js/6.5.0/turf.min.js"></script>
   <link rel="stylesheet" href="https://unpkg.com/maplibre-gl@5.24.0/dist/maplibre-gl.css">
-  <script src="https://unpkg.com/maplibre-gl@5.24.0/dist/maplibre-gl.js"></script>
-  <script src="https://unpkg.com/@maplibre/maplibre-gl-leaflet@0.1.4/leaflet-maplibre-gl.js"></script>
-  <link rel="stylesheet" href="assets/css/app.css?v=audit-5">
+  <link rel="stylesheet" href="assets/css/app.css?v=loading-1">
 </head>
 <body>
+<div id="game-loading" role="status" aria-live="polite">
+  <div><div class="loading-pulse" aria-hidden="true"></div><h1 id="game-loading-title">Loading game…</h1>
+    <p id="game-loading-message">Preparing the map and station data.</p>
+    <button id="game-loading-retry" class="btn btn-sec" hidden onclick="SessionLoading.retry()">Reload</button>
+  </div>
+</div>
 
 <div id="setup-overlay">
   <div id="setup-card">
@@ -334,17 +348,21 @@
   </div>
 </div>
 
-<script src="assets/js/app/00-cities.js?v=audit-5"></script>
-<script src="assets/js/app/00-city-picker.js?v=audit-5"></script>
-<script src="assets/js/app/chicago-service.js?v=audit-5"></script>
-<script src="assets/js/app/linear-distance-filter.js?v=audit-5"></script>
-<script src="assets/js/app/01-core.js?v=audit-5"></script>
-<script src="assets/js/app/02-map.js?v=audit-5"></script>
-<script src="assets/js/app/03-setup.js?v=audit-5"></script>
-<script src="assets/js/app/04-build.js?v=audit-5"></script>
-<script src="assets/js/app/05-hider.js?v=audit-5"></script>
-<script src="assets/js/app/06-seeker.js?v=audit-5"></script>
-<script src="assets/js/app/04-city-questions.js?v=audit-5"></script>
-<script src="assets/js/app/07-bootstrap.js?v=audit-5"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/Turf.js/6.5.0/turf.min.js"></script>
+  <script src="https://unpkg.com/maplibre-gl@5.24.0/dist/maplibre-gl.js"></script>
+  <script src="https://unpkg.com/@maplibre/maplibre-gl-leaflet@0.1.4/leaflet-maplibre-gl.js"></script>
+<script src="assets/js/app/00-cities.js?v=loading-1"></script>
+<script src="assets/js/app/00-city-picker.js?v=loading-1"></script>
+<script src="assets/js/app/chicago-service.js?v=loading-1"></script>
+<script src="assets/js/app/linear-distance-filter.js?v=loading-1"></script>
+<script src="assets/js/app/01-core.js?v=loading-1"></script>
+<script src="assets/js/app/02-map.js?v=loading-1"></script>
+<script src="assets/js/app/03-setup.js?v=loading-1"></script>
+<script src="assets/js/app/04-build.js?v=loading-1"></script>
+<script src="assets/js/app/05-hider.js?v=loading-1"></script>
+<script src="assets/js/app/06-seeker.js?v=loading-1"></script>
+<script src="assets/js/app/04-city-questions.js?v=loading-1"></script>
+<script src="assets/js/app/07-bootstrap.js?v=loading-1"></script>
 </body>
 </html>
