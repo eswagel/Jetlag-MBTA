@@ -501,11 +501,16 @@ function renderMatchingParams(){
   return h;
 }
 
+let matchingLookupRevision = 0;
+
 async function selectMatchingCat(catObj){
   if(!qparams.center){ toast('Set your location first'); return; }
   if(catObj.cat === 'landmass' && !_landmassCache.ready){
     toast('⏳ Still loading landmasses — try again in a moment'); return;
   }
+  const revision = ++matchingLookupRevision;
+  const params = qparams;
+  const isCurrent = () => revision === matchingLookupRevision && params === qparams;
   qparams._matching_mode = 'matching';
   qparams.matching_cat = catObj.cat;
   qparams.matching_cat_label = catObj.label;
@@ -517,6 +522,9 @@ async function selectMatchingCat(catObj){
   qparams.matching_seeker_val = null;
   qparams.matching_service_snapshot = null;
   qparams.matching_boundary = null;
+  qparams._matching_boundary_simplified = null;
+  currentBuiltQuestion = null;
+  clearZonePreview();
   qparams.nearest_cat = null;
   qparams.nearest_cat_label = null;
   qparams.nearest_seeker_poi = null;
@@ -535,6 +543,7 @@ async function selectMatchingCat(catObj){
       lineId: qparams.matching_line_id,
       hideRadiusMiles: hideRadiusMi,
     });
+    if(!isCurrent()) return;
     qparams._matching_searching = false;
     if(!result.val){ toast('Could not determine your '+catObj.label+' — try a different location'); renderBuildBody(); return; }
     qparams.matching_seeker_val = result.val;
@@ -571,6 +580,7 @@ async function selectMatchingCat(catObj){
     renderBuildBody();
     tryGenerate();
   } catch(e){
+    if(!isCurrent()) return;
     qparams._matching_searching = false;
     toast('Lookup failed: '+e.message);
     renderBuildBody();
@@ -588,6 +598,9 @@ async function selectMatchingLine(lineId){
 
 async function selectNearestCat(catObj){
   if(!qparams.center){ toast('Set your location first'); return; }
+  const revision = ++matchingLookupRevision;
+  const params = qparams;
+  const isCurrent = () => revision === matchingLookupRevision && params === qparams;
   qparams._matching_mode = 'nearest';
   qparams.matching_cat = null;
   qparams.matching_cat_label = null;
@@ -605,6 +618,7 @@ async function selectNearestCat(catObj){
   try{
     const radiusM = 35000;
     const pois = await getCategoryInstances(catObj, qparams.center, radiusM);
+    if(!isCurrent()) return;
     qparams._nearest_searching = false;
     if(!pois.length){ toast('No '+catObj.label+' found nearby'); renderBuildBody(); return; }
     pois.sort((a,b)=>turfDist(qparams.center,a)-turfDist(qparams.center,b));
@@ -642,7 +656,7 @@ async function selectNearestCat(catObj){
       }catch(e){ console.warn('Voronoi failed:',e); }
     }
     renderBuildBody(); tryGenerate();
-  }catch(e){ qparams._nearest_searching=false; toast('Search failed: '+e.message); renderBuildBody(); }
+  }catch(e){ if(!isCurrent()) return; qparams._nearest_searching=false; toast('Search failed: '+e.message); renderBuildBody(); }
 }
 
 function renderPhotoParams(){
@@ -1820,6 +1834,17 @@ async function resolveTentacleQuestionOptions(categoryLabel, center, radiusMiles
 }
 
 function restartPick(){
+  ++matchingLookupRevision;
+  if(qtype === 'matching'){
+    // Keep the chosen category, but resolve all location-dependent data again.
+    for(const key of ['matching_seeker_val', 'matching_service_snapshot',
+      'matching_boundary', '_matching_boundary_simplified', 'nearest_seeker_poi',
+      'nearest_all_pois', 'nearest_voronoi', '_matching_searching', '_nearest_searching']){
+      delete qparams[key];
+    }
+  }
+  currentBuiltQuestion = null;
+  clearZonePreview();
   QDEFS[qtype].pickSteps.forEach(s=>delete qparams[s.key]);
   if(qtype === 'thermo') delete qparams.thermo_dest;
   clearMarkers();previewLayer.clearLayers();pickStep=0;
