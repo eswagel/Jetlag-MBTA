@@ -91,7 +91,7 @@ function canOpenYellowRegionMenu(){
   if(typeof _hiderPickingLocation !== 'undefined' && _hiderPickingLocation) return false;
   if(qtype === 'custom_boundary' && qparams._drawingBoundary) return false;
   if(pickStep >= 0 && pickStep < pickStepDefs.length) return false;
-  return !!stopRegionState?.yellowFeatures?.length;
+  return !!stopRegionState?.yellowFeatures?.some(feature=>!feature.properties?.catchmentPartial);
 }
 
 function findYellowRegionFeatureAtLatLng(latlng){
@@ -105,6 +105,7 @@ function findYellowRegionFeatureAtLatLng(latlng){
     }
   })) return null;
   return stopRegionState.yellowFeatures.find(feature => {
+    if(feature.properties?.catchmentPartial) return false;
     try{
       return turf.booleanPointInPolygon(pt, feature);
     }catch(e){
@@ -238,7 +239,7 @@ function renderZone(){
 
   // Red mask = everything outside the hard zone
   try{
-    const mask = buildRedMaskFeature(maskBase, hard);
+    const mask = buildRedMaskFeature(maskBase, stopRegionState?.survivingCatchments || hard);
     if(mask) maskLayer.addData(mask);
   }catch(e){}
 

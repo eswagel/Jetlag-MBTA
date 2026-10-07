@@ -88,7 +88,7 @@ async function resolveMeasureValue(question, loc){
 
   if(isLinearMeasure(question.category)){
     const lineFeatures = (await getMeasureLinearFeatures(catObj, loc))
-      .map(item => ({name:item.name, feature:coerceFeature(item, item.name)}))
+      .map(item => ({name:item.name || item.properties?.name || catObj.label, feature:coerceFeature(item, item.name)}))
       .filter(item => item.feature);
     if(!lineFeatures.length) return null;
 
@@ -530,7 +530,7 @@ const QDESC  = {
   thermo:    'Set your current position, choose a move distance, and pick an endpoint on that ring. The divider through your current location splits the map into the travel-direction side (closer) and the opposite side (further).',
   measure:   'Pick a landmark type — the app finds the nearest one to you. Is the hider closer or further from it?',
   tentacles: 'Set your location — is the hider nearby? If yes, which of the found options are they closest to?',
-  matching:  "Are you in the same county/city/neighborhood/ZIP as the seeker?",
+  matching:  "Do you and the seeker match on the selected area, landmass, or transit line?",
   nearest:   'Is the nearest park/library/hospital/etc to you the same one as to the seeker?',
   photo:     'Pick a photo prompt. Ask the hider to send you a specific photo.',
 };

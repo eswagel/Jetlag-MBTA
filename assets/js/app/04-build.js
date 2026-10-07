@@ -1562,7 +1562,7 @@ async function selectMeasureCat(catObj){
 
     if(isLinearMeasure(catObj.label)){
       const lineFeatures = (await getMeasureLinearFeatures(catObj, qparams.center))
-        .map(item => ({name:item.name, feature:coerceFeature(item, item.name)}))
+        .map(item => ({name:item.name || item.properties?.name || catObj.label, feature:coerceFeature(item, item.name)}))
         .filter(item => item.feature);
       if(!lineFeatures.length){
         toast(`No ${catObj.label} geometry found`);
@@ -2139,7 +2139,7 @@ function renderZonePreviewState(previewState, label, shouldFit=true){
   const previewQuestion = previewState.question || getLivePreviewQuestion() || currentBuiltQuestion;
   const isSoft = isSoftConstraintQuestion(previewQuestion);
   const redMask = getConstraintEffect(previewQuestion) === 'hard'
-    ? exactDiff(validZone, previewState.hardZone)
+    ? exactDiff(stopRegionState?.survivingCatchments || validZone, previewState.stopState?.survivingCatchments || previewState.hardZone)
     : null;
   const greenFeatures = previewState.greenFeatures || [];
   const yellowFeatures = previewState.yellowFeatures || [];

@@ -220,14 +220,19 @@ function deriveStopRegionState(hardZone, list){
   const byStop = {};
   const greenFeatures = [];
   const yellowFeatures = [];
+  let survivingCatchments = null;
 
   baseEntries.forEach(({id, stop, baseRegion}) => {
     const hardRegion = exactIsect(hardZone, baseRegion);
     if(!hardRegion){
-      byStop[id] = {stop, inPlay:false, hardRegion:null, greenRegion:null, yellowRegion:null};
+      byStop[id] = {stop, inPlay:false, status:'eliminated', hardRegion:null, greenRegion:null, yellowRegion:null};
       return;
     }
 
+    survivingCatchments = safeUnion(survivingCatchments, baseRegion);
+    // Display partial catchments as temporary without expanding exact constraints.
+    const partialRegion = exactDiff(baseRegion, hardRegion);
+    if(partialRegion) yellowFeatures.push(...geometryToPolygonFeatures(partialRegion, {regionKind:'yellow', stopId:id, catchmentPartial:true}));
     let yellowRegion = null;
     for(const q of softConstraints){
       const def = QDEFS[q.type];
@@ -253,13 +258,15 @@ function deriveStopRegionState(hardZone, list){
       greenRegion: greenRegion || null,
       yellowRegion: yellowRegion || null,
       hasGreen: !!greenRegion,
-      hasYellow: !!yellowRegion,
+      hasYellow: !!yellowRegion || !!partialRegion,
+      status: (yellowRegion || partialRegion) ? 'temporary' : 'in-play',
     };
   });
 
   return {
     byStop,
     hardUnion: hardZone,
+    survivingCatchments: survivingCatchments || {type:'Feature',properties:{},geometry:{type:'MultiPolygon',coordinates:[]}},
     greenUnion: null,
     yellowUnion: null,
     greenFeatures,
@@ -547,7 +554,7 @@ function buildTriangulatedElevationFeature(data, thresholdFt, zoneBbox){
 
 async function fetchPointElevation(lat, lng){
   if(!Number.isFinite(lat)||!Number.isFinite(lng)) throw new Error('Invalid elevation location');
-  const grid=preloadedData.elevation;
+  const grid=preloadedData.elevation || await loadElevationData();
   if(grid?.pointLookup==='local-grid'){
     const feet=interpolateGridElevation(grid,lat,lng);
     if(feet===null)throw new Error('Location is outside the available elevation grid');
@@ -1240,6 +1247,7 @@ function buildMeasureConstraintUnion(q, zone=null){
     if(q.mode === 'elevation'){
       const feature = buildElevationConstraintFeature(q, zone);
       if(!feature) return null;
+      if(preloadedData.elevation?.interpolation==='triangulated-linear') return feature;
       try{
         return turf.simplify(feature, {tolerance:0.0008, highQuality:false}) || feature;
       }catch(e){

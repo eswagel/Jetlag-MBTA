@@ -18,7 +18,6 @@ Runtime behavior is also shared and driven by schema: `pointLookup: "local-grid"
 
 Each sampled cell is split on its southwest–northeast diagonal. Both point lookup and threshold contours use the same linear triangles, replacing the old all-or-nothing corner-average cell classification for this dataset. Entirely included cells are joined into runs to limit geometry size. Null, nonnumeric and NODATA values cannot silently become zero elevation. Empty and full elevation answers are represented explicitly rather than treated as a failed overlay.
 
-**Integration requirement:** in `buildMeasureConstraintUnion`, return a `triangulated-linear` elevation feature directly before the legacy `turf.simplify` call. Simplifying its threshold boundary would make it inconsistent with point lookup. The parent integration agent owns that small edit because another agent is editing the function for water.
 
 ## Validation and limits
 

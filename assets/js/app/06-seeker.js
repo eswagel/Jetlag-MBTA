@@ -233,8 +233,8 @@ function buildStoredMeasureQuestion(payload){
   const mode = payload.mode || (isSeaLevelMeasure(categoryLabel) ? 'elevation' : 'distance');
   if(!center || !categoryLabel) throw new Error('Measure question is missing center or category');
   if(mode === 'elevation'){
-    const seekerFeet = Number(payload.seeker_elevation_ft);
-    if(!Number.isFinite(seekerFeet)) return null;
+    const seekerFeet = payload.seeker_elevation_ft;
+    if(!validElevationNumber(seekerFeet)) return null;
     return {
       id:payload.id,
       ...QDEFS.measure.toJSON({
