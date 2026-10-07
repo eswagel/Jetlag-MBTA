@@ -2,12 +2,16 @@
 //  MAP INIT
 // ══════════════════════════════════════════════════════
 function initMap(){
-  map=L.map('map',{center:CENTER,zoom:12,zoomSnap:0.25,zoomControl:false,attributionControl:false});
+  map=L.map('map',{center:CENTER,zoom:12,minZoom:1,maxZoom:19,zoomSnap:0.25,zoomControl:false,attributionControl:false});
   L.control.attribution({position:'topleft'}).addTo(map);
 
-  L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png',{
-    attribution:'&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors &copy; <a href="https://carto.com/attributions">CARTO</a>',
-    subdomains:'abcd', maxZoom:19
+  // One light basemap for every city. Positron preserves Boston's original
+  // visual hierarchy; OpenFreeMap supplies OSM vector tiles without an API key.
+  L.maplibreGL({
+    style:'https://tiles.openfreemap.org/styles/positron',
+    attribution:'<a href="https://openfreemap.org/">OpenFreeMap</a> &copy; <a href="https://www.openmaptiles.org/">OpenMapTiles</a> Data from <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>',
+    pane:'tilePane',
+    interactive:false,
   }).addTo(map);
 
   L.control.zoom({position:'topleft'}).addTo(map);
