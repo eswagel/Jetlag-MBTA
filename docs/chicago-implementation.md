@@ -22,7 +22,7 @@ Open `http://127.0.0.1:8765/?city=chicago` or use the city selector. The city is
 - River landmass regions are North, West, and Loop + South. Lake Michigan shoreline measurement uses nearest points on water-edge lines rather than polygon centers. The same distance calculation is implemented for bodies of water, but its question is blocked pending a safe map-filtering algorithm.
 - Line questions retain station membership and source-feed hash; importing or resuming never silently reinterprets them using a different CTA feed. Chicago polygon matching avoids the old Boston-specific bounding-box correction and runtime boundary simplification.
 - Chicago data paths do not fall back to Boston, generic railway tracks, clinics, or arcades. Missing data cannot silently create a different question.
-- The old basemap returned API-key-required images during browser validation. It was replaced by OpenStreetMap's standard tiles with visible attribution. Normal browser caching is retained; no offline tile prefetch is implemented. See the [tile usage policy](https://operations.osmfoundation.org/policies/tiles/).
+- Boston and Chicago use the same original CARTO `light_all` basemap in the shared map initializer, with no raster CSS filter or city-specific provider. On October 7, 2026, the original endpoint returned an `API KEY REQUIRED` image instead of map imagery (despite HTTP 200). Rendering usable tiles is blocked until a CARTO basemap key is supplied and appended as the `key` query parameter. See https://www.carto.com/basemaps/apikey/. Local game datasets are independent of this external tile requirement.
 
 ## Deliberately unfinished
 
