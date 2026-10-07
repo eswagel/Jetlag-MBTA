@@ -203,6 +203,9 @@ function buildStopBaseRegionEntries(){
   return nextEntries;
 }
 
+// Only one union is retained; a new base-region set invalidates it.
+let _survivingCatchmentCache = null;
+
 function deriveStopRegionState(hardZone, list){
   if(!hardZone) return null;
   const baseEntries = buildStopBaseRegionEntries();
@@ -220,7 +223,7 @@ function deriveStopRegionState(hardZone, list){
   const byStop = {};
   const greenFeatures = [];
   const yellowFeatures = [];
-  let survivingCatchments = null;
+  const survivingEntries = [];
 
   baseEntries.forEach(({id, stop, baseRegion}) => {
     const hardRegion = exactIsect(hardZone, baseRegion);
@@ -229,7 +232,7 @@ function deriveStopRegionState(hardZone, list){
       return;
     }
 
-    survivingCatchments = safeUnion(survivingCatchments, baseRegion);
+    survivingEntries.push({id, baseRegion});
     // Display partial catchments as temporary without expanding exact constraints.
     const partialRegion = exactDiff(baseRegion, hardRegion);
     if(partialRegion) yellowFeatures.push(...geometryToPolygonFeatures(partialRegion, {regionKind:'yellow', stopId:id, catchmentPartial:true}));
@@ -263,10 +266,23 @@ function deriveStopRegionState(hardZone, list){
     };
   });
 
+  const survivingIds = JSON.stringify(survivingEntries.map(entry => entry.id));
+  if(!_survivingCatchmentCache ||
+     _survivingCatchmentCache.baseEntries !== baseEntries ||
+     _survivingCatchmentCache.survivingIds !== survivingIds){
+    let union = null;
+    for(const entry of survivingEntries) union = safeUnion(union, entry.baseRegion);
+    _survivingCatchmentCache = {
+      baseEntries,
+      survivingIds,
+      union: union || {type:'Feature',properties:{},geometry:{type:'MultiPolygon',coordinates:[]}},
+    };
+  }
+
   return {
     byStop,
     hardUnion: hardZone,
-    survivingCatchments: survivingCatchments || {type:'Feature',properties:{},geometry:{type:'MultiPolygon',coordinates:[]}},
+    survivingCatchments: _survivingCatchmentCache.union,
     greenUnion: null,
     yellowUnion: null,
     greenFeatures,
