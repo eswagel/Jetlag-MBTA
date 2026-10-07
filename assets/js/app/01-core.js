@@ -792,6 +792,7 @@ function discardAndNew(){
   hiderStation = null;
   if(_hiderLocMarker){ _hiderLocMarker.remove(); _hiderLocMarker = null; }
   document.getElementById('resume-overlay').classList.add('hidden');
+  if(typeof onGameSessionReady === 'function') onGameSessionReady();
 }
 
 function timeSince(ts){

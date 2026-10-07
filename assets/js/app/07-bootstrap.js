@@ -57,8 +57,24 @@ function clearPoiMarkers(){
   if(thermoHandleMarker){ thermoHandleMarker.remove(); thermoHandleMarker = null; }
 }
 
+function onGameSessionReady(){
+  if(!IS_GAME_SESSION || !mbdataReady) return;
+  if(document.getElementById('resume-overlay').classList.contains('hidden')) startGame();
+}
 renderCityProfile();
-initMap();
-renderBuildBody();
-if(typeof renderBoundaryBody === 'function') renderBoundaryBody();
-checkForResume();
+if(IS_GAME_SESSION){
+  document.body.classList.add('game-session');
+  const params = new URLSearchParams(window.location.search);
+  const mode = [...document.querySelectorAll('.mode-card')].find(el=>el.dataset.mode===params.get('mode'));
+  const radius = [...document.querySelectorAll('.radius-opt')].find(el=>Number(el.dataset.mi)===Number(params.get('radius')));
+  if(mode) selectMode(mode);
+  if(radius) selectRadius(radius);
+  checkForResume();
+  initMap();
+  renderBuildBody();
+  if(typeof renderBoundaryBody === 'function') renderBoundaryBody();
+}else{
+  document.getElementById('setup-status-text').textContent = 'Choose a city, then start your game';
+  document.getElementById('setup-dot').classList.add('ready');
+  document.getElementById('btn-start').disabled = false;
+}

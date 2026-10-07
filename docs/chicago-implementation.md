@@ -10,7 +10,7 @@ npm test
 python3 -m http.server 8765 --bind 127.0.0.1
 ```
 
-Open `http://127.0.0.1:8765/?city=chicago` or use the city selector. The city is fixed for a page session; switching reloads all geography. Boston remains the default for existing links. Node tests use the installed Turf 7 package with binary overlay adapters for the browser's existing Turf 6 interface.
+Open `http://127.0.0.1:8765/?city=chicago` or use the city selector. Browsing city cards updates the launcher in place without reloading the page or creating a game map. Starting a game creates an isolated city session. Boston remains the default for existing links. Node tests use the installed Turf 7 package with binary overlay adapters for the browser's existing Turf 6 interface.
 
 ## Implemented
 
@@ -26,7 +26,7 @@ Open `http://127.0.0.1:8765/?city=chicago` or use the city selector. The city is
 
 ## Deliberately unfinished
 
-- **Live Purple Express:** the schedule evaluator is implemented and distinguishes scheduled active/inactive/unknown. Official realtime feeds require a credential and a protected integration. Until that exists, the app blocks both creating and importing Express line questions instead of claiming a schedule is live evidence. Other CTA line membership uses the static network snapshot, not disruption-aware live routing.
+- **Live Purple service:** one Purple line combines local and express patterns, using the saved CTA timetable when live data is unavailable. An optional local server (`python3 scripts/serve-chicago-live.py --port 8765`) proxies official CTA GTFS realtime TripUpdates with `CTA_GTFS_API_KEY` held server-side. No key is configured here, so authenticated live behavior remains unverified. Question snapshots preserve schedule/feed identity and timestamped live evidence, including special stops. The UI distinguishes timetable fallback from live observations combined with timetable assumptions; see `chicago-transit.md`.
 - **POI categories:** verified Chicago parks, libraries, hospitals, museums, theaters, consulates, zoos, amusement parks, golf courses, and chain locations still need population and review. Hospitals must exclude clinics; amusement parks must exclude arcades.
 - **Amtrak:** actual passenger-used track geometry is still needed. Generic mainline rails are not a fallback.
 - **Body of Water map filtering:** exact edge data and nearest-edge calculation are present, but buffering the complete water network exhausted roughly 4 GB of memory in review. This question is blocked in creation, import, replay, and the geometry engine until an efficient bounded implementation is validated. Lake Michigan shoreline buffering passed separately.
@@ -40,3 +40,9 @@ Source URLs, timestamps/hashes, geometry definitions, coverage and regeneration 
 ## Delegation and review
 
 City-profile UI, transit data/service evaluation, and geographic datasets were developed in separate worktrees. The integration branch cherry-picks reviewed contributions. Independent reviews identified commuter-name deduplication, answered-JSON/import bypasses, missing source-feed identity, and lost ward overlays on restored questions; the integration addresses these with focused regression tests. Worktrees and branches are retained for review.
+
+## City picker and route presentation
+
+`CityPicker` and `CityTransitPreview` build draggable cards from `CITY_PROFILES`; no component enumerates Boston or Chicago. Preview maps allow only land/water layers and reuse the shared transit corridor builder. They capture a still image and release WebGL contexts. Mouse drag, native touch swipe, arrow controls and keyboard navigation are supported. Selecting a card updates the existing cards, setup text, and URL in place. GameSession creates a city-specific document only after Start Game, keeping city-scoped state isolated.
+
+Line definitions separate `physicalLineId` from `branchId`, with optional source aliases and service-pattern dash styles. The corridor renderer coalesces same-line branches and offsets different physical lines in screen pixels, recalculating on zoom. The same model drives the city-card maps. Desktop wheel zoom uses 20 pixels per zoom level instead of Leaflet's default 60; touch pinch is unchanged.

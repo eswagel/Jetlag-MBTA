@@ -117,7 +117,7 @@ function loadChicagoServiceCalendar(){
   return chicagoServiceCalendarPromise;
 }
 // Eagerly load the small saved timetable so incoming hider questions validate offline after startup.
-if(isChicagoGame() && typeof fetch==='function') loadChicagoServiceCalendar();
+if(IS_GAME_SESSION && isChicagoGame() && typeof fetch==='function') loadChicagoServiceCalendar();
 async function resolveChicagoLine(_center, options={}){
   const line = GAME_LINES.find(item => item.id === options.lineId);
   const dataLine = preloadedData.mbta?.lines?.find(item => item.id === options.lineId);
@@ -130,16 +130,17 @@ async function resolveChicagoLine(_center, options={}){
       const observedAt=options.observedAt || new Date().toISOString();
       snapshot=globalThis.ChicagoService.snapshot(calendar,'Purple',observedAt);
       // Deployment may configure a same-origin server proxy. Never put an API key in this page.
-      const configured=globalThis.CHICAGO_CTA_TRIP_UPDATES_URL || '/api/cta/trip-updates';
+      const configured=globalThis.CHICAGO_CTA_TRIP_UPDATES_URL ?? '/api/cta/trip-updates';
       if(configured){
         try{
           const url=new URL(configured,window.location.href);
           if(url.origin!==window.location.origin)throw new Error('CTA live proxy must be same origin');
           const controller=new AbortController();const timer=setTimeout(()=>controller.abort(),5000);
-          let response;
-          try{response=await fetch(url.href,{signal:controller.signal,cache:'no-store'});}finally{clearTimeout(timer);}
-          if(!response.ok)throw new Error('CTA live feed unavailable');
-          snapshot=globalThis.ChicagoService.withRealtime(calendar,await response.json(),observedAt);
+          try{
+            const response=await fetch(url.href,{signal:controller.signal,cache:'no-store'});
+            if(!response.ok)throw new Error('CTA live feed unavailable');
+            snapshot=globalThis.ChicagoService.withRealtime(calendar,await response.json(),observedAt);
+          }finally{clearTimeout(timer);}
         }catch(error){snapshot.fallbackReason='live-unavailable';}
       }else snapshot.fallbackReason='live-not-connected';
       if(snapshot.status==='unknown'||!snapshot.stationIds.length) throw new Error('Purple has no verified scheduled service at this time, or its saved timetable has expired.');

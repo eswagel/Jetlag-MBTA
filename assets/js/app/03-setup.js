@@ -10,6 +10,10 @@ function selectRadius(el){
 }
 
 function startGame(){
+  if(!IS_GAME_SESSION){
+    GameSession.open(CITY_PROFILES[selectedCityId], {mode:gameMode,radius:hideRadiusMi});
+    return;
+  }
   if(!mbdataReady || !Object.keys(stopLineMap).length){ toast(`Wait for ${ACTIVE_CITY.networkLabel} station data before starting.`); return; }
   // Build union of all station buffers at chosen radius
   toast('Computing valid zone…');

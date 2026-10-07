@@ -40,6 +40,7 @@ const CITY_PROFILES = Object.freeze({
   chicago: {
     id:'chicago', name:'Chicago', networkLabel:'CTA', timezone:'America/Chicago',
     datasetVersion:'chicago-v1', center:[41.90,-87.69],
+    previewNote:'Some questions are still unavailable. Purple uses a saved timetable when live data is unavailable. ZIP matching uses Census ZIP areas (ZCTAs).',
     bounds:{south:41.60,west:-88.00,north:42.12,east:-87.48},
     dataFiles:{mbta:'data/chicago/transit.json',pois:'data/chicago/pois.json',boundaries:'data/chicago/boundaries.json',landmasses:'data/chicago/landmasses.json',elevation:'data/chicago/elevation-grid.json'},
     lines:CHICAGO_LINES,
@@ -47,6 +48,9 @@ const CITY_PROFILES = Object.freeze({
 });
 const requestedCityId = new URLSearchParams(window.location.search).get('city') || 'boston';
 const ACTIVE_CITY = CITY_PROFILES[requestedCityId] || CITY_PROFILES.boston;
+const IS_GAME_SESSION = new URLSearchParams(window.location.search).get('play') === '1';
+let selectedCityId = ACTIVE_CITY.id;
+let cityPicker;
 function cityMetadata(){
   return {city_id:ACTIVE_CITY.id, dataset_version:ACTIVE_CITY.datasetVersion};
 }
@@ -63,35 +67,39 @@ function cityCompatibilityError(payload){
   return null;
 }
 function selectCity(cityId){
-  if(!CITY_PROFILES[cityId] || cityId === ACTIVE_CITY.id) return;
-  if(typeof saveGame === 'function') saveGame();
+  if(!CITY_PROFILES[cityId] || cityId === selectedCityId) return;
+  selectedCityId = cityId;
+  cityPicker.setSelected(cityId);
+  renderSetupProfile(CITY_PROFILES[cityId]);
   const url = new URL(window.location.href);
-  url.searchParams.set('city', cityId);
-  window.location.assign(url.href);
+  url.searchParams.set('city',cityId);
+  window.history.replaceState(null,'',url);
+}
+function renderSetupProfile(profile){
+  document.title = `Jet Lag — ${profile.networkLabel} ${profile.name}`;
+  const note = document.getElementById('city-preview-note');
+  note.hidden = !profile.previewNote;
+  note.textContent = profile.previewNote || '';
+  document.getElementById('setup-eyebrow').textContent = `Jet Lag: The Game · ${profile.name}`;
+  document.getElementById('setup-network').textContent = profile.networkLabel;
+  document.getElementById('setup-description').textContent = `The hider picks a secret location on the ${profile.networkLabel} rail network, including suburban stations. Seekers eliminate zones by asking questions.`;
 }
 function renderCityProfile(){
-  document.title = `Jet Lag — ${ACTIVE_CITY.networkLabel} ${ACTIVE_CITY.name}`;
-  new CityPicker(document.getElementById('city-picker'), {profiles:CITY_PROFILES, selectedId:ACTIVE_CITY.id, onSelect:selectCity});
-  const note = document.getElementById('city-preview-note');
-  if(note){
-    note.hidden = ACTIVE_CITY.id !== 'chicago';
-    note.textContent = 'Chicago preview: elevation, places of interest, Amtrak track, body-of-water filtering and live Purple Express questions are not ready yet. ZIP matching uses Census ZIP areas (ZCTAs).';
-  }
-  document.getElementById('setup-eyebrow').textContent = `Jet Lag: The Game · ${ACTIVE_CITY.name}`;
-  document.getElementById('setup-network').textContent = ACTIVE_CITY.networkLabel;
-  document.getElementById('setup-description').textContent = `The hider picks a secret location on the ${ACTIVE_CITY.networkLabel} rail network, including suburban stations. Seekers eliminate zones by asking questions.`;
+  renderSetupProfile(ACTIVE_CITY);
+  if(!IS_GAME_SESSION) cityPicker = new CityPicker(document.getElementById('city-picker'), {profiles:CITY_PROFILES, selectedId:ACTIVE_CITY.id, onSelect:selectCity});
   document.querySelectorAll('[data-city-network-title]').forEach(el => {el.textContent = `Jet Lag · ${ACTIVE_CITY.networkLabel}`;});
   document.getElementById('setup-status-text').textContent = `Loading ${ACTIVE_CITY.networkLabel} network data…`;
   const legend = document.getElementById('legend');
   legend.querySelectorAll('.leg-row:not(#leg-status)').forEach(el=>el.remove());
   const status = document.getElementById('leg-status');
-  ACTIVE_CITY.lines.forEach(line=>{
+  const physicalLines = new Map(ACTIVE_CITY.lines.map(line=>[line.physicalLineId || line.id,line]));
+  physicalLines.forEach(line=>{
     const row = document.createElement('div');
     row.className = 'leg-row';
     const swatch = document.createElement('div');
     swatch.className = 'leg-line';
     swatch.style.background = line.color;
-    row.append(swatch, document.createTextNode(line.label));
+    row.append(swatch, document.createTextNode(line.displayLabel || line.label));
     legend.insertBefore(row, status);
   });
 }

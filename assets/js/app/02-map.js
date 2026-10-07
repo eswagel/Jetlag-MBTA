@@ -2,7 +2,7 @@
 //  MAP INIT
 // ══════════════════════════════════════════════════════
 function initMap(){
-  map=L.map('map',{center:CENTER,zoom:12,minZoom:1,maxZoom:19,zoomSnap:0.25,wheelPxPerZoomLevel:20,wheelDebounceTime:25,zoomControl:false,attributionControl:false});
+  map=L.map('map',{center:CENTER,zoom:12,minZoom:1,maxZoom:19,zoomSnap:1,wheelPxPerZoomLevel:20,wheelDebounceTime:20,zoomControl:false,attributionControl:false});
   L.control.attribution({position:'topleft'}).addTo(map);
 
   // One light basemap for every city. Positron preserves Boston's original
@@ -615,6 +615,7 @@ function finalizeMBTALoad(legStatus){
     ? `${stopCount} stops loaded — ready!`
     : `⚠ Stops failed to load — check network`;
   if (btn) btn.disabled = !mbdataReady;
+  if(typeof onGameSessionReady === 'function') onGameSessionReady();
 }
 
 async function loadLandmassData(){

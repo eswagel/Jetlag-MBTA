@@ -662,3 +662,6 @@
 .city-card { cursor:grab; }
 .service-provenance { color:var(--text); font-size:10px; line-height:1.6; }
 .service-provenance div { color:#a9bfce; margin-top:3px; }
+
+#game-session { position:fixed; inset:0; width:100%; height:100%; border:0; z-index:5000; background:var(--bg); }
+.game-session #city-picker, .game-session #city-preview-note { display:none; }

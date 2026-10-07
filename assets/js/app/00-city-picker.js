@@ -13,14 +13,19 @@ class CityTransitPreview {
     // An allowlist excludes streets, buildings, labels and unrelated railways.
     style.layers = style.layers.filter(layer => layer.type === 'background' ||
       ['water', 'waterway', 'landcover', 'park'].includes(layer['source-layer']));
-    const colors = new Map(profile.lines.map(line => [line.id, line.color]));
-    const features = network.lines.filter(line => line.shapePath?.length > 1).map(line => ({
-      type:'Feature', properties:{color:colors.get(line.id) || line.color || '#658094'},
-      geometry:{type:'LineString', coordinates:line.shapePath.map(([lat,lng]) => [lng,lat])},
-    }));
+    const corridors = prepareTransitCorridors(network.lines, profile.lines);
+    const features = corridors.flatMap(corridor => corridor.lanes.map((line,index) => ({
+      type:'Feature', properties:{color:line.color || '#658094', dashed:!!line.dashArray,
+        offset:(index-(corridor.lanes.length-1)/2)*2.5},
+      geometry:{type:'LineString', coordinates:corridor.path.map(([lat,lng]) => [lng,lat])},
+    })));
     style.sources['city-transit'] = {type:'geojson', data:{type:'FeatureCollection', features}};
-    style.layers.push({id:'city-transit',type:'line',source:'city-transit',
-      layout:{'line-cap':'round','line-join':'round'},paint:{'line-color':['get','color'],'line-width':2.4}});
+    for(const dashed of [false,true]) style.layers.push({
+      id:dashed ? 'city-transit-dashed' : 'city-transit-solid',type:'line',source:'city-transit',
+      filter:['==',['get','dashed'],dashed],layout:{'line-cap':'round','line-join':'round'},
+      paint:{'line-color':['get','color'],'line-width':2,'line-offset':['get','offset'],
+        ...(dashed ? {'line-dasharray':[2,2]} : {})},
+    });
     return style;
   }
 
@@ -71,6 +76,14 @@ class CityPicker {
     this.selectedId = selectedId;
     this.onSelect = onSelect;
     this.render();
+  }
+  setSelected(id) {
+    this.selectedId = id;
+    this.cards.forEach(card => {
+      const selected = card.dataset.city === id;
+      card.setAttribute('aria-pressed',String(selected));
+      card.querySelector('.city-card-state').textContent = selected ? '✓ Selected' : 'Select city';
+    });
   }
   enableDragging() {
     let gesture = null;
@@ -162,5 +175,24 @@ class CityPicker {
       if(active) this.track.scrollLeft = active.offsetLeft - 3;
       updateControls();
     });
+  }
+}
+
+// The launcher stays mounted while browsing cities. A game has one isolated
+// document/state lifetime, so its city-specific saves and question definitions
+// cannot leak into the next city. No game map is created until Start Game.
+class GameSession {
+  static open(profile, {mode, radius}) {
+    const url = new URL(window.location.href);
+    url.searchParams.set('city',profile.id);
+    url.searchParams.set('play','1');
+    url.searchParams.set('mode',mode);
+    url.searchParams.set('radius',String(radius));
+    const frame = document.createElement('iframe');
+    frame.id = 'game-session';
+    frame.title = `${profile.name} game`;
+    frame.src = url.href;
+    document.getElementById('game-session')?.remove();
+    document.body.append(frame);
   }
 }
