@@ -77,9 +77,10 @@ class ChicagoGeography(unittest.TestCase):
         self.assertGreater(coast.distance(Point(-87.85,41.9)),0.1)
         water = unary_union([shape(f['geometry']) for f in data['bodiesOfWaterLines']])
         self.assertLess(water.distance(Point(-87.638,41.8866)),0.002)
-        self.assertEqual(data['amtrakLines'], [])
-        self.assertIn('amtrakLines',data['unavailable'])
-        self.assertFalse(load('elevation-grid.json')['available'])
+        # Independent generators populate these datasets without disturbing water edges.
+        self.assertTrue(data['amtrakLines'])
+        self.assertNotIn('amtrakLines', data.get('unavailable', {}))
+        self.assertTrue(load('elevation-grid.json')['available'])
 
     def test_every_cta_station_has_region_municipality_and_zip(self):
         path = Path(os.environ.get('JETLAG_TRANSIT_PATH', DATA / 'transit.json'))
