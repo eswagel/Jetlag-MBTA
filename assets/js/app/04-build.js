@@ -380,6 +380,7 @@ function renderMeasureParams(){
       <span style="color:var(--dim)">${qparams.measure_seeker_dist.toFixed(2)} mi from you</span><br>
       <span style="font-size:8px;color:var(--dim)">${qparams.measure_all_instances?.length||1} instances found for zone</span>
     </div>`;
+  if(ACTIVE_CITY.measureFilters?.[qparams.measure_cat]) h+='<p style="font-size:9px;color:var(--dim);line-height:1.5">Distance answers use the nearest edge. Uncertain map cells remain in play for either answer.</p>';
   return h;
 }
 
@@ -1468,6 +1469,8 @@ function coastlineLineFeaturesFromOverpass(data, fallbackName='Coastline'){
 
 async function getMeasureLinearFeatures(catObj, center){
   await loadPoiData();
+  const configured = ACTIVE_CITY.measureFilters?.[catObj.label];
+  if(configured?.dataKey) return preloadedData.pois?.[configured.dataKey] || [];
   if(catObj.label === 'An Amtrak Line'){
     return getNamedLinearFeatures(catObj.label);
   }
@@ -1670,11 +1673,12 @@ async function selectMeasureCat(catObj){
       qparams._msearching=false;
       qparams.measure_seeker_nearest={lat:best.lat,lng:best.lng,name:best.name};
       qparams.measure_seeker_dist=best.dist;
-      qparams.measure_linear_features=lineFeatures.map(item => ({
+      qparams.measure_linear_features=ACTIVE_CITY.measureFilters?.[catObj.label] ? [] : lineFeatures.map(item => ({
         name:item.name,
         geometry:item.feature.geometry,
       }));
       qparams.measure_all_instances=[{lat:best.lat,lng:best.lng,name:best.name}];
+      if(ACTIVE_CITY.measureFilters?.[catObj.label]) toast('Water distances use actual edges. Map filtering keeps uncertain boundary cells in play for either answer.', 7000);
 
       clearPoiMarkers();
       if(catObj.label === 'An Amtrak Line'){
@@ -1844,6 +1848,7 @@ function buildQuestionPacketContent(question){
       mode:q.mode || 'distance',
       category:q.category,
       category_label:q.category_label,
+      ...(q.linear_filter_version ? {linear_filter_version:q.linear_filter_version} : {}),
     };
   }
   if(q.type === 'tentacles'){
@@ -1923,6 +1928,7 @@ function generateJSON(){
 
 function ensureMeasureConstraint(question){
   if(!question || question.type !== 'measure' || question._constraint_union) return question;
+  if(adaptiveLinearConfig(question)){ buildAdaptiveLinearConstraint(question, validZone); return question; }
   const union = buildMeasureConstraintUnion(question, validZone);
   if(!union) return question;
   question._constraint_union = union;
@@ -1969,7 +1975,7 @@ function shouldWarnSlowMeasure(question){
     question &&
     question.type === 'measure' &&
     !question._constraint_union &&
-    /coast/i.test(question.category_label || question.category || '')
+    (adaptiveLinearConfig(question) || /coast/i.test(question.category_label || question.category || ''))
   );
 }
 
@@ -1978,7 +1984,7 @@ function runSlowMeasureAction(question, work){
     work();
     return;
   }
-  toast('Coastline measure can take a bit the first time');
+  toast(adaptiveLinearConfig(question) ? 'Calculating water-distance regions; uncertain boundary cells stay in play.' : 'Coastline measure can take a bit the first time', 6000);
   setTimeout(work, 0);
 }
 

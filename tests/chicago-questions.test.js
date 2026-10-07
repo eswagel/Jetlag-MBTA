@@ -15,7 +15,7 @@ function game(city='chicago'){
     window:{location:{search:`?city=${city}`}}, localStorage:{getItem:()=>null},
     document:{getElementById:()=>null}, navigator:{},
   });
-  for(const file of ['chicago-service.js','00-cities.js','01-core.js','02-map.js','03-setup.js','04-build.js','05-hider.js','06-seeker.js','04-city-questions.js']){
+  for(const file of ['chicago-service.js','00-cities.js','linear-distance-filter.js','01-core.js','02-map.js','03-setup.js','04-build.js','05-hider.js','06-seeker.js','04-city-questions.js']){
     vm.runInContext(fs.readFileSync(path.join(__dirname,'../assets/js/app',file),'utf8'),ctx,{filename:file});
   }
   return {ctx,run:code=>vm.runInContext(code,ctx)};
@@ -116,13 +116,26 @@ test('saved Chicago games validate feed and nested line snapshots before resumin
   assert.doesNotThrow(()=>g.run("validateSavedCityQuestions({transit_feed_version:'feed-a',constraints:[]})"));
 });
 
-test('large water geometry is blocked before map buffering or question import',async()=>{
+test('water filtering is versioned and enabled through shared profile configuration',async()=>{
   const g=game();
-  assert.equal(g.run("buildMeasureConstraintUnion({type:'measure',category:'A Body of Water',seeker_dist:0.3,linear_features:[{geometry:{type:'MultiLineString',coordinates:[]}}]},INIT_POLY)"),null);
-  await assert.rejects(g.run("hydrateOutgoingQuestion({id:'water',type:'measure',category:'A Body of Water',city_id:'chicago',dataset_version:'chicago-v1'})"),/not ready/);
-  g.run("var warning='';toast=text=>warning=text");
-  await g.run("selectMeasureCat({label:'A Body of Water'})");
-  assert.match(g.run('warning'),/not ready/);
+  g.run(`preloadedData.pois={bodiesOfWaterLines:[{name:'Water edge',geometry:{type:'LineString',coordinates:[[-87.7,41.8],[-87.7,42.0]]}}]}; loadPoiData=async()=>preloadedData.pois;`);
+  const packet={id:'water',type:'measure',category:'A Body of Water',category_label:'A Body of Water',center:{lat:41.81,lng:-87.69},city_id:'chicago',dataset_version:'chicago-v1',linear_filter_version:'adaptive-linear-v1'};
+  g.ctx.packet=packet;
+  const restored=await g.run('hydrateOutgoingQuestion(packet)');
+  assert.equal(restored.linear_filter_version,'adaptive-linear-v1');
+  assert.equal(restored.linear_features.length,0,'Local source geometry must not be duplicated in questions or saves');
+  assert(JSON.stringify(restored).length<4000,'Adaptive question stays below ordinary localStorage limits');
+  g.ctx.restored=restored;
+  const outgoing=g.run('buildQuestionPacket(restored)');
+  assert.equal(outgoing.linear_filter_version,'adaptive-linear-v1');
+  assert.equal(g.run('cityQuestionUnavailableReason(packet)'),null);
+  g.run('var smallZone=turf.bboxPolygon([-87.705,41.808,-87.695,41.812])');
+  const kept=g.run("QDEFS.measure.applyToZone(smallZone,{...restored,answer:'closer'})");
+  assert(kept);
+  assert.equal(g.run("QDEFS.measure.applyToZone(turf.bboxPolygon([-87.69,41.808,-87.685,41.812]),{...restored,seeker_dist:.001,answer:'closer'})"),null,'A fully contradicted region must not silently return the original zone');
+  await assert.rejects(g.run("hydrateOutgoingQuestion({...packet,linear_filter_version:'unknown'})"),/different map-filter version/);
+  const boston=game('boston');
+  assert.equal(boston.run("adaptiveLinearConfig({type:'measure',category:'A Body of Water'})"),null);
 });
 
 
@@ -154,4 +167,22 @@ test('Amtrak labels retain supplied route identity across cities and unknown rou
     assert.equal(g.run("amtrakLineLabel(null)"),'Amtrak');
     assert.equal(g.run("amtrakLineLabel('Long Name',{shortName:'Source Label'})"),'Source Label');
   }
+});
+
+test('another profile can enable the same bounded edge filter without Chicago branches',async()=>{
+  const g=game('boston');
+  g.run(`ACTIVE_CITY.measureFilters={'A Body of Water':{mode:'adaptive-linear',version:'adaptive-linear-v1',dataKey:'riverEdges'}};
+    preloadedData.pois={riverEdges:[{type:'Feature',properties:{name:'Example river'},geometry:{type:'LineString',coordinates:[[-71.1,42.2],[-71.1,42.4]]}}]}; loadPoiData=async()=>preloadedData.pois;`);
+  assert.equal(g.run("isLinearMeasure('A Body of Water')"),true);
+  const value=await g.run("resolveMeasureValue({category:'A Body of Water',mode:'distance'},{lat:42.3,lng:-71.099})");
+  assert.equal(value.name,'Example river');
+  assert(value.dist>0&&value.dist<.1);
+  assert.equal(g.run("adaptiveLinearConfig({type:'measure',category:'A Body of Water'}).dataKey"),'riverEdges');
+});
+
+
+test('the browser entrypoint loads the shared filter before the engine',()=>{
+  const html=fs.readFileSync(path.join(__dirname,'../index.html'),'utf8');
+  assert(html.indexOf('assets/js/app/linear-distance-filter.js')>=0);
+  assert(html.indexOf('assets/js/app/linear-distance-filter.js')<html.indexOf('assets/js/app/01-core.js'));
 });

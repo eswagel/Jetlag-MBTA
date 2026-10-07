@@ -810,11 +810,17 @@ function checkForResume(){
   document.getElementById('resume-overlay').classList.remove('hidden');
 }
 
-function resumeGame(){
+async function resumeGame(){
   const save = loadSave();
   if(!save){ discardAndNew(); return; }
   if(!mbdataReady){ toast(`Wait for ${ACTIVE_CITY.networkLabel} station data before resuming.`); return; }
-  try{ validateSavedCityQuestions(save); }catch(e){ toast(e.message); return; }
+  try{
+    const questions = [...(save.constraints || []), ...Object.values(save.outgoingQuestions || {}), save.buildState?.currentBuiltQuestion];
+    if(questions.some(q=>adaptiveLinearConfig(q)) || ACTIVE_CITY.measureFilters?.[save.buildState?.qparams?.measure_cat]){
+      if(!await loadPoiData()) throw new Error('Distance geography could not be loaded. Retry when the dataset is available.');
+    }
+    validateSavedCityQuestions(save);
+  }catch(e){ toast(e.message); return; }
   clearTimeout(_saveGameTimer);
   _saveGameTimer = null;
 
@@ -923,7 +929,8 @@ const QDEFS = {
       seeker_elevation_ft:p.measure_seeker_elevation_ft ?? null,
       seeker_elevation_m:p.measure_seeker_elevation_m ?? null,
       all_instances:p.measure_all_instances||[],  // all known instances for zone geometry
-      linear_features:p.measure_linear_features||[],
+      linear_features:ACTIVE_CITY.measureFilters?.[p.measure_cat] ? [] : (p.measure_linear_features||[]),
+      ...(ACTIVE_CITY.measureFilters?.[p.measure_cat_label || p.measure_cat] ? {linear_filter_version:ACTIVE_CITY.measureFilters[p.measure_cat_label || p.measure_cat].version} : {}),
       question:(p.measure_mode === 'elevation')
         ? `Are you at a higher or lower elevation than me? I am ${p.measure_seeker_elevation_ft.toFixed(0)} ft above sea level.`
         : `Compared to me, are you closer to or further from your nearest ${p.measure_cat_label}? I am ${p.measure_seeker_dist.toFixed(2)} mi from mine.`,
@@ -931,6 +938,11 @@ const QDEFS = {
     }),
     applyToZone:(zone,q)=>{
       try{
+        if(adaptiveLinearConfig(q)){
+          const filter = buildAdaptiveLinearConstraint(q, zone);
+          const excluded = q.answer === 'closer' ? filter.excludeForCloser : filter.excludeForFurther;
+          return excluded ? turf.difference(zone, excluded) : zone;
+        }
         const union = q._constraint_union || buildMeasureConstraintUnion(q, zone);
         if(!union) return zone;
         if(q.mode==='elevation' && preloadedData.elevation?.interpolation==='triangulated-linear'){
@@ -945,7 +957,7 @@ const QDEFS = {
     },
     describe:q=>(q.mode === 'elevation')
       ? `<b>${q.answer==='higher'?'HIGHER':'LOWER'}</b> than seeker (${Number(q.seeker_elevation_ft).toFixed(0)} ft above sea level)`
-      : `<b>${q.answer==='closer'?'CLOSER':'FURTHER'}</b> than seeker (${q.seeker_dist?.toFixed(2)}mi) from nearest ${q.category_label}`
+      : `<b>${q.answer==='closer'?'CLOSER':'FURTHER'}</b> than seeker (${q.seeker_dist?.toFixed(2)}mi) from nearest ${q.category_label}${adaptiveLinearConfig(q) ? ' · uncertain map cells retained' : ''}`
   },
   tentacles:{
     label:'Tentacles', colorTag:'tag-tentacles',
@@ -1239,10 +1251,31 @@ function buildElevationConstraintFeature(q, zone=null){
   return turf.multiPolygon(polys);
 }
 
+function adaptiveLinearConfig(question){
+  if(question?.type !== 'measure') return null;
+  const config = ACTIVE_CITY.measureFilters?.[question.category] || ACTIVE_CITY.measureFilters?.[question.category_label];
+  return config?.mode === 'adaptive-linear' ? config : null;
+}
+
+function validateAdaptiveLinearQuestion(question){
+  const config = adaptiveLinearConfig(question);
+  if(config && question.linear_filter_version !== config.version){
+    throw new Error('This distance question uses a different map-filter version. Rebuild the question.');
+  }
+}
+
+function buildAdaptiveLinearConstraint(question, zone){
+  validateAdaptiveLinearQuestion(question);
+  const config = adaptiveLinearConfig(question);
+  if(!config || typeof LinearDistanceFilter === 'undefined') throw new Error('Distance filter is unavailable');
+  const features = preloadedData.pois?.[config.dataKey] || question.linear_features;
+  return LinearDistanceFilter.build(features, question.seeker_dist, zone);
+}
+
 function buildMeasureConstraintUnion(q, zone=null){
   if(!q) return null;
-  // The full regional water network cannot safely be buffered on the UI thread.
-  if(ACTIVE_CITY.id === 'chicago' && (q.category === 'A Body of Water' || q.category_label === 'A Body of Water')) return null;
+  // Adaptive filters have two certified exclusion regions, not one approximate buffer.
+  if(adaptiveLinearConfig(q)) return null;
   try{
     if(q.mode === 'elevation'){
       const feature = buildElevationConstraintFeature(q, zone);

@@ -40,6 +40,7 @@ const CITY_PROFILES = Object.freeze({
   chicago: {
     id:'chicago', name:'Chicago', networkLabel:'CTA', timezone:'America/Chicago',
     datasetVersion:'chicago-v1', center:[41.90,-87.69],
+    measureFilters:{'A Body of Water':{mode:'adaptive-linear',version:'adaptive-linear-v1',dataKey:'bodiesOfWaterLines'}},
     previewNote:'Some questions are still unavailable. Purple uses a saved timetable when live data is unavailable. ZIP matching uses Census ZIP areas (ZCTAs).',
     bounds:{south:41.60,west:-88.00,north:42.12,east:-87.48},
     dataFiles:{mbta:'data/chicago/transit.json',pois:'data/chicago/pois.json',boundaries:'data/chicago/boundaries.json',landmasses:'data/chicago/landmasses.json',elevation:'data/chicago/elevation-grid.json'},

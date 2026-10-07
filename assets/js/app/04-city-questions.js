@@ -2,20 +2,18 @@
 function isChicagoGame(){ return ACTIVE_CITY.id === 'chicago'; }
 
 function cityQuestionUnavailableReason(question){
-  if(isChicagoGame() && question?.type === 'measure' &&
-      (question.category === 'A Body of Water' || question.category_label === 'A Body of Water')){
-    return 'Body of Water map filtering is not ready: the full water network is too large to process safely on a phone.';
-  }
   return null;
 }
 
 function validateQuestionForCity(question){
   const unavailable = cityQuestionUnavailableReason(question);
   if(unavailable) throw new Error(unavailable);
+  validateAdaptiveLinearQuestion(question);
   validateQuestionServiceSnapshot(question);
 }
 
 function isLinearMeasure(label){
+  if(ACTIVE_CITY.measureFilters?.[label]?.mode === 'adaptive-linear') return true;
   return ['An Amtrak Line', 'A Coastline', 'Lake Michigan shoreline'].includes(label) ||
     (isChicagoGame() && ['A Body of Water', 'A City Border', 'A Ward Border'].includes(label));
 }

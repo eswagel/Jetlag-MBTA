@@ -303,7 +303,7 @@ async function rebuildMeasureQuestion(payload){
 
   if(isLinearMeasure(catObj.label)){
     const lineFeatures = (await getMeasureLinearFeatures(catObj, center))
-      .map(item => ({name:item.name, feature:coerceFeature(item, item.name)}))
+      .map(item => ({name:item.name || item.properties?.name || catObj.label, feature:coerceFeature(item, item.name)}))
       .filter(item => item.feature);
     if(!lineFeatures.length) throw new Error(`No ${catObj.label} geometry found`);
 
@@ -382,6 +382,7 @@ async function hydrateOutgoingQuestion(payload){
   const error = cityCompatibilityError(payload);
   if(error) throw new Error(error);
   validateQuestionForCity(payload);
+  if(adaptiveLinearConfig(payload) && !await loadPoiData()) throw new Error('Distance geography could not be loaded');
   return stampCityPayload(await hydrateOutgoingQuestionContent(payload));
 }
 
