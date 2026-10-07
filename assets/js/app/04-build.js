@@ -450,6 +450,16 @@ function renderMatchingParams(){
       </div>`;
     });
     h += '</div>';
+    const service = qparams.matching_service_snapshot;
+    if(service && ['scheduled-active','live-assisted-active'].includes(service.status)){
+      const live = service.status === 'live-assisted-active';
+      const label = live ? 'Live observations + saved timetable' : 'Saved timetable · live service unavailable';
+      const time = new Date(service.observedAt).toLocaleString(undefined,{timeZone:ACTIVE_CITY.timezone,month:'short',day:'numeric',hour:'numeric',minute:'2-digit'});
+      h += `<div class="found-result service-provenance" style="margin-top:8px">
+        <b>${label}</b><div>${service.stationIds.length} stations · ${escapePreviewOptionLabel(time)}</div>
+        <div>${live ? 'Unreported trips use scheduled service.' : 'Special stops and disruptions may differ from the timetable.'}</div>
+      </div>`;
+    }
   }
   else if(qparams.matching_seeker_val){
     const hasBoundary = !!qparams.matching_boundary;

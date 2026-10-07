@@ -658,3 +658,7 @@
 .city-card-track.dragging { cursor:grabbing; scroll-snap-type:none; }
 .city-card-track.dragging .city-card { cursor:grabbing; }
 .city-card-map img { -webkit-user-drag:none; }
+
+.city-card { cursor:grab; }
+.service-provenance { color:var(--text); font-size:10px; line-height:1.6; }
+.service-provenance div { color:#a9bfce; margin-top:3px; }
