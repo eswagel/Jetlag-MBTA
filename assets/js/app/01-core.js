@@ -224,6 +224,7 @@ function deriveStopRegionState(hardZone, list){
     q.type !== '_veto' &&
     q.type !== '_randomize_card' &&
     getConstraintEffect(q) === 'soft' &&
+    !(q.type === 'matching' && !q.boundary_geojson) &&
     !!QDEFS[q.type]
   );
 
@@ -239,24 +240,23 @@ function deriveStopRegionState(hardZone, list){
       return;
     }
 
-    survivingEntries.push({id, baseRegion});
-    // Display partial catchments as temporary without expanding exact constraints.
+    // A moving hider can satisfy different matching clues at different points
+    // in this same catchment. Each clue must have a possible point; their
+    // point-level slices must not be intersected across time.
+    let greenRegion = hardRegion;
+    for(const q of softConstraints){
+      const kept = QDEFS[q.type].applyToZone(hardRegion, q);
+      const compatible = kept && exactIsect(hardRegion, kept);
+      if(!compatible){
+        byStop[id] = {stop, inPlay:false, status:'eliminated', hardRegion:null, greenRegion:null, yellowRegion:null};
+        return;
+      }
+      greenRegion = compatible;
+    }
+    survivingEntries.push({id, baseRegion, hardRegion});
     const partialRegion = exactDiff(baseRegion, hardRegion);
     if(partialRegion) yellowFeatures.push(...geometryToPolygonFeatures(partialRegion, {regionKind:'yellow', stopId:id, catchmentPartial:true}));
-    let yellowRegion = null;
-    for(const q of softConstraints){
-      const def = QDEFS[q.type];
-      const kept = def.applyToZone(hardRegion, q);
-      const excluded = kept ? exactDiff(hardRegion, kept) : null;
-      if(excluded){
-        yellowRegion = yellowRegion ? safeUnion(yellowRegion, excluded) : excluded;
-      }
-    }
-    if(yellowRegion){
-      yellowRegion = exactIsect(yellowRegion, hardRegion) || null;
-    }
-
-    const greenRegion = yellowRegion ? exactDiff(hardRegion, yellowRegion) : hardRegion;
+    const yellowRegion = exactDiff(hardRegion, greenRegion);
 
     if(greenRegion) greenFeatures.push(...geometryToPolygonFeatures(greenRegion, {regionKind:'green', stopId:id}));
     if(yellowRegion) yellowFeatures.push(...geometryToPolygonFeatures(yellowRegion, {regionKind:'yellow', stopId:id, menuLabel:'Exclude region'}));
@@ -286,9 +286,12 @@ function deriveStopRegionState(hardZone, list){
     };
   }
 
+  // Restrict gameplay to eligible station catchments, including soft-clue
+  // eliminations. Preserve the explicit empty polygon when none remain.
+  const hardUnion = exactIsect(hardZone, _survivingCatchmentCache.union) || emptyPolygonFeature();
   return {
     byStop,
-    hardUnion: hardZone,
+    hardUnion,
     survivingCatchments: _survivingCatchmentCache.union,
     greenUnion: null,
     yellowUnion: null,
@@ -324,9 +327,11 @@ function deriveZoneStateFromConstraints(baseZone, list){
     }
   }
 
+  const stopState = deriveStopRegionState(hardZone, list);
   return {
-    validZone: hardZone,
-    softZone: softZoneState,
+    validZone: stopState?.hardUnion || hardZone,
+    softZone: stopState?.yellowUnion || softZoneState,
+    stopState,
   };
 }
 

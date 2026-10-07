@@ -1006,8 +1006,8 @@ function recomputeZoneFromConstraints(){
     toast('Could not rebuild zone state');
     return false;
   }
-  stopRegionState = deriveStopRegionState(nextState.validZone, constraints);
-  validZone = nextState.validZone;
+  stopRegionState = nextState.stopState || deriveStopRegionState(nextState.validZone, constraints);
+  validZone = stopRegionState?.hardUnion || nextState.validZone;
   softZone = stopRegionState?.yellowUnion || nextState.softZone || null;
   drawHideRadiusVisuals();
   renderZone();
@@ -1020,6 +1020,7 @@ function commitZoneState(nextHardZone, nextConstraints){
   constraints = normalizeConstraintList(nextConstraints);
   validZone = nextHardZone;
   stopRegionState = deriveStopRegionState(validZone, constraints);
+  validZone = stopRegionState?.hardUnion || validZone;
   softZone = stopRegionState?.yellowUnion || null;
   drawHideRadiusVisuals();
   renderZone();
@@ -1040,15 +1041,8 @@ function applyConstraintIncrementally(question){
     saveGame();
     return true;
   }
-  let nextHardZone = validZone;
-  if(getConstraintEffect(q) === 'hard'){
-    nextHardZone = def.applyToZone(validZone, q);
-    if(!nextHardZone){
-      toast('Zone empty — contradiction?');
-      return false;
-    }
-  }
-  return commitZoneState(nextHardZone, nextConstraints);
+  const next = deriveZoneStateFromConstraints(buildHideRadiusZone(), nextConstraints);
+  return commitZoneState(next.validZone, nextConstraints);
 }
 
 function deleteConstraintAt(index){

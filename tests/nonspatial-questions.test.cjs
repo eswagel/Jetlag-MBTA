@@ -13,7 +13,7 @@ for(const city of ['boston','chicago']){
  assert.equal(g.run('events.join()'),'clear,log,save');g.run('events=[];deleteConstraintAt(0)');assert.equal(g.run('constraints.length'),0);assert.equal(g.run('events.join()'),'clear,log,save');
  });
  test(city+': spatial apply and undo retain geometry path while no-op preview clears stale overlays',()=>{
- const g=game(city);g.run("QDEFS.auditSpatial={applyToZone:z=>z};applyConstraintIncrementally({type:'auditSpatial'})");assert.equal(g.run('events.join()'),'commit');
+ const g=game(city);g.run("buildHideRadiusZone=()=>hardBefore;deriveZoneStateFromConstraints=()=>({validZone:hardBefore});QDEFS.auditSpatial={applyToZone:z=>z};applyConstraintIncrementally({type:'auditSpatial'})");assert.equal(g.run('events.join()'),'commit');
  g.run("events=[];constraints=[{type:'auditSpatial'}];deleteConstraintAt(0)");assert.equal(g.run('events.join()'),'recompute');
  g.run("events=[];deriveStopRegionState=()=>{throw Error('unexpected geometry rebuild')};var preview=derivePreviewZoneState({type:'photo'});renderZonePreviewState(preview,'Photo sent')");
  assert.equal(g.run('preview.stopState===stopBefore && preview.hardZone===hardBefore'),true);assert.equal(g.run('events.join()'),'clear');assert.match(g.nodes.get('simul-hint').textContent,/map unchanged/);

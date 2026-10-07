@@ -59,7 +59,7 @@ function getSoftZoneForRender(){
 }
 
 function getGreenFeaturesForRender(hard, soft){
-  if(stopRegionState?.greenFeatures?.length) return stopRegionState.greenFeatures;
+  if(stopRegionState?.greenFeatures) return stopRegionState.greenFeatures;
   if(!hard) return [];
   try{
     const green = soft ? turf.difference(hard, soft) : hard;
@@ -70,7 +70,7 @@ function getGreenFeaturesForRender(hard, soft){
 }
 
 function getYellowFeaturesForRender(hard, soft){
-  if(stopRegionState?.yellowFeatures?.length) return stopRegionState.yellowFeatures;
+  if(stopRegionState?.yellowFeatures) return stopRegionState.yellowFeatures;
   if(!hard || !soft) return [];
   try{
     const yellow = turf.intersect(hard, soft);
@@ -248,7 +248,7 @@ function renderZone(){
 
   if(yellowFeatures.length){
     softLayer.addData(turf.featureCollection(yellowFeatures));
-  } else if(soft){
+  } else if(!stopRegionState && soft){
     try{
       const yellow = turf.intersect(hard, soft);
       if(yellow) softLayer.addData(yellow);
@@ -258,7 +258,7 @@ function renderZone(){
   // Green = remaining hard zone after removing temporary exclusions
   if(greenFeatures.length){
     borderLayer.addData(turf.featureCollection(greenFeatures));
-  }else{
+  }else if(!stopRegionState){
     try{
       const green = soft ? turf.difference(hard, soft) : hard;
       if(green) borderLayer.addData(green);

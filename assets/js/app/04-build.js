@@ -2234,12 +2234,10 @@ function derivePreviewZoneState(question){
     return {question:q, hardZone:validZone, stopState:stopRegionState,
       greenFeatures:stopRegionState?.greenFeatures || [], yellowFeatures:stopRegionState?.yellowFeatures || []};
   }
-  let nextHardZone = validZone;
-  if(getConstraintEffect(q) === 'hard'){
-    nextHardZone = def.applyToZone(validZone, q);
-  }
+  const next = deriveZoneStateFromConstraints(buildHideRadiusZone(), [...constraints, q]);
+  const nextHardZone = next.validZone;
   if(!nextHardZone) return null;
-  const nextStopState = deriveStopRegionState(nextHardZone, [...constraints, q]);
+  const nextStopState = next.stopState;
   return {
     question: q,
     hardZone: nextHardZone,
@@ -2265,9 +2263,7 @@ function renderZonePreviewState(previewState, label, shouldFit=true){
     return;
   }
   const isSoft = isSoftConstraintQuestion(previewQuestion);
-  const redMask = getConstraintEffect(previewQuestion) === 'hard'
-    ? exactDiff(stopRegionState?.survivingCatchments || validZone, previewState.stopState?.survivingCatchments || previewState.hardZone)
-    : null;
+  const redMask = exactDiff(stopRegionState?.survivingCatchments || validZone, previewState.stopState?.survivingCatchments || previewState.hardZone);
   const greenFeatures = previewState.greenFeatures || [];
   const yellowFeatures = previewState.yellowFeatures || [];
   setPreviewMapMode(true);
@@ -2285,7 +2281,7 @@ function renderZonePreviewState(previewState, label, shouldFit=true){
     interactive: false
   };
   if(greenFeatures.length) simulLayer.addData(decoratePreviewFeatures(greenFeatures, '#37c96b', 0.26, '4 3'));
-  else if(!yellowFeatures.length) simulLayer.addData(previewState.hardZone);
+  else if(!previewState.stopState && !yellowFeatures.length) simulLayer.addData(previewState.hardZone);
   if(yellowFeatures.length && tentaclePreviewLayer){
     tentaclePreviewLayer.addData(decoratePreviewFeatures(yellowFeatures, '#f0a030', 0.22, '6 4'));
   }
@@ -2297,7 +2293,7 @@ function renderZonePreviewState(previewState, label, shouldFit=true){
   if(hint){
     const detail = isSoft
       ? 'Green remains possible now. Yellow is temporarily ruled out. Red is impossible.'
-      : 'Green remains possible. Yellow marks cuts within surviving catchments or prior temporary clues. Red has no surviving catchment.';
+      : 'Green remains possible. Yellow marks excluded portions of still-possible station catchments. Red has no surviving catchment.';
     hint.innerHTML = `<b>${label}:</b> ${area} km² still in play<br><span style="font-size:8px;color:var(--dim)">${detail}</span>`;
     hint.className = 'simul-result-hint visible';
   }

@@ -9,11 +9,21 @@ for(const city of ['boston','chicago']){
   assert.equal(run('turf.area(deriveZoneStateFromConstraints(zone,[q]).validZone)'),0);
   assert.equal(run('turf.area(buildRedMaskFeature(zone,empty))'),run('turf.area(zone)'));
  });
- test(city+': soft matching makes completely excluded catchments yellow, retains expected hider',()=>{
+ test(city+': matching eliminates wholly incompatible catchments and retains compatible stations',()=>{
   const {run,c}=context(city);run(`var bases=[{id:'inside',stop:{},baseRegion:turf.bboxPolygon([0,0,1,1])},{id:'outside',stop:{},baseRegion:turf.bboxPolygon([3,0,4,1])}];buildStopBaseRegionEntries=()=>bases;var boundary=turf.bboxPolygon([-.1,-.1,1.1,1.1]);var q={type:'matching',category:'city',answer:'Yes',boundary_geojson:boundary,constraint_effect:'soft'};var state=deriveStopRegionState(turf.bboxPolygon([0,0,4,1]),[q]);`);
   assert.equal(run('state.byStop.inside.status'),'in-play');assert.equal(run('state.byStop.inside.hasGreen'),true);
-  assert.equal(run('state.byStop.outside.status'),'temporary');assert.equal(run('state.byStop.outside.hasGreen'),false);assert.equal(run('state.byStop.outside.hasYellow'),true);
-  assert.equal(run('state.byStop.outside.inPlay'),true,'soft clues do not permanently remove the station');
+  assert.equal(run('state.byStop.outside.status'),'eliminated');
+  assert.equal(run('state.byStop.outside.inPlay'),false);
+  assert.equal(run('turf.area(state.hardUnion)'),run('turf.area(bases[0].baseRegion)'));
+
+ });
+ test(city+': partial matching is temporary and successive disjoint slices allow movement',()=>{
+  const {run}=context(city);run(`var base=turf.bboxPolygon([0,0,1,1]);buildStopBaseRegionEntries=()=>[{id:'stop',stop:{},baseRegion:base}];var left=turf.bboxPolygon([0,0,.4,1]);var right=turf.bboxPolygon([.6,0,1,1]);var clue=b=>({type:'matching',answer:'Yes',boundary_geojson:b,constraint_effect:'soft'});var state=deriveStopRegionState(base,[clue(left),clue(right),{type:'matching',constraint_effect:'soft'}]);`);
+  assert.equal(run('state.byStop.stop.status'),'temporary');
+  assert.equal(run('state.byStop.stop.inPlay'),true);
+  assert.ok(run('turf.area(state.byStop.stop.greenRegion)')>0);
+  assert.equal(run('turf.area(state.byStop.stop.greenRegion)'),run('turf.area(right)'));
+  assert.ok(run('turf.area(state.byStop.stop.yellowRegion)')>0);
  });
  test(city+': empty matching, nearest and boundary answers never restore the old zone',()=>{
   const {run}=context(city);run("var z=turf.bboxPolygon([0,0,1,1]);var outside=turf.bboxPolygon([2,2,3,3]);");
