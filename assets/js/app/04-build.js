@@ -378,7 +378,7 @@ function renderMeasureParams(){
     h+=`<div class="found-result" style="margin-top:8px">
       📍 <b>${qparams.measure_seeker_nearest.name}</b><br>
       <span style="color:var(--dim)">${qparams.measure_seeker_dist.toFixed(2)} mi from you</span><br>
-      <span style="font-size:8px;color:var(--dim)">${qparams.measure_instance_count||qparams.measure_all_instances?.length||1} instances found for zone</span>
+      <span style="font-size:8px;color:var(--dim)">${qparams.measure_instance_count||qparams.measure_all_instances?.length||1} mapped feature${(qparams.measure_instance_count||qparams.measure_all_instances?.length||1)===1?'':'s'} used for zone</span>
     </div>`;
   if(ACTIVE_CITY.measureFilters?.[qparams.measure_cat]) h+='<p style="font-size:9px;color:var(--dim);line-height:1.5">Distance answers use the nearest mapped feature. Uncertain map cells remain in play for either answer.</p>';
   return h;
@@ -1542,7 +1542,7 @@ class GroupedLinearOverlay {
     }
     // A native disclosure provides the entire source route list even where labels are suppressed.
     const allNames=[...new Set(this.corridors.flatMap(corridor=>corridor.names))].sort();
-    this.legend=L.control({position:'bottomleft'});
+    this.legend=L.control({position:'topleft'});
     this.legend.onAdd=()=>{
       const details=document.createElement('details');details.className='grouped-line-legend';
       const summary=document.createElement('summary');summary.textContent=`${label} · ${allNames.length} routes`;
@@ -1605,6 +1605,42 @@ function renderAmtrakMeasureLines(_center, nearestName){
   const raw=preloadedData.pois?.amtrakLines;
   if(!Array.isArray(raw)||!raw.length)return;
   pickedMarkers.push(new GroupedLinearOverlay(map,raw,{nearestName,label:'Amtrak',formatLabel:amtrakLineLabel}));
+}
+
+// Screen-space thinning is presentation only: question/filter math keeps every POI.
+function layoutMeasurePointMarkers(items, project, size, {spacing=24,limit=80}={}){
+  const selected=[];
+  for(let rank=0;rank<items.length;rank++){
+    const item=items[rank],point=project(item);
+    if(!Number.isFinite(point.x)||!Number.isFinite(point.y)||point.x<0||point.y<0||point.x>size.x||point.y>size.y) continue;
+    if(selected.some(marker=>Math.hypot(marker.point.x-point.x,marker.point.y-point.y)<spacing)) continue;
+    selected.push({item,point,nearest:rank===0});
+    if(selected.length>=limit) break;
+  }
+  return selected;
+}
+
+class MeasurePointOverlay {
+  constructor(mapInstance,items){
+    this.map=mapInstance;this.items=items;
+    this.layer=L.layerGroup().addTo(this.map);
+    this.redraw=this.redraw.bind(this);
+    this.map.on('zoomend moveend resize',this.redraw);
+    this.redraw();
+  }
+  redraw(){
+    this.layer.clearLayers();
+    for(const entry of layoutMeasurePointMarkers(this.items,item=>this.map.latLngToContainerPoint([item.lat,item.lng]),this.map.getSize())){
+      const point=[entry.item.lat,entry.item.lng];
+      const marker=entry.nearest ? L.marker(point,{icon:tentaclePin(1,'#f0a030'),zIndexOffset:1500}) :
+        L.circleMarker(point,{radius:4,color:'#fff',weight:1,fillColor:'#4a7090',fillOpacity:.85});
+      const popup=document.createElement('div');popup.className='stop-popup';
+      const name=document.createElement('div');name.className='stop-popup-name';name.textContent=entry.item.name;popup.append(name);
+      if(entry.nearest){const note=document.createElement('div');note.textContent='★ Your nearest';popup.append(note);}
+      marker.bindPopup(popup,{offset:[0,-12],maxWidth:220});this.layer.addLayer(marker);
+    }
+  }
+  remove(){this.map.off('zoomend moveend resize',this.redraw);this.layer.remove();}
 }
 
 async function selectMeasureCat(catObj){
@@ -1720,15 +1756,7 @@ async function selectMeasureCat(catObj){
       m.bindPopup(measureNearestPopup(catObj.label, nearest.name),{offset:[0,-12],maxWidth:220});
       pickedMarkers.push(m);
     } else {
-      // For POI categories, show numbered teardrop pins
-      instances.slice(0,100).forEach((p,i)=>{
-        if(!p.lat||!p.lng) return;
-        const col = i===0 ? '#f0a030' : '#4a7090';
-        const m = L.marker([p.lat,p.lng],{icon:tentaclePin(i+1,col),zIndexOffset:1500+i})
-          .bindPopup(`<div class="stop-popup"><div class="stop-popup-name">${p.name}</div>${i===0?'<div style="font-size:9px;color:#f0a030;margin-top:2px">★ Your nearest</div>':''}</div>`,{offset:[0,-28],maxWidth:220})
-          .addTo(map);
-        pickedMarkers.push(m);
-      });
+      pickedMarkers.push(new MeasurePointOverlay(map,instances));
     }
     // Fit map to show nearest + seeker location
     if(nearest.lat && nearest.lng){

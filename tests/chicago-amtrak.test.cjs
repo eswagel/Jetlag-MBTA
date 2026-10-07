@@ -29,3 +29,32 @@ test('Amtrak reference coverage extends beyond nearest tracks throughout game ar
   assert(distance([x,y])+7<edge,`Insufficient reference margin at ${x},${y}`);
  }
 });
+
+test('Amtrak current labels retain historical source identity without duplicate physical geometry',()=>{
+ const floridian=data.amtrakLines.filter(f=>f.properties.name==='Floridian');
+ assert.equal(floridian.length,1);
+ assert.deepEqual(new Set(floridian[0].properties.sourceNames),new Set(['Capitol Limited','Floridian']));
+ assert.deepEqual(new Set(floridian[0].properties.sourceIds),new Set([8,49]));
+ assert(!data.amtrakLines.some(f=>f.properties.name==='Capitol Limited'));
+ const lincoln=data.amtrakLines.find(f=>f.properties.name==='Lincoln Service Missouri River Runner');
+ assert(lincoln.properties.sourceNames.includes('Lincol Service Missouri River Runner'));
+ assert.equal(floridian[0].properties.nameNormalization.effectiveFrom,'2024-11-10');
+});
+
+test('alias normalization never drops a distinct historic track segment',()=>{
+ const feature=(id,name,coordinates)=>({type:'Feature',properties:{OBJECTID:id,name},geometry:{type:'LineString',coordinates}});
+ const source={type:'FeatureCollection',features:[
+  feature(8,'Capitol Limited',[[-87.7,41.7],[-87.6,41.8]]),
+  feature(49,'Floridian',[[-87.7,41.7],[-87.5,41.8]]),
+ ]};
+ assert.equal(build(source).length,2);
+});
+
+test('normalization preserves every unique clipped source segment',()=>{
+ const zlib=require('node:zlib'),fs=require('node:fs');
+ const source=JSON.parse(zlib.gunzipSync(fs.readFileSync('data/chicago/sources/amtrak-routes.json.gz')));
+ const {clipLineSegments}=require('../scripts/lib/line-geometry.cjs');
+ const segments=features=>new Set(features.flatMap(f=>f.geometry.coordinates.flatMap(line=>line.slice(1).map((p,i)=>JSON.stringify([line[i],p])))));
+ const raw=source.features.map(f=>({geometry:{coordinates:clipLineSegments(f.geometry,CLIP,turf)}}));
+ assert.deepEqual(segments(data.amtrakLines),segments(raw));
+});

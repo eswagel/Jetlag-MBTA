@@ -1,0 +1,21 @@
+{
+  "version": "chicago-amtrak-labels-2026-10-07",
+  "reviewedOn": "2026-10-07",
+  "aliases": [
+    {
+      "sourceName": "Capitol Limited",
+      "displayName": "Floridian",
+      "sourceUrl": "https://media.amtrak.com/2024/09/amtrak-launching-the-floridian-with-daily-service-between-chicago-and-miami/",
+      "publishedOn": "2024-09-23",
+      "effectiveFrom": "2024-11-10",
+      "currentConfirmationUrl": "https://www.amtrak.com/floridian-train",
+      "reason": "Amtrak temporarily combines Capitol Limited and Silver Star service into Floridian. The pinned NTAD source retains both names on identical local geometry."
+    },
+    {
+      "sourceName": "Lincol Service Missouri River Runner",
+      "displayName": "Lincoln Service Missouri River Runner",
+      "sourceUrl": "https://www.amtrak.com/lincoln-service-missouri-river-runner-train",
+      "reason": "Correct the source label's missing final n using Amtrak's published route name."
+    }
+  ]
+}
