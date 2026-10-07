@@ -82,7 +82,13 @@
       const updates=update.stop_time_update || update.stopTimeUpdate || [];
       const added=[],skipped=[];
       for(const stop of updates){
-        const raw=String(stop.stop_id || stop.stopId || '');const parent=data.stopParents?.[raw];
+        const raw=String(stop.stop_id || stop.stopId || '');
+        const sequence=stop.stop_sequence ?? stop.stopSequence;
+        // GTFS-RT permits sequence-only updates for trips identified in the static feed.
+        // Preserve real GTFS sequence values: they need not be contiguous or zero-based.
+        const sequencedParent=sequence==null ? null : scheduledTrip?.stopSequenceParents?.[String(sequence)];
+        const parent=raw ? data.stopParents?.[raw] : sequencedParent;
+        if(raw && sequencedParent && parent!==sequencedParent)continue;
         if(!parent || !allowed.has(String(parent)))continue;
         const rel=stop.schedule_relationship ?? stop.scheduleRelationship ?? 0;
         if(rel===1 || rel==='SKIPPED') {skipped.push(String(parent));continue;}

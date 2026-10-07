@@ -47,7 +47,8 @@ def generate(feeds, sources, generated):
             if key not in pattern_ids:
                 pattern_ids[key]=len(patterns); patterns.append({'lineId':group,'stationIds':ids})
             service_trips.append({'id':tid,'serviceId':trip['service_id'],'pattern':pattern_ids[key],
-                'start':seconds(ts[0]['departure_time']),'end':seconds(ts[-1]['arrival_time'])})
+                'start':seconds(ts[0]['departure_time']),'end':seconds(ts[-1]['arrival_time']),
+                'stopSequenceParents':{t['stop_sequence']:(stops[t['stop_id']].get('parent_station') or t['stop_id']) for t in ts}})
     shape_ids={t['shape_id'] for group in groups.values() for t,_ in group}
     shapes=collections.defaultdict(list)
     for s in rows(z,'shapes.txt'):

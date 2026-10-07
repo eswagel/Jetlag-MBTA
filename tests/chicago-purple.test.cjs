@@ -34,3 +34,23 @@ test('live cancellations and skipped special stops do not invent station members
   const skipped=service.withRealtime(data,makeFeed([{trip:{trip_id:ids[0],route_id:'P'},stop_time_update:[{stop_id:'41420',schedule_relationship:'SKIPPED',arrival:{time:Date.parse(morning)/1000+30}}]}]),morning);
   assert(!skipped.stationIds.includes('41420'));
 });
+
+test('sequence-only GTFS-RT updates map actual GTFS sequence values to parent stations',()=>{
+  const current=service.snapshot(data,'Purple',morning);
+  const trip=data.trips.find(t=>t.id===current.tripIds[0]);
+  const [sequence,parent]=Object.entries(trip.stopSequenceParents)[1];
+  const isolated={...data,trips:[trip]};
+  assert(service.snapshot(isolated,'Purple',morning).stationIds.includes(parent));
+  const skipped=service.withRealtime(isolated,makeFeed([{trip:{trip_id:trip.id,route_id:'P'},stop_time_update:[{stop_sequence:Number(sequence),schedule_relationship:'SKIPPED'}]}]),morning);
+  assert(!skipped.stationIds.includes(parent),'sequence-only SKIPPED must remove the correctly mapped station');
+  assert.equal(skipped.liveEvidence.evidence[0].skippedStationIds[0],parent);
+  // The same known trip is running outside its published time: a timed live update
+  // identifies the actual next station by sequence, even without a stop_id.
+  const delayed={...isolated,trips:[{...trip,start:0,end:1}]};
+  assert.equal(service.snapshot(delayed,'Purple',morning).stationIds.length,0);
+  const added=service.withRealtime(delayed,makeFeed([{trip:{trip_id:trip.id,route_id:'P'},stop_time_update:[{stop_sequence:Number(sequence),arrival:{time:Date.parse(morning)/1000+60}}]}]),morning);
+  assert.deepEqual(added.stationIds,[parent]);
+  assert.deepEqual(service.replay(delayed,added),added);
+  const unknown=service.withRealtime(delayed,makeFeed([{trip:{trip_id:trip.id,route_id:'P'},stop_time_update:[{stop_sequence:999999,arrival:{time:Date.parse(morning)/1000+60}}]}]),morning);
+  assert.equal(unknown.source,'cta-gtfs-schedule');
+});
