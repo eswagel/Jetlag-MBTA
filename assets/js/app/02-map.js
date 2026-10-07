@@ -2,12 +2,13 @@
 //  MAP INIT
 // ══════════════════════════════════════════════════════
 function initMap(){
-  map=L.map('map',{center:CENTER,zoom:12,zoomControl:false});
+  map=L.map('map',{center:CENTER,zoom:12,zoomControl:false,attributionControl:false});
+  L.control.attribution({position:'topleft'}).addTo(map);
   if(ACTIVE_CITY.id === 'chicago') map.fitBounds([[S,W],[N,E]]);
 
-  L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png',{
-    attribution:'© OpenStreetMap contributors © CARTO',
-    subdomains:'abcd', maxZoom:19
+  L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png',{
+    attribution:'&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
+    maxZoom:19
   }).addTo(map);
 
   L.control.zoom({position:'topleft'}).addTo(map);
@@ -397,9 +398,10 @@ function hydrateMBTAFromStatic(data, legStatus){
   (data.commuterRail || []).forEach(stop => {
     commuterRailStops.add(stop.id);
     if(stop.parentId) commuterRailStops.add(stop.parentId);
-    if(stop.name && Number.isFinite(stop.lat) && Number.isFinite(stop.lng) && !seenCR.has(stop.name)){
-      seenCR.add(stop.name);
-      commuterRailStopsList.push({id: stop.id, name: stop.name, lat: stop.lat, lng: stop.lng});
+    const identity = stop.id || `${stop.agency || ''}:${stop.lat},${stop.lng}`;
+    if(stop.name && Number.isFinite(stop.lat) && Number.isFinite(stop.lng) && !seenCR.has(identity)){
+      seenCR.add(identity);
+      commuterRailStopsList.push({id: stop.id, agency:stop.agency, name: stop.name, lat: stop.lat, lng: stop.lng});
     }
   });
 

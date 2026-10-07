@@ -86,7 +86,7 @@ async function resolveMeasureValue(question, loc){
   const catObj = findMeasureCategory(question.category);
   if(!catObj) throw new Error(`Unknown measure category: ${question.category}`);
 
-  if(['An Amtrak Line','A Coastline'].includes(question.category)){
+  if(isLinearMeasure(question.category)){
     const lineFeatures = (await getMeasureLinearFeatures(catObj, loc))
       .map(item => ({name:item.name, feature:coerceFeature(item, item.name)}))
       .filter(item => item.feature);
@@ -119,6 +119,9 @@ async function hiderLoadQuestion(){
   const raw = document.getElementById('hider-json-in').value.trim();
   if(!raw){ toast('Paste a question JSON first'); return; }
   let q; try{ q=JSON.parse(raw); }catch(e){ toast('Invalid JSON'); return; }
+  const compatibilityError = cityCompatibilityError(q);
+  if(compatibilityError){ toast(compatibilityError); return; }
+  try{ validateQuestionForCity(q); }catch(e){ toast(e.message); return; }
   if(q?.type === 'tentacles'){
     const center = normalizeLatLng(q.center);
     const radius = Number(q.radius_miles || 1);
@@ -295,9 +298,10 @@ function hiderAutoLineLookup(){
     promptHiderStationPick();
     return;
   }
-  const targetLineId = q.line_id || null;
   const targetLabel = q.seeker_val || q.matching_line_label || q.category_label || 'Unknown line';
-  const same = targetLineId ? hiderStation.lines.includes(targetLineId) : false;
+  let same;
+  try{ same = stationMatchesQuestionLine(hiderStation, q); }
+  catch(e){ toast(e.message); return; }
   const answer = same ? 'Yes' : 'No';
   const expl = `Your station: <b>${hiderStation.name}</b> / Selected line: <b>${targetLabel}</b> → <b>${answer.toUpperCase()}</b>`;
   hiderPickAnswer(answer, expl);
@@ -469,7 +473,7 @@ function hiderPickAnswer(val, explanation, answerLabel=null){
   banner.style.borderColor = 'rgba(24,176,80,0.5)';
   banner.style.background  = 'rgba(24,176,80,0.08)';
 
-  showHiderResult(JSON.stringify(answered, null, 2), null, null);
+  showHiderResult(JSON.stringify(stampCityPayload(answered), null, 2), null, null);
 }
 
 function openAnswerModal(q, def, isRandom=false){
@@ -630,7 +634,7 @@ function confirmCard(){
   closeAnswerModal();
   if(card === 'veto'){
     const payload = { type:'veto', original_id: _hiderQ?.id || null };
-    showHiderResult(JSON.stringify(payload, null, 2), 'veto');
+    showHiderResult(JSON.stringify(stampCityPayload(payload), null, 2), 'veto');
   } else if(card === 'randomize'){
     doRandomize();
   }
@@ -649,5 +653,5 @@ function doRandomize(){
     preset,
     id:'rand'+Date.now().toString(36),
   };
-  showHiderResult(JSON.stringify(payload, null, 2), 'randomize', preset);
+  showHiderResult(JSON.stringify(stampCityPayload(payload), null, 2), 'randomize', preset);
 }

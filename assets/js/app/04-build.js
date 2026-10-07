@@ -362,7 +362,7 @@ function renderMeasureParams(){
     h += `<div style="font-size:7.5px;letter-spacing:0.1em;text-transform:uppercase;color:var(--dim);margin:8px 0 5px">${grp}</div>`;
     h += '<div class="poi-presets">';
     cats.forEach(c=>{
-      h+=`<div class="poi-chip ${qparams._mcat===c.label?'on':''}" onclick="${_c(()=>selectMeasureCat(c))}">${c.icon} ${c.label}</div>`;
+      h+=`<div class="poi-chip ${qparams._mcat===c.label?'on':''}" onclick="${_c(()=>selectMeasureCat(c))}">${c.icon} ${c.label}${cityQuestionUnavailableReason({type:'measure',category:c.label}) ? ' · pending' : ''}</div>`;
     });
     h += '</div>';
   });
@@ -504,6 +504,7 @@ async function selectMatchingCat(catObj){
     qparams.matching_hide_radius_miles = null;
   }
   qparams.matching_seeker_val = null;
+  qparams.matching_service_snapshot = null;
   qparams.matching_boundary = null;
   qparams.nearest_cat = null;
   qparams.nearest_cat_label = null;
@@ -526,6 +527,7 @@ async function selectMatchingCat(catObj){
     qparams._matching_searching = false;
     if(!result.val){ toast('Could not determine your '+catObj.label+' — try a different location'); renderBuildBody(); return; }
     qparams.matching_seeker_val = result.val;
+    qparams.matching_service_snapshot = result.service_snapshot || null;
     if(result.line_id){
       qparams.matching_line_id = result.line_id;
       qparams.matching_line_label = result.val;
@@ -533,11 +535,11 @@ async function selectMatchingCat(catObj){
     }
     // Normalize: ensure seeker's point is INSIDE the polygon, flip if not
     let boundary = result.boundary || null;
-    if(boundary && catObj.cat !== 'line'){
+    if(boundary && catObj.cat !== 'line' && !isChicagoGame()){
       try{
         const pt = turf.point([qparams.center.lng, qparams.center.lat]);
         if(!turf.booleanPointInPolygon(pt, boundary)){
-          const BBOX = turf.bboxPolygon([-72.5, 41.5, -70.0, 43.0]);
+          const BBOX = cloneGeo(INIT_POLY);
           const flipped = turf.difference(BBOX, boundary);
           if(flipped && turf.booleanPointInPolygon(pt, flipped)){
             boundary = flipped;
@@ -579,6 +581,7 @@ async function selectNearestCat(catObj){
   qparams.matching_cat = null;
   qparams.matching_cat_label = null;
   qparams.matching_seeker_val = null;
+  qparams.matching_service_snapshot = null;
   qparams.matching_boundary = null;
   qparams._matching_boundary_simplified = null;
   qparams.nearest_cat = catObj.label;
@@ -600,7 +603,7 @@ async function selectNearestCat(catObj){
     if(pois.length >= 2){
       try{
         const fc = turf.featureCollection(pois.map(p=>turf.point([p.lng,p.lat])));
-        const cells = turf.voronoi(fc, {bbox:[-72,41.5,-70,43]});
+        const cells = turf.voronoi(fc, {bbox:[W,S,E,N]});
         if(cells && cells.features.length){
           // Find cell containing the nearest POI point
           const nearestPt = turf.point([pois[0].lng, pois[0].lat]);
@@ -1388,7 +1391,7 @@ function measureNearestPopup(categoryLabel, nearestName){
 }
 
 function isSeaLevelMeasure(label){
-  return String(label || '').toLowerCase() === 'sea level';
+  return ['sea level', 'elevation'].includes(String(label || '').toLowerCase());
 }
 
 function measureAnswerOptions(question){
@@ -1518,6 +1521,8 @@ function renderAmtrakMeasureLines(center, nearestName){
 }
 
 async function selectMeasureCat(catObj){
+  const unavailable = cityQuestionUnavailableReason({type:'measure',category:catObj.label});
+  if(unavailable){ toast(unavailable, 6000); return; }
   if(!qparams.center){toast('Set your location first');return;}
   qparams._mcat=catObj.label; qparams._mcatlabel=catObj.label; qparams._msearching=true;
   qparams.measure_cat=catObj.label; qparams.measure_cat_label=catObj.label;
@@ -1525,6 +1530,7 @@ async function selectMeasureCat(catObj){
   qparams.measure_seeker_nearest=null; qparams.measure_seeker_dist=null; qparams.measure_seeker_elevation_ft=null; qparams.measure_seeker_elevation_m=null; qparams.measure_all_instances=null; qparams.measure_linear_features=null; qparams.measure_constraint_union=null;
   if(catObj.label==='A County Border') highlightBoundary('county');
   else if(catObj.label==='A City Border') highlightBoundary('city');
+  else if(catObj.label==='A Ward Border') highlightBoundary('ward');
   else clearBoundaryHighlight();
   renderBuildBody();
   try{
@@ -1546,7 +1552,7 @@ async function selectMeasureCat(catObj){
       return;
     }
 
-    if(['An Amtrak Line','A Coastline'].includes(catObj.label)){
+    if(isLinearMeasure(catObj.label)){
       const lineFeatures = (await getMeasureLinearFeatures(catObj, qparams.center))
         .map(item => ({name:item.name, feature:coerceFeature(item, item.name)}))
         .filter(item => item.feature);
@@ -1571,7 +1577,7 @@ async function selectMeasureCat(catObj){
         }catch(e){}
       });
       if(!best){
-        toast('Could not determine the nearest Amtrak line');
+        toast('Could not determine the nearest point on this feature');
         qparams._msearching=false;
         renderBuildBody();
         return;
@@ -1731,7 +1737,7 @@ function updatePreview(){
   if(typeof scheduleSaveGame === 'function') scheduleSaveGame();
 }
 
-function buildQuestionPacket(question){
+function buildQuestionPacketContent(question){
   const q = decorateConstraintQuestion(question);
   if(!q) return null;
   if(q.type === 'radar'){
@@ -1788,6 +1794,7 @@ function buildQuestionPacket(question){
             seeker_val:q.seeker_val,
             line_id:q.line_id || null,
             hide_radius_miles:q.hide_radius_miles ?? hideRadiusMi,
+            service_snapshot:cloneForStorage(q.service_snapshot || null),
           }
         : {}),
     };
@@ -1801,12 +1808,16 @@ function buildQuestionPacket(question){
   return cloneForStorage(q);
 }
 
+function buildQuestionPacket(question){
+  return stampCityPayload(buildQuestionPacketContent(question));
+}
+
 function generateJSON(){
   const activeType = getActiveBuildQType();
   const def=QDEFS[activeType];
   _tentacleSelection = null;
   if(currentBuiltQuestion?.id) forgetOutgoingQuestion(currentBuiltQuestion.id);
-  const fullQuestion=def.toJSON(qparams);
+  const fullQuestion=stampCityPayload(def.toJSON(qparams));
   fullQuestion.id='q'+Date.now().toString(36);
   currentBuiltQuestion = decorateConstraintQuestion({
     ...fullQuestion,

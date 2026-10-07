@@ -12,12 +12,12 @@ function normalizeLatLng(value){
 }
 
 function normalizeMatchingBoundaryForCenter(boundary, center){
-  if(!boundary || !center) return boundary || null;
+  if(!boundary || !center || isChicagoGame()) return boundary || null;
   try{
     const pt = turf.point([center.lng, center.lat]);
     let normalized = boundary;
     if(!turf.booleanPointInPolygon(pt, normalized)){
-      const bbox = turf.bboxPolygon([-72.5, 41.5, -70.0, 43.0]);
+      const bbox = cloneGeo(INIT_POLY);
       const flipped = turf.difference(bbox, normalized);
       if(flipped && turf.booleanPointInPolygon(pt, flipped)){
         normalized = flipped;
@@ -107,6 +107,7 @@ function buildStoredMatchingQuestion(payload){
       matching_cat_label:categoryLabel,
       matching_seeker_val:payload.seeker_val || 'Unknown',
       matching_line_id:payload.line_id || null,
+      matching_service_snapshot:payload.service_snapshot || null,
       matching_hide_radius_miles:Number(payload.hide_radius_miles || hideRadiusMi),
       matching_boundary:boundary,
       _matching_boundary_simplified:boundary,
@@ -128,6 +129,7 @@ async function rebuildMatchingQuestion(payload){
   if(category === 'line' && !payload.line_id) throw new Error('Line matching question is missing line id');
   const result = await catObj.resolve(center, {
     lineId: payload.line_id || null,
+    serviceSnapshot: payload.service_snapshot || null,
     hideRadiusMiles: Number(payload.hide_radius_miles || hideRadiusMi),
   });
   if(!result?.val) throw new Error(`Could not resolve ${payload.category_label || catObj.label}`);
@@ -142,6 +144,7 @@ async function rebuildMatchingQuestion(payload){
       matching_cat_label:payload.category_label || catObj.label,
       matching_seeker_val:result.val,
       matching_line_id:payload.line_id || result.line_id || null,
+      matching_service_snapshot:payload.service_snapshot || result.service_snapshot || null,
       matching_hide_radius_miles:Number(payload.hide_radius_miles || hideRadiusMi),
       matching_boundary:boundary,
       _matching_boundary_simplified:boundary,
@@ -195,7 +198,7 @@ async function rebuildNearestQuestion(payload){
   if(pois.length >= 2){
     try{
       const fc = turf.featureCollection(pois.map(p=>turf.point([p.lng,p.lat])));
-      const cells = turf.voronoi(fc, {bbox:[-72,41.5,-70,43]});
+      const cells = turf.voronoi(fc, {bbox:[W,S,E,N]});
       if(cells?.features?.length){
         const nearestPt = turf.point([nearest.lng, nearest.lat]);
         const seekerPt = turf.point([center.lng, center.lat]);
@@ -298,7 +301,7 @@ async function rebuildMeasureQuestion(payload){
     };
   }
 
-  if(['An Amtrak Line','A Coastline'].includes(catObj.label)){
+  if(isLinearMeasure(catObj.label)){
     const lineFeatures = (await getMeasureLinearFeatures(catObj, center))
       .map(item => ({name:item.name, feature:coerceFeature(item, item.name)}))
       .filter(item => item.feature);
@@ -356,7 +359,7 @@ async function rebuildMeasureQuestion(payload){
   };
 }
 
-async function hydrateOutgoingQuestion(payload){
+async function hydrateOutgoingQuestionContent(payload){
   if(!payload || typeof payload !== 'object') throw new Error('JSON must be an object');
   if(payload.answer) throw new Error('Paste the original question JSON, not the answer');
   if(payload.type === 'veto' || payload.type === 'randomize_card') throw new Error('Card results are not loadable questions');
@@ -373,6 +376,13 @@ async function hydrateOutgoingQuestion(payload){
     default:
       throw new Error(`Unsupported question type: ${payload.type}`);
   }
+}
+
+async function hydrateOutgoingQuestion(payload){
+  const error = cityCompatibilityError(payload);
+  if(error) throw new Error(error);
+  validateQuestionForCity(payload);
+  return stampCityPayload(await hydrateOutgoingQuestionContent(payload));
 }
 
 async function loadQuestionFromRaw(raw, onSuccess){
@@ -455,6 +465,7 @@ function questionToBuildParams(question){
         matching_cat_label:question.category_label,
         matching_seeker_val:question.seeker_val,
         matching_line_id:question.line_id || null,
+        matching_service_snapshot:question.service_snapshot || null,
         matching_line_label:question.seeker_val || null,
         matching_hide_radius_miles:question.hide_radius_miles ?? hideRadiusMi,
         matching_boundary:question.boundary_geojson || null,
@@ -546,6 +557,7 @@ function syncLoadedQuestionHighlights(question){
   if(question.type === 'measure'){
     if(question.category_label === 'A County Border') highlightBoundary('county');
     else if(question.category_label === 'A City Border') highlightBoundary('city');
+    else if(question.category_label === 'A Ward Border') highlightBoundary('ward');
     else clearBoundaryHighlight();
     return;
   }
@@ -632,6 +644,7 @@ function syncRestoredBuildUi(){
     else if(qtype === 'measure'){
       if(qparams.measure_cat_label === 'A County Border' || qparams.measure_cat === 'A County Border') highlightBoundary('county');
       else if(qparams.measure_cat_label === 'A City Border' || qparams.measure_cat === 'A City Border') highlightBoundary('city');
+      else if(qparams.measure_cat_label === 'A Ward Border' || qparams.measure_cat === 'A Ward Border') highlightBoundary('ward');
       else clearBoundaryHighlight();
     } else {
       clearBoundaryHighlight();
@@ -774,6 +787,8 @@ function applyAnswerFromRaw(raw, onSuccess){
     toast('Invalid JSON - check format');
     return;
   }
+  const compatibilityError = cityCompatibilityError(payload);
+  if(compatibilityError){ toast(compatibilityError); return; }
   const q = resolveAnsweredQuestion(payload);
   if(!q){
     toast(payload?.id
@@ -781,6 +796,7 @@ function applyAnswerFromRaw(raw, onSuccess){
       : 'Invalid answer JSON - missing question context');
     return;
   }
+  try{ validateQuestionForCity(q); }catch(e){ toast(e.message); return; }
   applyAnswerObject(q, onSuccess);
 }
 
@@ -859,8 +875,9 @@ function renderLog(){
 
 function exportQuestionLog(){
   const payload = {
-    kind:'jetlag_mbta_question_log',
-    version:2,
+    kind:'jetlag_question_log',
+    version:3,
+    ...cityMetadata(),
     exported_at:new Date().toISOString(),
     constraints: cloneForStorage(constraints),
   };
@@ -887,6 +904,8 @@ function importQuestionLog(){
     return;
   }
 
+  const compatibilityError = cityCompatibilityError(parsed);
+  if(compatibilityError){ toast(compatibilityError); return; }
   const importedConstraints = Array.isArray(parsed)
     ? parsed
     : (Array.isArray(parsed?.constraints) ? parsed.constraints : null);
@@ -899,6 +918,13 @@ function importQuestionLog(){
     return;
   }
 
+  for(const item of importedConstraints){
+    if(item.city_id || item.dataset_version){
+      const error = cityCompatibilityError(item);
+      if(error){ toast(error); return; }
+    }
+    try{ validateQuestionForCity(item); }catch(e){ toast(e.message); return; }
+  }
   const shouldImport = window.confirm('Importing this question log will replace your current questions and answers. Continue?');
   if(!shouldImport) return;
 

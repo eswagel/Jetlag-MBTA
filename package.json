@@ -2,13 +2,17 @@
   "name": "jetlag-mbta",
   "private": true,
   "version": "1.0.0",
-  "description": "Static data generators for the Jet Lag MBTA app",
+  "description": "Multi-city transit hide-and-seek game and reproducible geographic data generators",
   "scripts": {
     "generate:mbta": "node scripts/generate-mbta-data.js",
     "generate:boundaries": "node scripts/generate-boundaries.js",
     "generate:pois": "node scripts/generate-pois.js",
     "generate:landmasses": "python3 scripts/generate-landmasses.py",
-    "generate:elevation": "node scripts/generate-elevation-grid.js"
+    "generate:elevation": "node scripts/generate-elevation-grid.js",
+    "test": "node --test tests/*.test.js tests/*.test.cjs",
+    "generate:chicago:transit": "python3 scripts/generate-chicago-transit.py",
+    "test:geography": "python3 tests/chicago-geography.test.py",
+    "generate:chicago:geography": "python3 scripts/generate-chicago-geography.py"
   },
   "dependencies": {
     "@turf/turf": "^7.3.4"

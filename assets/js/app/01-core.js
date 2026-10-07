@@ -412,6 +412,7 @@ function saveGame(){
     const save = {
       v: 3,
       ...cityMetadata(),
+      transit_feed_version: preloadedData.mbta?.feedVersion || null,
       ts: Date.now(),
       gameMode,
       hideRadiusMi,
@@ -741,6 +742,7 @@ function resumeGame(){
   const save = loadSave();
   if(!save){ discardAndNew(); return; }
   if(!mbdataReady){ toast(`Wait for ${ACTIVE_CITY.networkLabel} station data before resuming.`); return; }
+  try{ validateSavedCityQuestions(save); }catch(e){ toast(e.message); return; }
   clearTimeout(_saveGameTimer);
   _saveGameTimer = null;
 
@@ -1103,7 +1105,7 @@ function clipFeatureToZone(feature, zone, miles){
 }
 
 function simplifyMeasureFeature(feature, q){
-  if(!feature) return feature;
+  if(!feature || ACTIVE_CITY.id === 'chicago') return feature;
   const isCoast = /coast|sea level/i.test(q?.category_label || q?.category || '');
   if(!isCoast) return feature;
   try{
@@ -1159,6 +1161,8 @@ function buildElevationConstraintFeature(q, zone=null){
 
 function buildMeasureConstraintUnion(q, zone=null){
   if(!q) return null;
+  // The full regional water network cannot safely be buffered on the UI thread.
+  if(ACTIVE_CITY.id === 'chicago' && (q.category === 'A Body of Water' || q.category_label === 'A Body of Water')) return null;
   try{
     if(q.mode === 'elevation'){
       const feature = buildElevationConstraintFeature(q, zone);
@@ -1196,6 +1200,7 @@ function buildMeasureConstraintUnion(q, zone=null){
       }
     }
     if(!union) return null;
+    if(ACTIVE_CITY.id === 'chicago') return union;
     try{
       return turf.simplify(union, {tolerance:0.0008, highQuality:false}) || union;
     }catch(e){

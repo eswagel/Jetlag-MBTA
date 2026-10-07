@@ -67,6 +67,11 @@ function selectCity(cityId){
 function renderCityProfile(){
   document.title = `Jet Lag — ${ACTIVE_CITY.networkLabel} ${ACTIVE_CITY.name}`;
   document.getElementById('city-selector').value = ACTIVE_CITY.id;
+  const note = document.getElementById('city-preview-note');
+  if(note){
+    note.hidden = ACTIVE_CITY.id !== 'chicago';
+    note.textContent = 'Chicago preview: elevation, places of interest, Amtrak track, body-of-water filtering and live Purple Express questions are not ready yet. ZIP matching uses Census ZIP areas (ZCTAs).';
+  }
   document.getElementById('setup-eyebrow').textContent = `Jet Lag: The Game · ${ACTIVE_CITY.name}`;
   document.getElementById('setup-network').textContent = ACTIVE_CITY.networkLabel;
   document.getElementById('setup-description').textContent = `The hider picks a secret location on the ${ACTIVE_CITY.networkLabel} rail network, including suburban stations. Seekers eliminate zones by asking questions.`;
