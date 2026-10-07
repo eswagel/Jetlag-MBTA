@@ -59,7 +59,7 @@ test('empty transit never marks setup ready',()=>{
 });
 test('scheduled Purple Express does not imply active station membership',()=>{
   const a=app('chicago');
-  a.run('drawStopMarkers = ()=>{}; finalizeMBTALoad = ()=>{}');
+  a.run('drawStopMarkers = ()=>{}; finalizeMBTALoad = ()=>{}; drawTransitRoutes = ()=>{}');
   a.run(`hydrateMBTAFromStatic({lines:[
     {id:'Purple',stops:[{id:'1',name:'A',lat:42,lng:-87.7}]},
     {id:'Purple-Express',stops:[{id:'1',name:'A',lat:42,lng:-87.7},{id:'2',name:'B',lat:41.9,lng:-87.7}]}

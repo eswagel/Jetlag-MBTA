@@ -9,8 +9,11 @@ const BOSTON_LINES = [
   { id:'Green-C',       label:'Green Line · C',     color:'#00843D', weight:4, routeId:'Green-C'  },
   { id:'Green-D',       label:'Green Line · D',     color:'#00843D', weight:4, routeId:'Green-D'  },
   { id:'Green-E',       label:'Green Line · E',     color:'#00843D', weight:4, routeId:'Green-E'  },
-  { id:'Mattapan',      label:'Mattapan Line',       color:'#DA291C', weight:4, routeId:'Mattapan' },
-];
+  { id:'Mattapan',      label:'Mattapan Line',       color:'#DA291C', weight:4, routeId:'Mattapan', dashArray:'8 5' },
+].map(line => {
+  const physicalLineId = line.id.startsWith('Green-') ? 'Green' : line.id.startsWith('Red-') ? 'Red' : line.id;
+  return {...line, physicalLineId, branchId:line.id === physicalLineId ? null : line.id.slice(physicalLineId.length + 1), displayLabel:`${physicalLineId} Line`};
+});
 const CHICAGO_LINES = [
   {id:'Red', label:'Red Line', color:'#C60C30', routeId:'Red'},
   {id:'Blue', label:'Blue Line', color:'#00A1DE', routeId:'Blue'},
@@ -19,10 +22,12 @@ const CHICAGO_LINES = [
   {id:'Green-Cottage', label:'Green · Cottage Grove', color:'#009B3A', routeId:'G'},
   {id:'Orange', label:'Orange Line', color:'#F9461C', routeId:'Org'},
   {id:'Pink', label:'Pink Line', color:'#E27EA6', routeId:'Pink'},
-  {id:'Purple', label:'Purple Line', color:'#522398', routeId:'P'},
-  {id:'Purple-Express', label:'Purple Express · service dependent', color:'#522398', routeId:'P', serviceDependent:true},
+  {id:'Purple', label:'Purple Line', color:'#522398', routeId:'P', serviceDependent:true, displaySources:[{id:'Purple'},{id:'Purple-Express',serviceVariant:'express',dashArray:'8 5',includeStationMembership:false}]},
   {id:'Yellow', label:'Yellow Line', color:'#F9E300', routeId:'Y'},
-].map(line => ({weight:4, ...line}));
+].map(line => {
+  const physicalLineId = line.id.startsWith('Green-') ? 'Green' : line.id;
+  return {weight:4, ...line, physicalLineId, branchId:line.id === physicalLineId ? null : line.id.slice(physicalLineId.length + 1), displayLabel:`${physicalLineId} Line`};
+});
 const CITY_PROFILES = Object.freeze({
   boston: {
     id:'boston', name:'Boston', networkLabel:'MBTA', timezone:'America/New_York',
