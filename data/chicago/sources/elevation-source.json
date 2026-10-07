@@ -1,0 +1,22 @@
+{
+  "url": "https://elevation.nationalmap.gov/arcgis/rest/services/3DEPElevation/ImageServer/exportImage",
+  "query": {
+    "f": "json",
+    "bbox": "-88.0025,41.5975,-87.4775,42.1225",
+    "bboxSR": "4326",
+    "imageSR": "4326",
+    "size": "105,105",
+    "format": "tiff",
+    "pixelType": "F32",
+    "interpolation": "RSP_BilinearInterpolation",
+    "renderingRule": "{\"rasterFunction\":\"None\"}"
+  },
+  "retrievedOn": "2026-10-07",
+  "sha256": "759388d99967afe4b42aff30ff764f9631ffd3ae71b794d04d89964927762195",
+  "nativeUnits": "meters",
+  "rasterFile": "elevation-3dep.tif",
+  "exportFile": "elevation-3dep-export.json",
+  "datasetVersion": "chicago-v1",
+  "source": "USGS 3DEP",
+  "approximation": "Sampled terrain on a 0.005 degree grid (about 400\u2013560 m); local variation is unresolved."
+}

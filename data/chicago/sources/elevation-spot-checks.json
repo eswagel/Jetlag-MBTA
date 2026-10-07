@@ -1,0 +1,62 @@
+{
+  "retrievedOn": "2026-10-07",
+  "checks": [
+    {
+      "longitude": -87.63,
+      "latitude": 41.88,
+      "url": "https://epqs.nationalmap.gov/v1/json?x=-87.63&y=41.88&units=Feet&wkid=4326&includeDate=false",
+      "response": {
+        "location": {
+          "x": -87.63,
+          "y": 41.88,
+          "spatialReference": {
+            "wkid": 4326,
+            "latestWkid": 4326
+          }
+        },
+        "locationId": 0,
+        "value": 593.6173756624221,
+        "rasterId": 126236,
+        "resolution": 1
+      }
+    },
+    {
+      "longitude": -87.9,
+      "latitude": 42.0,
+      "url": "https://epqs.nationalmap.gov/v1/json?x=-87.9&y=42.0&units=Feet&wkid=4326&includeDate=false",
+      "response": {
+        "location": {
+          "x": -87.9,
+          "y": 42,
+          "spatialReference": {
+            "wkid": 4326,
+            "latestWkid": 4326
+          }
+        },
+        "locationId": 0,
+        "value": 647.0358046880847,
+        "rasterId": 108789,
+        "resolution": 1
+      }
+    },
+    {
+      "longitude": -87.8,
+      "latitude": 41.7,
+      "url": "https://epqs.nationalmap.gov/v1/json?x=-87.8&y=41.7&units=Feet&wkid=4326&includeDate=false",
+      "response": {
+        "location": {
+          "x": -87.8,
+          "y": 41.7,
+          "spatialReference": {
+            "wkid": 4326,
+            "latestWkid": 4326
+          }
+        },
+        "locationId": 0,
+        "value": 601.8083119186265,
+        "rasterId": 108691,
+        "resolution": 1
+      }
+    }
+  ]
+}

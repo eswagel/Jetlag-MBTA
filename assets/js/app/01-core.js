@@ -488,7 +488,71 @@ async function loadElevationData(){
   return preloadedData.elevation;
 }
 
+function validElevationNumber(value){
+  return typeof value === 'number' && Number.isFinite(value) && value > -30000;
+}
+
+function elevationGridCell(data, lat, lng){
+  const ys=data?.latitudes, xs=data?.longitudes;
+  if(!Number.isFinite(lat)||!Number.isFinite(lng)||!Array.isArray(ys)||!Array.isArray(xs)||ys.length<2||xs.length<2 ||
+     lat<ys[0]||lat>ys[ys.length-1]||lng<xs[0]||lng>xs[xs.length-1]) return null;
+  const row=Math.min(ys.length-2,ys.findIndex(y=>y>lat)-1 < 0 ? ys.length-2 : ys.findIndex(y=>y>lat)-1);
+  const col=Math.min(xs.length-2,xs.findIndex(x=>x>lng)-1 < 0 ? xs.length-2 : xs.findIndex(x=>x>lng)-1);
+  const values=[data.values?.[row]?.[col],data.values?.[row]?.[col+1],data.values?.[row+1]?.[col],data.values?.[row+1]?.[col+1]];
+  if(!values.every(validElevationNumber)||xs[col+1]<=xs[col]||ys[row+1]<=ys[row]) return null;
+  return {row,col,values,x:(lng-xs[col])/(xs[col+1]-xs[col]),y:(lat-ys[row])/(ys[row+1]-ys[row])};
+}
+
+function interpolateGridElevation(data, lat, lng){
+  const cell=elevationGridCell(data,lat,lng);
+  if(!cell) return null;
+  const {x,y,values:[sw,se,nw,ne]}=cell;
+  // Same southwest-to-northeast diagonal as the contour calculation.
+  return x>=y ? sw+(se-sw)*x+(ne-se)*y : sw+(ne-nw)*x+(nw-sw)*y;
+}
+
+// Clip each terrain triangle against a horizontal elevation plane. This models the
+// sampled grid, not exact continuous terrain or floors inside buildings.
+function buildTriangulatedElevationFeature(data, thresholdFt, zoneBbox){
+  const ys=data.latitudes,xs=data.longitudes,polys=[];
+  function clippedTriangle(vertices){
+    const out=[];
+    for(let i=0;i<3;i++){
+      const a=vertices[i],b=vertices[(i+1)%3],insideA=a[2]>=thresholdFt,insideB=b[2]>=thresholdFt;
+      if(insideA)out.push(a.slice(0,2));
+      if(insideA!==insideB){const t=(thresholdFt-a[2])/(b[2]-a[2]);out.push([a[0]+t*(b[0]-a[0]),a[1]+t*(b[1]-a[1])]);}
+    }
+    if(out.length>=3){out.push(out[0]);polys.push([out]);}
+  }
+  for(let row=0;row<ys.length-1;row++){
+    if(ys[row+1]<zoneBbox[1]||ys[row]>zoneBbox[3])continue;
+    let runStart=null;
+    function flush(col){if(runStart!==null){polys.push([[[xs[runStart],ys[row]],[xs[col],ys[row]],[xs[col],ys[row+1]],[xs[runStart],ys[row+1]],[xs[runStart],ys[row]]]]);runStart=null;}}
+    for(let col=0;col<xs.length-1;col++){
+      if(xs[col+1]<zoneBbox[0]||xs[col]>zoneBbox[2]){flush(col);continue;}
+      const values=[data.values?.[row]?.[col],data.values?.[row]?.[col+1],data.values?.[row+1]?.[col],data.values?.[row+1]?.[col+1]];
+      // Fail closed on damaged data instead of treating null/NODATA as sea level.
+      if(!values.every(validElevationNumber))throw new Error('Incomplete elevation grid');
+      if(values.every(v=>v>=thresholdFt)){if(runStart===null)runStart=col;continue;}
+      flush(col);
+      if(values.every(v=>v<thresholdFt))continue;
+      const sw=[xs[col],ys[row],values[0]],se=[xs[col+1],ys[row],values[1]],nw=[xs[col],ys[row+1],values[2]],ne=[xs[col+1],ys[row+1],values[3]];
+      clippedTriangle([sw,se,ne]);clippedTriangle([sw,ne,nw]);
+    }
+    flush(xs.length-1);
+  }
+  // An empty MultiPolygon represents a valid empty higher-than region.
+  return {type:'Feature',properties:{approximate:true,interpolation:'triangulated-linear'},geometry:{type:'MultiPolygon',coordinates:polys}};
+}
+
 async function fetchPointElevation(lat, lng){
+  if(!Number.isFinite(lat)||!Number.isFinite(lng)) throw new Error('Invalid elevation location');
+  const grid=preloadedData.elevation;
+  if(grid?.pointLookup==='local-grid'){
+    const feet=interpolateGridElevation(grid,lat,lng);
+    if(feet===null)throw new Error('Location is outside the available elevation grid');
+    return {feet,meters:feet*.3048,resolution:null,approximation:grid.approximation};
+  }
   const key = `${Number(lat).toFixed(5)},${Number(lng).toFixed(5)}`;
   if(elevationPointCache.has(key)) return elevationPointCache.get(key);
   const url = `https://epqs.nationalmap.gov/v1/json?x=${lng}&y=${lat}&units=Feet&wkid=4326&includeDate=false`;
@@ -498,8 +562,9 @@ async function fetchPointElevation(lat, lng){
       return res.json();
     })
     .then(data => {
-      const feet = Number(data?.value);
-      if(!Number.isFinite(feet)) throw new Error('Invalid elevation response');
+      const raw=data?.value;
+      const feet = typeof raw==='number' || (typeof raw==='string' && raw.trim()!=='') ? Number(raw) : NaN;
+      if(!validElevationNumber(feet)) throw new Error('Invalid elevation response');
       return {
         feet,
         meters: feet * 0.3048,
@@ -861,6 +926,12 @@ const QDEFS = {
       try{
         const union = q._constraint_union || buildMeasureConstraintUnion(q, zone);
         if(!union) return zone;
+        if(q.mode==='elevation' && preloadedData.elevation?.interpolation==='triangulated-linear'){
+          const empty={type:'Feature',properties:{},geometry:{type:'MultiPolygon',coordinates:[]}};
+          if(!zone?.geometry?.coordinates?.length)return empty;
+          if(!union.geometry.coordinates.length)return q.answer==='higher' ? empty : zone;
+          return (q.answer==='higher' ? turf.intersect(zone,union) : turf.difference(zone,union)) || empty;
+        }
         if(q.answer==='closer' || q.answer==='higher') return safeIsect(zone, union);
         return safeDiff(zone, union);
       }catch(e){ return zone; }
@@ -1118,13 +1189,14 @@ function simplifyMeasureFeature(feature, q){
 
 function buildElevationConstraintFeature(q, zone=null){
   const data = preloadedData.elevation;
-  const thresholdFt = Number(q?.seeker_elevation_ft);
+  const thresholdFt = q?.seeker_elevation_ft;
   const latitudes = data?.latitudes;
   const longitudes = data?.longitudes;
   const values = data?.values;
   if(!Number.isFinite(thresholdFt) || !Array.isArray(latitudes) || latitudes.length < 2 || !Array.isArray(longitudes) || longitudes.length < 2 || !Array.isArray(values)) return null;
 
   const zoneBbox = zone ? turf.bbox(zone) : [data.bbox?.west ?? longitudes[0], data.bbox?.south ?? latitudes[0], data.bbox?.east ?? longitudes[longitudes.length - 1], data.bbox?.north ?? latitudes[latitudes.length - 1]];
+  if(data.interpolation==='triangulated-linear')return buildTriangulatedElevationFeature(data,thresholdFt,zoneBbox);
   const polys = [];
 
   for(let row = 0; row < latitudes.length - 1; row++){
@@ -1137,11 +1209,11 @@ function buildElevationConstraintFeature(q, zone=null){
       if(east < zoneBbox[0] || west > zoneBbox[2]) continue;
 
       const cellValues = [
-        Number(values?.[row]?.[col]),
-        Number(values?.[row]?.[col + 1]),
-        Number(values?.[row + 1]?.[col]),
-        Number(values?.[row + 1]?.[col + 1]),
-      ].filter(Number.isFinite);
+        values?.[row]?.[col],
+        values?.[row]?.[col + 1],
+        values?.[row + 1]?.[col],
+        values?.[row + 1]?.[col + 1],
+      ].filter(validElevationNumber);
       if(cellValues.length < 3) continue;
       const avgFt = cellValues.reduce((sum, value) => sum + value, 0) / cellValues.length;
       if(avgFt < thresholdFt) continue;

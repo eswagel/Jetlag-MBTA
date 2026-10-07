@@ -372,7 +372,7 @@ function renderMeasureParams(){
     h+=`<div class="found-result" style="margin-top:8px">
       ⛰️ <b>${qparams.measure_seeker_elevation_ft.toFixed(0)} ft above sea level</b><br>
       <span style="color:var(--dim)">${qparams.measure_seeker_elevation_m.toFixed(1)} m above sea level</span><br>
-      <span style="font-size:8px;color:var(--dim)">USGS point elevation estimate for your selected location</span>
+      <span style="font-size:8px;color:var(--dim)">${preloadedData.elevation?.pointLookup==='local-grid' ? 'USGS terrain estimate · '+(preloadedData.elevation.approximation || 'Approximate sampled terrain')+' Building floors are not represented.' : 'USGS point elevation estimate for your selected location'}</span>
     </div>`;
   else if(qparams.measure_seeker_nearest)
     h+=`<div class="found-result" style="margin-top:8px">
