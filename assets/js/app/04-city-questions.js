@@ -43,10 +43,15 @@ function validateQuestionServiceSnapshot(question){
       !snapshot.stationIds.length || !Number.isFinite(Date.parse(snapshot.observedAt))){
     throw new Error('Chicago line question is missing its station-service snapshot. Rebuild the question.');
   }
-  if(question.line_id === 'Purple-Express'){
-    throw new Error('Purple Express live confirmation is not connected. Imported claims cannot verify active service.');
-  }
-  if(question.line_id !== 'Purple-Express' && snapshot.status !== 'static'){
+  if(question.line_id === 'Purple-Express') throw new Error('Purple Express is now part of Purple Line. Rebuild this legacy question.');
+  if(question.line_id === 'Purple'){
+    const calendar=globalThis.ChicagoService?.getCalendar();
+    if(!calendar) throw new Error('Purple service schedule is loading. Try again shortly.');
+    const replayed=globalThis.ChicagoService.replay(calendar,snapshot);
+    if(!replayed || replayed.status!==snapshot.status || JSON.stringify(replayed.stationIds)!==JSON.stringify(snapshot.stationIds)){
+      throw new Error('Purple service snapshot does not match its saved schedule or live observation.');
+    }
+  } else if(snapshot.status !== 'static'){
     throw new Error('Invalid station-service snapshot for this line.');
   }
   if(snapshot.datasetVersion !== ACTIVE_CITY.datasetVersion){
@@ -57,7 +62,7 @@ function validateQuestionServiceSnapshot(question){
   if(!snapshot.feedVersion || snapshot.feedVersion !== preloadedData.mbta.feedVersion){
     throw new Error('Line snapshot uses a different CTA source feed. Update both devices to the same dataset.');
   }
-  const possible = new Set(line.stops.map(stop => String(stop.id)));
+  const possible = new Set((question.line_id==='Purple' ? preloadedData.mbta.lines.flatMap(item=>item.stops) : line.stops).map(stop => String(stop.id)));
   if(new Set(snapshot.stationIds).size !== snapshot.stationIds.length ||
       (snapshot.status === 'static' && snapshot.stationIds.length !== possible.size) ||
       snapshot.stationIds.some(id => typeof id !== 'string' || !possible.has(id))){
@@ -93,7 +98,8 @@ function stationMatchesQuestionLine(station, question){
 function lineSnapshotBoundary(snapshot, radiusMiles){
   const ids = new Set(snapshot.stationIds);
   const line = preloadedData.mbta.lines.find(item => item.id === snapshot.lineId);
-  const stops = line.stops.filter(stop => ids.has(String(stop.id)));
+  const candidates = snapshot.lineId==='Purple' ? preloadedData.mbta.lines.flatMap(item=>item.stops) : line.stops;
+  const stops = [...new Map(candidates.filter(stop => ids.has(String(stop.id))).map(stop=>[String(stop.id),stop])).values()];
   let region = null;
   for(const stop of stops){
     const circle = makeCircle(stop, radiusMiles, 'miles');
@@ -103,23 +109,43 @@ function lineSnapshotBoundary(snapshot, radiusMiles){
 }
 
 let chicagoServiceCalendarPromise = null;
+function loadChicagoServiceCalendar(){
+  if(!chicagoServiceCalendarPromise){
+    chicagoServiceCalendarPromise=fetchOptionalJSON('data/chicago/service-calendar.json','CTA service calendar')
+      .then(data=>globalThis.ChicagoService?.setCalendar(data));
+  }
+  return chicagoServiceCalendarPromise;
+}
+// Eagerly load the small saved timetable so incoming hider questions validate offline after startup.
+if(isChicagoGame() && typeof fetch==='function') loadChicagoServiceCalendar();
 async function resolveChicagoLine(_center, options={}){
   const line = GAME_LINES.find(item => item.id === options.lineId);
   const dataLine = preloadedData.mbta?.lines?.find(item => item.id === options.lineId);
   if(!line || !dataLine) throw new Error('Line data is not available');
   let snapshot = options.serviceSnapshot;
-  if(!snapshot && line.id === 'Purple-Express'){
-    // No credential is embedded in the static app. Schedule evidence is not live confirmation.
-    if(!chicagoServiceCalendarPromise){
-      chicagoServiceCalendarPromise = fetchOptionalJSON('data/chicago/service-calendar.json', 'CTA service calendar');
+  if(line.id==='Purple'){
+    const calendar=await loadChicagoServiceCalendar();
+    if(!calendar || calendar.feedVersion!==preloadedData.mbta.feedVersion) throw new Error('Purple timetable is missing or belongs to another CTA feed.');
+    if(!snapshot){
+      const observedAt=options.observedAt || new Date().toISOString();
+      snapshot=globalThis.ChicagoService.snapshot(calendar,'Purple',observedAt);
+      // Deployment may configure a same-origin server proxy. Never put an API key in this page.
+      const configured=globalThis.CHICAGO_CTA_TRIP_UPDATES_URL || '/api/cta/trip-updates';
+      if(configured){
+        try{
+          const url=new URL(configured,window.location.href);
+          if(url.origin!==window.location.origin)throw new Error('CTA live proxy must be same origin');
+          const controller=new AbortController();const timer=setTimeout(()=>controller.abort(),5000);
+          let response;
+          try{response=await fetch(url.href,{signal:controller.signal,cache:'no-store'});}finally{clearTimeout(timer);}
+          if(!response.ok)throw new Error('CTA live feed unavailable');
+          snapshot=globalThis.ChicagoService.withRealtime(calendar,await response.json(),observedAt);
+        }catch(error){snapshot.fallbackReason='live-unavailable';}
+      }else snapshot.fallbackReason='live-not-connected';
+      if(snapshot.status==='unknown'||!snapshot.stationIds.length) throw new Error('Purple has no verified scheduled service at this time, or its saved timetable has expired.');
+      snapshot.datasetVersion=ACTIVE_CITY.datasetVersion;
+      toast(snapshot.source==='cta-gtfs-schedule'?'Purple membership uses the saved CTA timetable; live service is not verified.':'Purple membership uses current CTA observations with the saved timetable.');
     }
-    const calendar = await chicagoServiceCalendarPromise;
-    const scheduled = calendar && globalThis.ChicagoService?.snapshot(calendar, line.id);
-    const detail = scheduled?.status === 'scheduled-active'
-      ? 'The timetable indicates service now, but live confirmation is not connected.'
-      : scheduled?.status === 'scheduled-inactive'
-        ? 'The timetable indicates no service now.' : 'Current service could not be verified.';
-    throw new Error(`Purple Express: ${detail}`);
   }
   if(!snapshot){
     snapshot = {

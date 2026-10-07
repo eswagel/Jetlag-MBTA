@@ -15,7 +15,7 @@ function game(city='chicago'){
     window:{location:{search:`?city=${city}`}}, localStorage:{getItem:()=>null},
     document:{getElementById:()=>null}, navigator:{},
   });
-  for(const file of ['00-cities.js','01-core.js','02-map.js','03-setup.js','04-build.js','05-hider.js','06-seeker.js','04-city-questions.js']){
+  for(const file of ['chicago-service.js','00-cities.js','01-core.js','02-map.js','03-setup.js','04-build.js','05-hider.js','06-seeker.js','04-city-questions.js']){
     vm.runInContext(fs.readFileSync(path.join(__dirname,'../assets/js/app',file),'utf8'),ctx,{filename:file});
   }
   return {ctx,run:code=>vm.runInContext(code,ctx)};
@@ -90,15 +90,15 @@ test('water measurement uses nearest point on an edge instead of its center',asy
 
 test('Purple Express cannot be created from schedule-only evidence',async()=>{
   const g=game();
-  g.run(`preloadedData.mbta={lines:[{id:'Purple-Express',stops:[]}]};fetchOptionalJSON=async()=>({});globalThis.ChicagoService={snapshot:()=>({status:'scheduled-active'})};`);
-  await assert.rejects(g.run("resolveChicagoLine(null,{lineId:'Purple-Express'})"),/live confirmation is not connected/);
+  g.run(`preloadedData.mbta={lines:[{id:'Purple-Express',stops:[{id:'1'}]}]};fetchOptionalJSON=async()=>({});globalThis.ChicagoService={snapshot:()=>({status:'scheduled-active'})};`);
+  await assert.rejects(g.run("resolveChicagoLine(null,{lineId:'Purple-Express'})"),/Purple Express is now part of Purple Line|Line data is not available/);
 });
 
 
 test('an imported claim of active Purple Express cannot bypass the absent live adapter',()=>{
   const g=game();
   g.run("preloadedData.mbta={lines:[{id:'Purple-Express',stops:[{id:'1'}]}]}");
-  assert.throws(()=>g.run(`validateQuestionServiceSnapshot({type:'matching',category:'line',line_id:'Purple-Express',service_snapshot:{lineId:'Purple-Express',status:'active',source:'pretend-live',observedAt:'2026-10-07T13:00:00Z',stationIds:['1'],datasetVersion:'chicago-v1'}})`),/Imported claims cannot verify/);
+  assert.throws(()=>g.run(`validateQuestionServiceSnapshot({type:'matching',category:'line',line_id:'Purple-Express',service_snapshot:{lineId:'Purple-Express',status:'active',source:'pretend-live',observedAt:'2026-10-07T13:00:00Z',stationIds:['1'],datasetVersion:'chicago-v1'}})`),/Purple Express is now part of Purple Line/);
 });
 
 test('line snapshots reject a different source feed even with the same station IDs',async()=>{
@@ -123,4 +123,22 @@ test('large water geometry is blocked before map buffering or question import',a
   g.run("var warning='';toast=text=>warning=text");
   await g.run("selectMeasureCat({label:'A Body of Water'})");
   assert.match(g.run('warning'),/not ready/);
+});
+
+
+test('single Purple question uses saved schedule fallback and replays its original service time',async()=>{
+  const g=game();
+  g.ctx.ChicagoService=require('../assets/js/app/chicago-service.js');
+  g.ctx.transit=require('../data/chicago/transit.json');
+  g.ctx.calendar=require('../data/chicago/service-calendar.json');
+  g.run("preloadedData.mbta=transit;fetchOptionalJSON=async()=>calendar;toast=()=>{}");
+  const result=await g.run("resolveChicagoLine(null,{lineId:'Purple',observedAt:'2026-10-07T13:00:00Z'})");
+  assert.equal(result.service_snapshot.source,'cta-gtfs-schedule');
+  assert(result.service_snapshot.stationIds.includes('41700'));
+  assert.equal(result.service_snapshot.feedVersion,g.ctx.transit.feedVersion);
+  g.ctx.saved=result.service_snapshot;
+  const reloaded=await g.run("resolveChicagoLine(null,{lineId:'Purple',serviceSnapshot:saved,observedAt:'2026-10-07T17:00:00Z'})");
+  assert.equal(reloaded.service_snapshot.observedAt,'2026-10-07T13:00:00.000Z');
+  assert(reloaded.service_snapshot.stationIds.includes('41700'));
+  assert.throws(()=>g.run("validateQuestionServiceSnapshot({type:'matching',category:'line',line_id:'Purple',service_snapshot:{...saved,stationIds:['41050']}})"),/does not match/);
 });

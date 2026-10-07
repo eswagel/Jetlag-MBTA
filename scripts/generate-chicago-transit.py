@@ -77,7 +77,7 @@ def generate(feeds, sources, generated):
     version=sources['cta']['sha256']
     return ({'generatedAt':generated,'city_id':'chicago','dataset_version':'chicago-v1','feedVersion':version,'sources':sources,'bbox':bbox,'lines':lines,'commuterRail':commuter},
       {'generatedAt':generated,'feedVersion':version,'source':sources['cta'],'timezone':'America/Chicago',
-       'coverage':{'start':min(dates),'end':max(dates)},'calendar':calendar,'exceptions':exceptions,'patterns':patterns,'trips':service_trips})
+       'coverage':{'start':min(dates),'end':max(dates)},'calendar':calendar,'exceptions':exceptions,'patterns':patterns,'trips':service_trips,'stopParents':{i:(s.get('parent_station') or i) for i,s in stops.items() if (s.get('parent_station') or i) in {p['id'] for p in points}}})
 
 def main():
     p=argparse.ArgumentParser();p.add_argument('--cache-dir',default='/tmp/jetlag-gtfs-cache');p.add_argument('--output-dir',default='data/chicago');p.add_argument('--refresh',action='store_true');args=p.parse_args()
