@@ -66,7 +66,7 @@ function selectCity(cityId){
 }
 function renderCityProfile(){
   document.title = `Jet Lag — ${ACTIVE_CITY.networkLabel} ${ACTIVE_CITY.name}`;
-  document.getElementById('city-selector').value = ACTIVE_CITY.id;
+  new CityPicker(document.getElementById('city-picker'), {profiles:CITY_PROFILES, selectedId:ACTIVE_CITY.id, onSelect:selectCity});
   const note = document.getElementById('city-preview-note');
   if(note){
     note.hidden = ACTIVE_CITY.id !== 'chicago';

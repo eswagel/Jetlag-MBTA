@@ -627,7 +627,34 @@
     .confirm-icon { font-size:36px; margin-bottom:8px; display:block; }
 
 /* City is fixed for a page so layers and saved games stay isolated. */
-#city-selector { width:100%; padding:10px; margin-bottom:10px; color:var(--text); background:var(--bg); border:1px solid var(--dim); border-radius:6px; font:inherit; }
 #setup-network { color:inherit; }
 
 .city-preview-note { color: var(--text); font-size: 0.875rem; line-height: 1.5; margin: 12px 0; }
+
+/* City cards depend only on profile data; overflow accommodates any number of cities. */
+#city-picker { min-width:0; margin:20px 0 16px; }
+.city-picker-toolbar { display:flex; align-items:center; justify-content:space-between; margin-bottom:10px; }
+.city-picker-toolbar .setup-section-label { margin:0; }
+.city-picker-controls { display:flex; gap:6px; }
+.city-picker-controls button { width:29px; height:27px; border:1px solid var(--border); border-radius:7px; background:var(--panel2); color:var(--text); cursor:pointer; }
+.city-picker-controls button:disabled { opacity:.3; cursor:default; }
+.city-card-track { display:flex; gap:12px; overflow-x:auto; scroll-snap-type:x mandatory; scrollbar-width:thin; scrollbar-color:var(--dim) transparent; position:relative; padding:3px 3px 9px; }
+.city-card { flex:0 0 86%; min-width:0; overflow:hidden; text-align:left; font:inherit; color:var(--text); background:#192637; border:1px solid #38495b; border-radius:12px; scroll-snap-align:start; cursor:pointer; padding:0; }
+.city-card[aria-pressed="true"] { border-color:#73c7d9; box-shadow:0 0 0 1px #73c7d9; }
+.city-card:focus-visible, .city-picker-controls button:focus-visible { outline:2px solid #f0a030; outline-offset:2px; }
+.city-card-heading { padding:13px 14px 12px; position:relative; }
+.city-card-heading strong { display:block; font-size:19px; line-height:1.3; }
+.city-card-agency { display:block; margin-top:3px; color:#a9bfce; font-size:10px; letter-spacing:.12em; }
+.city-card-state { position:absolute; right:12px; bottom:13px; font-size:8px; color:#a9bfce; }
+.city-card[aria-pressed="true"] .city-card-state { color:#8adddc; }
+.city-card-map { height:174px; position:relative; background:#eff1ef; color:#52646d; font-size:10px; display:flex; align-items:center; justify-content:center; pointer-events:none; }
+.city-map-canvas { position:absolute; inset:0; }
+.city-card-map img { width:100%; height:100%; object-fit:contain; display:block; }
+.city-preview-attribution { font-size:7px; line-height:1.5; margin:5px 3px 0; color:#91a5b7; }
+.city-preview-attribution a { color:inherit; }
+@media (hover:hover) { .city-card:hover { border-color:#8fb4c7; } }
+
+.city-card-track { cursor:grab; user-select:none; -webkit-user-select:none; }
+.city-card-track.dragging { cursor:grabbing; scroll-snap-type:none; }
+.city-card-track.dragging .city-card { cursor:grabbing; }
+.city-card-map img { -webkit-user-drag:none; }

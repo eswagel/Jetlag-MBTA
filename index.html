@@ -26,11 +26,7 @@
     <div class="setup-title"><span id="setup-network">MBTA</span><br><span>Hide &amp; Seek</span></div>
     <div class="setup-sub" id="setup-description">The hider picks a secret location somewhere on the T network. Seekers eliminate zones by asking questions.</div>
 
-    <label class="setup-section-label" for="city-selector">City</label>
-    <select id="city-selector" onchange="selectCity(this.value)">
-      <option value="boston">Boston · MBTA</option>
-      <option value="chicago">Chicago · CTA</option>
-    </select>
+    <div id="city-picker"></div>
     <p id="city-preview-note" class="city-preview-note" hidden></p>
     <div class="setup-section-label">Your role this game</div>
     <div class="mode-grid">
@@ -339,6 +335,7 @@
 </div>
 
 <script src="assets/js/app/00-cities.js"></script>
+<script src="assets/js/app/00-city-picker.js"></script>
 <script src="assets/js/app/chicago-service.js"></script>
 <script src="assets/js/app/01-core.js"></script>
 <script src="assets/js/app/02-map.js"></script>

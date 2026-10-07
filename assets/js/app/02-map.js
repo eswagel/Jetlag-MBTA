@@ -2,7 +2,7 @@
 //  MAP INIT
 // ══════════════════════════════════════════════════════
 function initMap(){
-  map=L.map('map',{center:CENTER,zoom:12,minZoom:1,maxZoom:19,zoomSnap:0.25,zoomControl:false,attributionControl:false});
+  map=L.map('map',{center:CENTER,zoom:12,minZoom:1,maxZoom:19,zoomSnap:0.25,wheelPxPerZoomLevel:20,wheelDebounceTime:25,zoomControl:false,attributionControl:false});
   L.control.attribution({position:'topleft'}).addTo(map);
 
   // One light basemap for every city. Positron preserves Boston's original
