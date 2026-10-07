@@ -117,17 +117,24 @@ function normalizeConstraintList(list){
   return Array.isArray(list) ? list.map(normalizeConstraintEntry) : [];
 }
 
-function exactDiff(a, b){
-  try{
-    return turf.difference(a, b) || null;
-  }catch(e){
-    return null;
-  }
+function emptyPolygonFeature(){
+  return {type:'Feature',properties:{},geometry:{type:'MultiPolygon',coordinates:[]}};
+}
+function isEmptyPolygonFeature(feature){
+  const geometry=feature?.geometry || feature;
+  return ['Polygon','MultiPolygon'].includes(geometry?.type) && Array.isArray(geometry.coordinates) && !geometry.coordinates.length;
+}
+// Exact overlays use null only for a successful empty result. Invalid geometry
+// still throws; it must never be mistaken for proof that an area is eliminated.
+function exactDiff(a,b){
+  if(!a || isEmptyPolygonFeature(a))return null;
+  if(!b || isEmptyPolygonFeature(b))return a;
+  return turf.difference(a,b) || null;
 }
 
 function safeUnion(a, b){
-  if(!a) return b || null;
-  if(!b) return a || null;
+  if(!a || isEmptyPolygonFeature(a)) return b || null;
+  if(!b || isEmptyPolygonFeature(b)) return a || null;
   try{
     return turf.union(a, b) || a || b;
   }catch(e){
@@ -380,11 +387,8 @@ function getTentacleAnswerLabel(question, answer){
 }
 
 function exactIsect(a,b){
-  try{
-    return turf.intersect(a,b) || null;
-  }catch(e){
-    return null;
-  }
+  if(!a || !b || isEmptyPolygonFeature(a) || isEmptyPolygonFeature(b))return null;
+  return turf.intersect(a,b) || null;
 }
 
 function buildTentacleRegions(question, zone=null){
@@ -392,13 +396,13 @@ function buildTentacleRegions(question, zone=null){
   const scope = zone ? exactIsect(zone, circle) : circle;
   const options = getTentacleOptionsInReach(question);
   if(!scope || options.length < 2){
-    return {circle, scope, regions:[]};
+    return {circle, scope, regions:[],failed:options.length<2};
   }
   try{
     const bbox = expandBboxMiles(turf.bbox(circle), 0.25);
     const points = turf.featureCollection(options.map((opt, i)=>turf.point([opt.lng, opt.lat], {id:opt.id, name:opt.name, index:i})));
     const cells = turf.voronoi(points, {bbox});
-    if(!cells?.features?.length) return {circle, scope, regions:[]};
+    if(!cells?.features?.length || cells.features.some(cell=>!cell)) return {circle, scope, regions:[],failed:true};
     const regions = [];
     options.forEach((opt, i) => {
       const cell = cells.features[i];
@@ -409,7 +413,7 @@ function buildTentacleRegions(question, zone=null){
     });
     return {circle, scope, regions};
   }catch(e){
-    return {circle, scope, regions:[]};
+    return {circle, scope, regions:[],failed:true};
   }
 }
 
@@ -995,13 +999,15 @@ const QDEFS = {
       }),
     }),
     applyToZone:(zone,q)=>{
-      const {circle, scope, regions} = buildTentacleRegions(q, zone);
-      if(q.answer==='no') return safeDiff(zone,circle);
-      const option = findTentacleOption(q, q.answer);
-      const match = option
-        ? regions.find(item => item.option.id === option.id)
-        : null;
-      return match?.region || scope || zone;
+      try{
+        if(q.answer==='no')return safeDiff(zone,makeCircle(q.center,q.radius_miles || 1,'miles'));
+        const option=findTentacleOption(q,q.answer);
+        if(!option)return zone;
+        const {scope,regions,failed}=buildTentacleRegions(q,zone);
+        if(failed)return zone;
+        if(!scope)return emptyPolygonFeature();
+        return regions.find(item=>item.option.id===option.id)?.region || emptyPolygonFeature();
+      }catch(e){return zone;}
     },
     describe:q=>q.answer==='no'
       ? `<b>NOT WITHIN</b> ${q.radius_miles||1}mi of seeker`
@@ -1034,8 +1040,7 @@ const QDEFS = {
         const result = q.answer==='Yes'
           ? safeIsect(zone, q.boundary_geojson)
           : safeDiff(zone, q.boundary_geojson);
-        if(result && turf.area(result) > 1000) return result;
-        return zone;
+        return result;
       } catch(e){ return zone; }
     },
     describe:q=>`<b>${q.answer==='Yes'?'SAME':'DIFFERENT'}</b> ${q.category_label} (seeker: ${q.seeker_val})`
@@ -1064,8 +1069,7 @@ const QDEFS = {
         const result = q.answer==='Yes'
           ? safeIsect(zone, q.voronoi_geojson)
           : safeDiff(zone, q.voronoi_geojson);
-        if(result && turf.area(result) > 1000) return result;
-        return zone;
+        return result;
       }catch(e){ return zone; }
     },
     describe:q=>`Nearest ${q.category_label}: <b>${q.answer==='Yes'?'SAME':'DIFFERENT'}</b> (seeker's: ${q.seeker_poi?.name})`
@@ -1114,8 +1118,8 @@ function fmt(p){return`${p.lat.toFixed(3)},${p.lng.toFixed(3)}`;}
 function toPt(p){return turf.point([p.lng,p.lat]);}
 function turfDist(a,b){return turf.distance(toPt(a),toPt(b),{units:'miles'});}
 function makeCircle(c,r,u){return turf.circle([c.lng,c.lat],r,{units:u,steps:72});}
-function safeIsect(z,o){try{const r=turf.intersect(z,o);return r||z;}catch(e){return z;}}
-function safeDiff(z,o){try{const r=turf.difference(z,o);return r||z;}catch(e){return z;}}
+function safeIsect(z,o){if(!z || !o)return z;try{return exactIsect(z,o) || emptyPolygonFeature();}catch(e){return z;}}
+function safeDiff(z,o){try{return exactDiff(z,o) || emptyPolygonFeature();}catch(e){return z;}}
 
 function compassHalf(ref,dir){
   const D=14,la=ref.lat,lo=ref.lng;
@@ -1266,7 +1270,7 @@ function buildElevationConstraintFeature(q, zone=null){
     }
   }
 
-  if(!polys.length) return null;
+  if(!polys.length) return emptyPolygonFeature();
   return turf.multiPolygon(polys);
 }
 
