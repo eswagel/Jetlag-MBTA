@@ -292,7 +292,9 @@ function resetZone(){
 // ══════════════════════════════════════════════════════
 function applyPickedPoint(lat, lng, zIndexOffset=2000){
   if(pickStep < 0 || pickStep >= pickStepDefs.length) return false;
-  qparams[pickStepDefs[pickStep].key] = {lat, lng};
+  const key = pickStepDefs[pickStep].key;
+  invalidatePickedLocation(key);
+  qparams[key] = {lat, lng};
   const cols = ['#e84040', '#f0a030', '#a060ff', '#20c8b0'];
   const m = L.marker([lat, lng], {icon: seekerPin(cols[pickStep % cols.length]), zIndexOffset}).addTo(map);
   seekerPinMarkers.push(m);
@@ -355,31 +357,19 @@ function useMyLocation(key, stepIndex){
   if(!navigator.geolocation){ toast('Geolocation not available on this device'); return; }
   const btn = document.getElementById(`gps-btn-${stepIndex}`);
   if(btn){ btn.classList.add('locating'); btn.textContent = '⏳ Locating…'; }
+  const params = qparams;
+  const requestedStep = pickStep;
+  const isCurrent = () => params === qparams && pickStep === requestedStep && pickStepDefs[pickStep]?.key === key;
   navigator.geolocation.getCurrentPosition(
     (pos)=>{
       const lat = pos.coords.latitude, lng = pos.coords.longitude;
-      const m = L.marker([lat,lng],{icon:seekerPin('#20c8b0'),zIndexOffset:3000}).addTo(map);
-      seekerPinMarkers.push(m);
+      if(!isCurrent()) return;
+      applyPickedPoint(lat, lng, 3000);
       map.setView([lat,lng], Math.max(map.getZoom(), 14));
-      // Set param and advance step — same logic as onMapClick
-      qparams[key] = {lat, lng};
-      pickStep++;
-      if(btn){ btn.classList.remove('locating'); btn.classList.add('located'); btn.textContent = '✓ Located'; }
-      if(pickStep >= pickStepDefs.length){
-        hideBanner();
-        document.getElementById('panel').classList.remove('collapsed');
-        const activeType = getActiveBuildQType();
-        if(QDEFS[activeType].isReady(qparams)) generateJSON();
-      } else {
-        showBanner(pickStepDefs[pickStep].label);
-      }
-      renderBuildBody();
-      updatePreview();
-      if(typeof maybeAutoResolveBuildQuestion === 'function') maybeAutoResolveBuildQuestion();
-      if(qtype === 'thermo') tryGenerate();
       toast(`📡 Got your location (±${Math.round(pos.coords.accuracy)}m)`);
     },
     (err)=>{
+      if(!isCurrent()) return;
       if(btn){ btn.classList.remove('locating'); btn.textContent = '📡 Use My Location'; }
       const msg = err.code === 1 ? 'Location permission denied' : err.code === 2 ? 'Location unavailable' : 'Location request timed out';
       toast(msg);

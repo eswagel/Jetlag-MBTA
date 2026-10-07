@@ -501,16 +501,37 @@ function renderMatchingParams(){
   return h;
 }
 
-let matchingLookupRevision = 0;
+// User choices survive a point change; all computed values are disposable.
+// New derived fields are invalidated by default rather than needing a reset list.
+const PICK_INPUT_KEYS = ['radius_miles', '_customR', 'travel_miles',
+  '_matching_mode', 'matching_cat', 'matching_cat_label', 'matching_line_id',
+  'matching_line_label', 'nearest_cat', 'nearest_cat_label', 'measure_cat',
+  'measure_cat_label', '_mcat', '_mcatlabel', '_tcat', '_tcatlabel',
+  'tentacles_cat_label', 'constraint_effect'];
+let buildLookupRevision = 0;
+function beginBuildLookup(){
+  const revision = ++buildLookupRevision;
+  const params = qparams;
+  return () => revision === buildLookupRevision && params === qparams;
+}
+function invalidatePickedLocation(changedKey=null){
+  ++buildLookupRevision;
+  const otherPoints = changedKey ? (QDEFS[qtype]?.pickSteps || []).map(step => step.key).filter(key => key !== changedKey) : [];
+  qparams = Object.fromEntries([...PICK_INPUT_KEYS, ...otherPoints].filter(key => key in qparams).map(key => [key, qparams[key]]));
+  currentBuiltQuestion = null;
+  _tentacleSelection = null;
+  clearZonePreview();
+  clearPoiMarkers();
+  document.getElementById('json-out-section').style.display='none';
+  document.getElementById('map-simul-bar').classList.remove('visible');
+}
 
 async function selectMatchingCat(catObj){
   if(!qparams.center){ toast('Set your location first'); return; }
   if(catObj.cat === 'landmass' && !_landmassCache.ready){
     toast('⏳ Still loading landmasses — try again in a moment'); return;
   }
-  const revision = ++matchingLookupRevision;
-  const params = qparams;
-  const isCurrent = () => revision === matchingLookupRevision && params === qparams;
+  const isCurrent = beginBuildLookup();
   qparams._matching_mode = 'matching';
   qparams.matching_cat = catObj.cat;
   qparams.matching_cat_label = catObj.label;
@@ -598,9 +619,7 @@ async function selectMatchingLine(lineId){
 
 async function selectNearestCat(catObj){
   if(!qparams.center){ toast('Set your location first'); return; }
-  const revision = ++matchingLookupRevision;
-  const params = qparams;
-  const isCurrent = () => revision === matchingLookupRevision && params === qparams;
+  const isCurrent = beginBuildLookup();
   qparams._matching_mode = 'nearest';
   qparams.matching_cat = null;
   qparams.matching_cat_label = null;
@@ -1661,6 +1680,9 @@ async function selectMeasureCat(catObj){
   const unavailable = cityQuestionUnavailableReason({type:'measure',category:catObj.label});
   if(unavailable){ toast(unavailable, 6000); return; }
   if(!qparams.center){toast('Set your location first');return;}
+  const isCurrent = beginBuildLookup();
+  currentBuiltQuestion = null;
+  clearZonePreview();
   qparams._mcat=catObj.label; qparams._mcatlabel=catObj.label; qparams._msearching=true;
   qparams.measure_cat=catObj.label; qparams.measure_cat_label=catObj.label;
   qparams.measure_mode='distance';
@@ -1673,6 +1695,7 @@ async function selectMeasureCat(catObj){
   try{
     if(isSeaLevelMeasure(catObj.label)){
       const grid = await loadElevationData();
+      if(!isCurrent()) return;
       if(!grid?.values?.length){
         toast('No elevation grid data available');
         qparams._msearching=false;
@@ -1680,6 +1703,7 @@ async function selectMeasureCat(catObj){
         return;
       }
       const elevation = await fetchPointElevation(qparams.center.lat, qparams.center.lng);
+      if(!isCurrent()) return;
       qparams._msearching=false;
       qparams.measure_mode='elevation';
       qparams.measure_seeker_elevation_ft=elevation.feet;
@@ -1693,6 +1717,7 @@ async function selectMeasureCat(catObj){
       const lineFeatures = (await getMeasureLinearFeatures(catObj, qparams.center))
         .map(item => ({name:item.name || item.properties?.name || catObj.label, feature:coerceFeature(item, item.name)}))
         .filter(item => item.feature);
+      if(!isCurrent()) return;
       if(!lineFeatures.length){
         toast(`No ${catObj.label} geometry found`);
         qparams._msearching=false;
@@ -1744,6 +1769,7 @@ async function selectMeasureCat(catObj){
     }
 
     const instances = await getCategoryInstances(catObj, qparams.center, 35000);
+    if(!isCurrent()) return;
     if(!instances.length){toast('No '+catObj.label+' found nearby');qparams._msearching=false;renderBuildBody();return;}
 
     // Find seeker's nearest
@@ -1778,11 +1804,14 @@ async function selectMeasureCat(catObj){
       map.fitBounds(bounds);
     }
     renderBuildBody(); updatePreview(); tryGenerate();
-  }catch(e){qparams._msearching=false;toast('Search failed: '+e.message);renderBuildBody();}
+  }catch(e){if(!isCurrent()) return;qparams._msearching=false;toast('Search failed: '+e.message);renderBuildBody();}
 }
 
 async function selectTentacleCat(catObj){
   if(!qparams.center){toast('Set your location first');return;}
+  const isCurrent = beginBuildLookup();
+  currentBuiltQuestion = null;
+  clearZonePreview();
   qparams._tcat=catObj.label; qparams._tcatlabel=catObj.label; qparams._tsearching=true;
   _tentacleSelection = null;
   _simulActive = null;
@@ -1791,6 +1820,7 @@ async function selectTentacleCat(catObj){
   renderBuildBody();
   try{
     const opts = await resolveTentacleQuestionOptions(catObj.label, qparams.center, qparams.radius_miles || 1);
+    if(!isCurrent()) return;
     if(opts.length < 2){
       toast(`Found fewer than 2 ${catObj.label} nearby — try a larger radius`);
       qparams._tsearching=false; renderBuildBody(); return;
@@ -1804,7 +1834,7 @@ async function selectTentacleCat(catObj){
       id:currentBuiltQuestion?.id || null,
     }, true);
     renderBuildBody(); updatePreview(); tryGenerate();
-  }catch(e){qparams._tsearching=false;toast('Search failed: '+e.message);renderBuildBody();}
+  }catch(e){if(!isCurrent()) return;qparams._tsearching=false;toast('Search failed: '+e.message);renderBuildBody();}
 }
 
 async function resolveTentacleQuestionOptions(categoryLabel, center, radiusMiles=1){
@@ -1834,19 +1864,7 @@ async function resolveTentacleQuestionOptions(categoryLabel, center, radiusMiles
 }
 
 function restartPick(){
-  ++matchingLookupRevision;
-  if(qtype === 'matching'){
-    // Keep the chosen category, but resolve all location-dependent data again.
-    for(const key of ['matching_seeker_val', 'matching_service_snapshot',
-      'matching_boundary', '_matching_boundary_simplified', 'nearest_seeker_poi',
-      'nearest_all_pois', 'nearest_voronoi', '_matching_searching', '_nearest_searching']){
-      delete qparams[key];
-    }
-  }
-  currentBuiltQuestion = null;
-  clearZonePreview();
-  QDEFS[qtype].pickSteps.forEach(s=>delete qparams[s.key]);
-  if(qtype === 'thermo') delete qparams.thermo_dest;
+  invalidatePickedLocation();
   clearMarkers();previewLayer.clearLayers();pickStep=0;
   document.getElementById('json-out-section').style.display='none';
   showBanner(pickStepDefs[0].label);
