@@ -2252,7 +2252,7 @@ function renderZonePreviewState(previewState, label, shouldFit=true){
   if(hint){
     const detail = isSoft
       ? 'Green remains possible now. Yellow is temporarily ruled out. Red is impossible.'
-      : 'Green remains possible. Yellow stays temporary if prior soft clues still apply. Red is impossible.';
+      : 'Green remains possible. Yellow marks cuts within surviving catchments or prior temporary clues. Red has no surviving catchment.';
     hint.innerHTML = `<b>${label}:</b> ${area} km² still in play<br><span style="font-size:8px;color:var(--dim)">${detail}</span>`;
     hint.className = 'simul-result-hint visible';
   }

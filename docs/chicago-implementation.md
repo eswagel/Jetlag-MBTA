@@ -19,18 +19,20 @@ Open `http://127.0.0.1:8765/?city=chicago` or use the city selector. Browsing ci
 - Full CTA rail geometry and 143 parent stations; Green Ashland and Cottage Grove are separate branches with a shared trunk. Metra and South Shore stations are distance references, including stations beyond the play area.
 - Municipality, ward, community-area, and ZIP-area matching use local polygons. Outside-Chicago ward/community matching explicitly uses the complement of the Chicago municipal polygon within the game extent.
 - ZIP matching uses **2020 Census ZCTAs**, geographic approximations of ZIP delivery areas, not USPS delivery-route polygons. The UI labels this distinction.
-- River landmass regions are North, West, and Loop + South. Lake Michigan shoreline measurement uses nearest points on water-edge lines rather than polygon centers. The same distance calculation is implemented for bodies of water, but its question is blocked pending a safe map-filtering algorithm.
+- River landmass regions are North, West, and Loop + South. Lake Michigan shoreline measurement uses nearest points on water-edge lines rather than polygon centers. Bodies of water use the complete local edge dataset with a bounded adaptive distance filter; uncertain boundary cells remain possible for either answer. See `linear-distance-filter.md` for approximation limits.
 - Line questions retain station membership and source-feed hash; importing or resuming never silently reinterprets them using a different CTA feed. Chicago polygon matching avoids the old Boston-specific bounding-box correction and runtime boundary simplification.
 - Chicago data paths do not fall back to Boston, generic railway tracks, clinics, or arcades. Missing data cannot silently create a different question.
 - All cities share OpenFreeMap's Positron basemap, matching the light visual style of Boston's original CARTO `light_all` layer. The shared Leaflet initializer uses a pinned MapLibre GL renderer and Leaflet adapter; no city-specific provider, API key, registration, or CSS color filter is needed. Basemap vector tiles, fonts, and sprites load online, while game datasets remain local. WebGL is required for the basemap. See https://openfreemap.org/quick_start/.
 
-## Deliberately unfinished
+- Local Chicago POIs are generated from a pinned OpenStreetMap extract using shared category definitions; hospitals exclude clinics and amusement parks exclude arcades. See `chicago-pois.md` for coverage and regeneration details.
+- Amtrak distances use locally saved FRA passenger-route track geometry and source route names. Shared track labels are grouped with an expandable route list rather than stacked pills.
+- Chicago elevation uses a saved USGS raster and shared interpolated terrain contours. Elevation is approximate terrain height, not building-floor height.
+- One shared station-catchment renderer handles all cities: excluded portions remain yellow while any hard-valid portion of their station catchment survives; red indicates areas outside all surviving catchments. Exact answer geometry is unchanged. Geographic matching also retains its existing soft-constraint behavior.
+
+## Remaining validation and limitations
 
 - **Live Purple service:** one Purple line combines local and express patterns, using the saved CTA timetable when live data is unavailable. An optional local server (`python3 scripts/serve-chicago-live.py --port 8765`) proxies official CTA GTFS realtime TripUpdates with `CTA_GTFS_API_KEY` held server-side. No key is configured here, so authenticated live behavior remains unverified. Question snapshots preserve schedule/feed identity and timestamped live evidence, including special stops. The UI distinguishes timetable fallback from live observations combined with timetable assumptions; see `chicago-transit.md`.
-- **POI categories:** verified Chicago parks, libraries, hospitals, museums, theaters, consulates, zoos, amusement parks, golf courses, and chain locations still need population and review. Hospitals must exclude clinics; amusement parks must exclude arcades.
-- **Amtrak:** actual passenger-used track geometry is still needed. Generic mainline rails are not a fallback.
-- **Body of Water map filtering:** exact edge data and nearest-edge calculation are present, but buffering the complete water network exhausted roughly 4 GB of memory in review. This question is blocked in creation, import, replay, and the geometry engine until an efficient bounded implementation is validated. Lake Michigan shoreline buffering passed separately.
-- **Elevation:** the label is updated, but a verified Chicago elevation grid is still needed.
+- **Data accuracy:** OSM POIs are not an exhaustive census. Source Amtrak route names can include historical service names. The elevation grid and adaptive water filter are approximations with documented resolution and conservative boundary handling.
 - **Game balance and field playtesting:** no real outing has been performed. Source boundary dates, near-river stations, data size on mobile networks, distances, and question usefulness need field review.
 
 ## Data and versioning
