@@ -1075,6 +1075,7 @@ const QDEFS = {
     describe:q=>`Nearest ${q.category_label}: <b>${q.answer==='Yes'?'SAME':'DIFFERENT'}</b> (seeker's: ${q.seeker_poi?.name})`
   },
   photo:{
+    affectsZone:false,
     label:'Photo', colorTag:'tag-photo',
     pickSteps:[],
     isReady:p=>p.photo_prompt&&p.photo_prompt.trim(),

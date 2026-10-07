@@ -2230,6 +2230,10 @@ function derivePreviewZoneState(question){
   const q = normalizeConstraintEntry(question);
   const def = QDEFS[q?.type];
   if(!q || !def) return null;
+  if(def.affectsZone === false){
+    return {question:q, hardZone:validZone, stopState:stopRegionState,
+      greenFeatures:stopRegionState?.greenFeatures || [], yellowFeatures:stopRegionState?.yellowFeatures || []};
+  }
   let nextHardZone = validZone;
   if(getConstraintEffect(q) === 'hard'){
     nextHardZone = def.applyToZone(validZone, q);
@@ -2249,6 +2253,17 @@ function renderZonePreviewState(previewState, label, shouldFit=true){
   if(!previewState?.hardZone) return;
   const hint = document.getElementById('simul-hint');
   const previewQuestion = previewState.question || getLivePreviewQuestion() || currentBuiltQuestion;
+  if(QDEFS[previewQuestion?.type]?.affectsZone === false){
+    clearZonePreview();
+    if(hint){
+      hint.textContent = `${label}: map unchanged — this question does not eliminate locations.`;
+      hint.className = 'simul-result-hint visible';
+    }
+    const msb = document.getElementById('msb-area');
+    if(msb) msb.textContent = 'map unchanged';
+    document.getElementById('map-simul-bar')?.classList.add('visible');
+    return;
+  }
   const isSoft = isSoftConstraintQuestion(previewQuestion);
   const redMask = getConstraintEffect(previewQuestion) === 'hard'
     ? exactDiff(stopRegionState?.survivingCatchments || validZone, previewState.stopState?.survivingCatchments || previewState.hardZone)

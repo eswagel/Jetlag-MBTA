@@ -1033,6 +1033,13 @@ function applyConstraintIncrementally(question){
   const def = QDEFS[q?.type];
   if(!def) return false;
   const nextConstraints = [...constraints, q];
+  if(def.affectsZone === false){
+    constraints = nextConstraints;
+    clearZonePreview();
+    renderLog();
+    saveGame();
+    return true;
+  }
   let nextHardZone = validZone;
   if(getConstraintEffect(q) === 'hard'){
     nextHardZone = def.applyToZone(validZone, q);
@@ -1047,7 +1054,15 @@ function applyConstraintIncrementally(question){
 function deleteConstraintAt(index){
   if(index < 0 || index >= constraints.length) return;
   if(constraints[index]?.type === '_setup') return;
+  const affectsZone = QDEFS[constraints[index]?.type]?.affectsZone !== false;
   constraints.splice(index, 1);
+  if(!affectsZone){
+    clearZonePreview();
+    renderLog();
+    saveGame();
+    toast('Constraint removed');
+    return;
+  }
   if(recomputeZoneFromConstraints()){
     toast('Constraint removed and zone recomputed');
   }
