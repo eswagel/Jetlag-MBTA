@@ -1385,9 +1385,11 @@ function hiderPin(){
 
 // Route presentation comes from source metadata; unknown routes never inherit
 // a Boston route identity. These defaults also support future cities.
-function amtrakLineColor(_name, properties={}){
+function linearRouteColor(properties={}){
   return /^#[0-9a-f]{6}$/i.test(properties.color || '') ? properties.color : '#20c8b0';
 }
+
+function amtrakLineColor(_name,properties={}){ return linearRouteColor(properties); }
 
 function amtrakLineLabel(name, properties={}){
   return String(properties.shortName || name || 'Amtrak').replace(/^Amtrak\s+/i,'').trim() || 'Amtrak';
@@ -1480,52 +1482,126 @@ async function getMeasureLinearFeatures(catObj, center){
   return [];
 }
 
-function renderAmtrakMeasureLines(center, nearestName){
-  const raw = Array.isArray(preloadedData.pois?.amtrakLines) ? preloadedData.pois.amtrakLines : [];
-  if(!raw.length) return;
-  const clipBox = [
-    T_BBOX.minLng - 0.08,
-    T_BBOX.minLat - 0.08,
-    T_BBOX.maxLng + 0.08,
-    T_BBOX.maxLat + 0.08,
-  ];
-  raw.forEach(item => {
-    const feature = coerceFeature(item, item.name);
-    if(!feature) return;
-    let displayFeature = feature;
-    try{
-      const clipped = turf.bboxClip(feature, clipBox);
-      if(clipped?.geometry?.coordinates?.length) displayFeature = clipped;
-    }catch(e){}
-    const name = item.name || feature.properties?.name || 'Amtrak';
-    const active = name === nearestName;
-    const color = amtrakLineColor(name, feature.properties);
-    const lineLayer = L.geoJSON(displayFeature, {
-      interactive: false,
-      style: {
-        color,
-        weight: active ? 5 : 3,
-        opacity: active ? 0.95 : 0.72,
-      }
-    }).addTo(map);
-    pickedMarkers.push(lineLayer);
+// Display-only corridor grouping: calculation geometry remains the original dataset.
+// Reuses the same shared-track graph as transit rendering, but paints each corridor once.
+function prepareGroupedLinearCorridors(items){
+  const definitions=[],lines=[],ids=new Map();
+  for(const item of items){
+    const feature=coerceFeature(item,item.name);
+    const geometry=feature?.geometry;
+    if(!['LineString','MultiLineString'].includes(geometry?.type))continue;
+    const name=item.name || feature.properties?.name || 'Route';
+    if(!ids.has(name)){
+      const id=String(ids.size);ids.set(name,id);
+      definitions.push({id,physicalLineId:id,label:name,color:linearRouteColor(feature.properties)});
+    }
+    const id=ids.get(name);
+    const paths=geometry.type==='LineString' ? [geometry.coordinates] : geometry.coordinates;
+    for(const coords of paths)lines.push({id,shapePath:coords.map(([lng,lat])=>[lat,lng])});
+  }
+  return prepareTransitCorridors(lines,definitions).map(corridor=>({
+    path:corridor.path,
+    names:[...new Set(corridor.lanes.map(lane=>lane.label))].sort(),
+    color:corridor.lanes[0]?.color || '#20c8b0',
+  }));
+}
 
-    const labelPts = pointsFromFeatureGeometry(displayFeature, name);
-    if(!labelPts.length) return;
-    labelPts.sort((a,b)=>turfDist(center,a)-turfDist(center,b));
-    const anchor = labelPts[0];
-    const label = L.tooltip({
-      permanent: true,
-      direction: 'center',
-      className: `measure-line-label${active ? ' active' : ''}`,
-      opacity: 1,
-      offset: [0,0],
-    })
-      .setLatLng([anchor.lat, anchor.lng])
-      .setContent(escapePreviewOptionLabel(amtrakLineLabel(name, feature.properties)))
-      .addTo(map);
-    pickedMarkers.push(label);
-  });
+// Fixed label dimensions match CSS, so placement can guarantee screen-space separation.
+function layoutGroupedLineLabels(candidates, size, {width=180,height=28,gap=10,limit=8}={}){
+  const groups=[];
+  const sorted=[...candidates].sort((a,b)=>Number(b.active)-Number(a.active) || b.names.length-a.names.length || b.length-a.length);
+  for(const candidate of sorted){
+    const {x,y}=candidate.point;
+    if(x<width/2+gap || x>size.x-width/2-gap || y<height/2+gap || y>size.y-height/2-gap)continue;
+    const nearby=groups.find(group=>Math.abs(group.point.x-x)<width+gap && Math.abs(group.point.y-y)<height+gap);
+    if(nearby){
+      nearby.names=[...new Set([...nearby.names,...candidate.names])].sort();
+      nearby.active ||= candidate.active;
+      continue;
+    }
+    if(groups.length<limit)groups.push({...candidate,names:[...candidate.names],width,height});
+  }
+  return groups;
+}
+
+class GroupedLinearOverlay {
+  constructor(mapInstance, items, {nearestName=null,label='Rail',formatLabel=name=>name}={}){
+    this.map=mapInstance;this.label=label;this.nearestName=nearestName;this.formatLabel=formatLabel;
+    this.corridors=prepareGroupedLinearCorridors(items);
+    this.tracks=L.layerGroup().addTo(this.map);
+    this.labels=L.layerGroup().addTo(this.map);
+    this.redrawLabels=this.redrawLabels.bind(this);
+    for(const corridor of this.corridors){
+      const active=corridor.names.includes(nearestName);
+      const line=L.polyline(corridor.path,{color:corridor.color,weight:active?5:3,opacity:active?.95:.72});
+      line.bindPopup(this.routeList(corridor.names,'Routes on this track'));
+      this.tracks.addLayer(line);
+    }
+    // A native disclosure provides the entire source route list even where labels are suppressed.
+    const allNames=[...new Set(this.corridors.flatMap(corridor=>corridor.names))].sort();
+    this.legend=L.control({position:'bottomleft'});
+    this.legend.onAdd=()=>{
+      const details=document.createElement('details');details.className='grouped-line-legend';
+      const summary=document.createElement('summary');summary.textContent=`${label} · ${allNames.length} routes`;
+      details.append(summary,this.routeList(allNames,'Routes in this dataset'));
+      L.DomEvent.disableClickPropagation(details);L.DomEvent.disableScrollPropagation(details);
+      return details;
+    };
+    this.legend.addTo(this.map);
+    this.map.on('zoomend moveend resize',this.redrawLabels);
+    this.redrawLabels();
+  }
+  routeList(names,heading){
+    const box=document.createElement('div');box.className='grouped-line-route-list';
+    const title=document.createElement('strong');title.textContent=heading;box.append(title);
+    const list=document.createElement('ul');
+    for(const name of names){const li=document.createElement('li');li.textContent=name;list.append(li);}
+    box.append(list);return box;
+  }
+  redrawLabels(){
+    this.labels.clearLayers();
+    const size=this.map.getSize(), candidates=[];
+    for(const corridor of this.corridors){
+      const points=corridor.path.map(point=>this.map.latLngToContainerPoint(point));
+      let anchor=null,bestLength=0;
+      for(let i=1;i<points.length;i++){
+        const a=points[i-1],b=points[i];
+        // Clip to the viewport before choosing a midpoint, so long crossing segments qualify.
+        let lo=0,hi=1;const dx=b.x-a.x,dy=b.y-a.y;
+        for(const [p,q] of [[-dx,a.x],[dx,size.x-a.x],[-dy,a.y],[dy,size.y-a.y]]){
+          if(p===0){if(q<0){lo=1;hi=0;break;}continue;}
+          const t=q/p;if(p<0)lo=Math.max(lo,t);else hi=Math.min(hi,t);
+        }
+        if(lo>hi)continue;
+        const length=Math.hypot(dx,dy)*(hi-lo);
+        if(length>bestLength){bestLength=length;const t=(lo+hi)/2;anchor={x:a.x+t*dx,y:a.y+t*dy};}
+      }
+      if(anchor)candidates.push({point:anchor,names:corridor.names,active:corridor.names.includes(this.nearestName),length:bestLength});
+    }
+    for(const group of layoutGroupedLineLabels(candidates,size)){
+      const button=document.createElement('button');button.type='button';
+      button.className=`measure-line-label grouped-line-label${group.active?' active':''}`;
+      button.textContent=group.names.length===1 ? this.formatLabel(group.names[0]) : `${this.label} · ${group.names.length} routes`;
+      button.title=group.names.join('\n');
+      button.setAttribute('aria-label',`Show routes in this area: ${group.names.join(', ')}`);
+      const point=this.map.containerPointToLatLng(group.point);
+      const marker=L.marker(point,{keyboard:false,icon:L.divIcon({className:'grouped-line-anchor',html:button,iconSize:[group.width,group.height],iconAnchor:[group.width/2,group.height/2]}),zIndexOffset:700});
+      marker.bindPopup(this.routeList(group.names,'Routes in this area'));
+      // A real button makes the disclosure available via keyboard as well as mouse/touch.
+      button.addEventListener('click',event=>{event.stopPropagation();marker.openPopup();});
+      this.labels.addLayer(marker);
+    }
+  }
+  remove(){
+    this.map.off('zoomend moveend resize',this.redrawLabels);
+    this.tracks.remove();this.labels.remove();this.legend.remove();
+  }
+}
+
+function renderAmtrakMeasureLines(_center, nearestName){
+  const raw=preloadedData.pois?.amtrakLines;
+  if(!Array.isArray(raw)||!raw.length)return;
+  pickedMarkers.push(new GroupedLinearOverlay(map,raw,{nearestName,label:'Amtrak',formatLabel:amtrakLineLabel}));
 }
 
 async function selectMeasureCat(catObj){

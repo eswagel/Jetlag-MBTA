@@ -665,3 +665,13 @@
 
 #game-session { position:fixed; inset:0; width:100%; height:100%; border:0; z-index:5000; background:var(--bg); }
 .game-session #city-picker, .game-session #city-preview-note { display:none; }
+
+/* Grouped line overlays share geometry and reserve fixed-size, separated labels. */
+.grouped-line-label { width:180px; height:28px; box-sizing:border-box; overflow:hidden; text-overflow:ellipsis; cursor:pointer; padding:4px 8px; }
+.grouped-line-label:focus-visible { outline:2px solid var(--gold); outline-offset:3px; }
+.grouped-line-anchor { background:none; border:0; }
+.grouped-line-legend { max-width:240px; color:var(--text); background:rgba(8,13,18,.94); border:1px solid var(--border); border-radius:8px; font:10px 'Space Mono',monospace; padding:8px 10px; }
+.grouped-line-legend summary { cursor:pointer; }
+.grouped-line-route-list { max-height:180px; overflow:auto; padding:8px; font-size:11px; }
+.grouped-line-route-list ul { padding-left:18px; margin:6px 0 0; }
+.grouped-line-route-list li { margin:3px 0; }
