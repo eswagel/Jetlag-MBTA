@@ -106,7 +106,7 @@ function buildStoredPhotoQuestion(payload){
 function buildStoredMatchingQuestion(payload){
   buildStoredQuestionBase(payload, 'matching');
   const center = normalizeLatLng(payload.center);
-  const category = payload.category || payload.category_label;
+  const category = resolveCategory('matching',payload)?.id || payload.category || payload.category_label;
   const categoryLabel = payload.category_label || category;
   if(!center || !category) throw new Error('Matching question is missing center or category');
   if(category === 'line' && !payload.boundary_geojson) return null;
@@ -136,8 +136,8 @@ function buildStoredMatchingQuestion(payload){
 async function rebuildMatchingQuestion(payload){
   buildStoredQuestionBase(payload, 'matching');
   const center = normalizeLatLng(payload.center);
-  const category = payload.category || payload.category_label;
-  const catObj = MATCHING_CATS.find(c => c.cat === category);
+  const category = resolveCategory('matching',payload)?.id || payload.category || payload.category_label;
+  const catObj = resolveCategory('matching',category);
   if(!center || !catObj) throw new Error('Unknown matching category');
   if(category === 'line' && !payload.line_id) throw new Error('Line matching question is missing line id');
   const result = await catObj.resolve(center, {

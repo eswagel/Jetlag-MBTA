@@ -605,7 +605,7 @@ async function selectMatchingCat(catObj){
 }
 
 async function selectMatchingLine(lineId){
-  const catObj = MATCHING_CATS.find(c => c.cat === 'line');
+  const catObj = resolveCategory('matching','line');
   const line = GAME_LINES.find(gl => gl.id === lineId);
   if(!catObj || !line){ toast('Unknown line'); return; }
   qparams.matching_line_id = line.id;
@@ -741,7 +741,7 @@ function maybeAutoResolveBuildQuestion(){
       return;
     }
     if(qparams.matching_cat && !qparams.matching_seeker_val && !qparams._matching_searching){
-      const catObj = MATCHING_CATS.find(c => c.cat === qparams.matching_cat);
+      const catObj = resolveCategory('matching',qparams.matching_cat);
       if(catObj) selectMatchingCat(catObj);
     }
     return;
