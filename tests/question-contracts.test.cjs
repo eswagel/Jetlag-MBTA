@@ -60,3 +60,15 @@ test('point and numeric validation is driven by each question contract',()=>{
   assert.throws(()=>g.run('validateQuestionInputs(payload)'),/positive/);
  }
 });
+test('explicit secondary aliases are not overwritten by primary alias defaults',()=>{
+ const g=game('boston');
+ g.ctx.boundary={type:'Feature',properties:{},geometry:{type:'Polygon',coordinates:[]}};
+ const result=JSON.parse(g.run(`JSON.stringify(questionFromBuildParams('matching',{_matching_boundary_simplified:boundary,matching_line_label:'Red'}))`));
+ assert.deepEqual(result.boundary_geojson,g.ctx.boundary);
+ assert.equal(result.seeker_val,'Red');
+ const defaults=JSON.parse(g.run(`JSON.stringify(questionFromBuildParams('matching',{}))`));
+ assert.equal(defaults.boundary_geojson,null);
+ // Explicit nulls remain intentional clears, not an invitation to recover old data.
+ const cleared=JSON.parse(g.run(`JSON.stringify(questionFromBuildParams('matching',{matching_boundary:null,_matching_boundary_simplified:boundary}))`));
+ assert.equal(cleared.boundary_geojson,null);
+});

@@ -968,9 +968,12 @@ function contractBuildParams(question,{preset=false}={}){
 // Reverse the same aliases used by restoration rather than maintaining another field list.
 function questionFromBuildParams(type, params){
   const contract=QUESTION_CONTRACTS[type], question={type};
-  params={...cloneForStorage(contract.editorDefaults||{}),...params};
   for(const [field,aliases] of Object.entries(contract.fields)){
-    for(const alias of [].concat(aliases))if(params[alias]!==undefined){question[field]=cloneForStorage(params[alias]);break;}
+    const keys=[].concat(aliases);
+    // Explicit values on any alias take precedence over defaults on another alias.
+    // A default null on the primary field must not hide a supplied legacy alias.
+    const source=keys.some(alias=>params[alias]!==undefined)?params:(contract.editorDefaults||{});
+    for(const alias of keys)if(source[alias]!==undefined){question[field]=cloneForStorage(source[alias]);break;}
   }
   return contractQuestion(question,contract);
 }
