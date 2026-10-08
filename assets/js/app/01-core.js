@@ -210,129 +210,94 @@ function buildStopBaseRegionEntries(){
   return nextEntries;
 }
 
-// Only one union is retained; a new base-region set invalidates it.
-let _survivingCatchmentCache = null;
+// Question definitions classify constraints by what they describe, independently
+// of the legacy hard/soft presentation flag carried by older question packets.
+function getQuestionConstraintScope(question){
+  const def = QDEFS[question?.type];
+  if(!def || def.affectsZone === false) return 'none';
+  return typeof def.constraintScope === 'function'
+    ? def.constraintScope(question) : (def.constraintScope || 'location');
+}
 
-function deriveStopRegionState(hardZone, list){
-  if(!hardZone) return null;
+function compileConstraintPlan(baseZone, list){
+  const questions = normalizeConstraintList(list);
+  let fixedZone = baseZone;
+  for(const question of questions){
+    if(getQuestionConstraintScope(question) === 'fixed'){
+      fixedZone = QDEFS[question.type].applyToZone(fixedZone, question) || emptyPolygonFeature();
+    }
+  }
+  const observations = [];
+  const stationQuestions = [];
+  for(const question of questions){
+    const scope = getQuestionConstraintScope(question);
+    const def = QDEFS[question?.type];
+    if(scope === 'station') stationQuestions.push(question);
+    else if(scope === 'location' && (!def.hasSpatialContext || def.hasSpatialContext(question))){
+      // Compute each answer's geometry once, without intersecting earlier
+      // observations: the hider can move anywhere within their one catchment.
+      observations.push(def.applyToZone(fixedZone, question) || emptyPolygonFeature());
+    }
+  }
+  return {fixedZone, observations, stationQuestions};
+}
+
+// Cache only the union of full eligible catchments, never transient answer slices.
+let _survivingCatchmentCache = null;
+function deriveStopRegionState(baseZone, list){
+  if(!baseZone) return null;
   const baseEntries = buildStopBaseRegionEntries();
   if(!baseEntries.length) return null;
-
-  const softConstraints = normalizeConstraintList(list).filter(q =>
-    q &&
-    q.type !== '_setup' &&
-    q.type !== '_veto' &&
-    q.type !== '_randomize_card' &&
-    getConstraintEffect(q) === 'soft' &&
-    !(q.type === 'matching' && !q.boundary_geojson) &&
-    !!QDEFS[q.type]
-  );
-
-  const byStop = {};
-  const greenFeatures = [];
-  const yellowFeatures = [];
-  const survivingEntries = [];
-
-  baseEntries.forEach(({id, stop, baseRegion}) => {
-    const hardRegion = exactIsect(hardZone, baseRegion);
-    if(!hardRegion){
+  const {fixedZone, observations, stationQuestions} = compileConstraintPlan(baseZone, list);
+  const byStop = {}, greenFeatures = [], yellowFeatures = [], survivingEntries = [];
+  for(const {id, stop, baseRegion} of baseEntries){
+    const eliminated = () => {
       byStop[id] = {stop, inPlay:false, status:'eliminated', hardRegion:null, greenRegion:null, yellowRegion:null};
-      return;
+    };
+    // Station identity must be decided before geometry: neighboring stations
+    // may have overlapping circles without sharing line membership.
+    if(stationQuestions.some(q => !QDEFS[q.type].matchesStation({...stop, id}, q))){
+      eliminated(); continue;
     }
-
-    // A moving hider can satisfy different matching clues at different points
-    // in this same catchment. Each clue must have a possible point; their
-    // point-level slices must not be intersected across time.
+    const hardRegion = exactIsect(fixedZone, baseRegion);
+    if(!hardRegion){ eliminated(); continue; }
     let greenRegion = hardRegion;
-    for(const q of softConstraints){
-      const kept = QDEFS[q.type].applyToZone(hardRegion, q);
-      const compatible = kept && exactIsect(hardRegion, kept);
-      if(!compatible){
-        byStop[id] = {stop, inPlay:false, status:'eliminated', hardRegion:null, greenRegion:null, yellowRegion:null};
-        return;
-      }
+    let possible = true;
+    for(const observation of observations){
+      const compatible = exactIsect(hardRegion, observation);
+      if(!compatible){ possible = false; break; }
       greenRegion = compatible;
     }
-    survivingEntries.push({id, baseRegion, hardRegion});
-    const partialRegion = exactDiff(baseRegion, hardRegion);
-    if(partialRegion) yellowFeatures.push(...geometryToPolygonFeatures(partialRegion, {regionKind:'yellow', stopId:id, catchmentPartial:true}));
+    if(!possible){ eliminated(); continue; }
     const yellowRegion = exactDiff(hardRegion, greenRegion);
-
-    if(greenRegion) greenFeatures.push(...geometryToPolygonFeatures(greenRegion, {regionKind:'green', stopId:id}));
-    if(yellowRegion) yellowFeatures.push(...geometryToPolygonFeatures(yellowRegion, {regionKind:'yellow', stopId:id, menuLabel:'Exclude region'}));
-
-    byStop[id] = {
-      stop,
-      inPlay:true,
-      hardRegion,
-      greenRegion: greenRegion || null,
-      yellowRegion: yellowRegion || null,
-      hasGreen: !!greenRegion,
-      hasYellow: !!yellowRegion || !!partialRegion,
-      status: (yellowRegion || partialRegion) ? 'temporary' : 'in-play',
-    };
-  });
-
+    survivingEntries.push({id, baseRegion});
+    greenFeatures.push(...geometryToPolygonFeatures(greenRegion, {regionKind:'green', stopId:id}));
+    if(yellowRegion) yellowFeatures.push(...geometryToPolygonFeatures(yellowRegion,
+      {regionKind:'yellow', stopId:id, menuLabel:'Exclude region'}));
+    byStop[id] = {stop, inPlay:true, hardRegion, greenRegion, yellowRegion,
+      hasGreen:true, hasYellow:!!yellowRegion, status:yellowRegion ? 'temporary' : 'in-play'};
+  }
   const survivingIds = JSON.stringify(survivingEntries.map(entry => entry.id));
-  if(!_survivingCatchmentCache ||
-     _survivingCatchmentCache.baseEntries !== baseEntries ||
-     _survivingCatchmentCache.survivingIds !== survivingIds){
+  if(!_survivingCatchmentCache || _survivingCatchmentCache.baseEntries !== baseEntries ||
+      _survivingCatchmentCache.survivingIds !== survivingIds){
     let union = null;
     for(const entry of survivingEntries) union = safeUnion(union, entry.baseRegion);
-    _survivingCatchmentCache = {
-      baseEntries,
-      survivingIds,
-      union: union || {type:'Feature',properties:{},geometry:{type:'MultiPolygon',coordinates:[]}},
-    };
+    _survivingCatchmentCache = {baseEntries, survivingIds, union:union || emptyPolygonFeature()};
   }
-
-  // Restrict gameplay to eligible station catchments, including soft-clue
-  // eliminations. Preserve the explicit empty polygon when none remain.
-  const hardUnion = exactIsect(hardZone, _survivingCatchmentCache.union) || emptyPolygonFeature();
-  return {
-    byStop,
-    hardUnion,
-    survivingCatchments: _survivingCatchmentCache.union,
-    greenUnion: null,
-    yellowUnion: null,
-    greenFeatures,
-    yellowFeatures,
-  };
+  const hardUnion = exactIsect(fixedZone, _survivingCatchmentCache.union) || emptyPolygonFeature();
+  return {byStop, hardUnion, survivingCatchments:hardUnion,
+    greenUnion:null, yellowUnion:null, greenFeatures, yellowFeatures};
 }
 
 function deriveZoneStateFromConstraints(baseZone, list){
-  const base = baseZone ? cloneGeo(baseZone) : null;
-  if(!base) return {validZone:null, softZone:null};
-
-  let hardZone = base;
-  let softZoneState = null;
-
-  for(const q of normalizeConstraintList(list)){
-    if(!q || q.type === '_setup' || q.type === '_veto' || q.type === '_randomize_card') continue;
-    const def = QDEFS[q.type];
-    if(!def) continue;
-
-    if(getConstraintEffect(q) === 'soft'){
-      const afterSoft = def.applyToZone(hardZone, q);
-      const excluded = afterSoft ? exactDiff(hardZone, afterSoft) : null;
-      if(excluded){
-        softZoneState = softZoneState ? safeUnion(softZoneState, excluded) : excluded;
-      }
-      continue;
-    }
-
-    hardZone = def.applyToZone(hardZone, q) || hardZone;
-    if(softZoneState){
-      softZoneState = exactIsect(softZoneState, hardZone) || null;
-    }
-  }
-
-  const stopState = deriveStopRegionState(hardZone, list);
-  return {
-    validZone: stopState?.hardUnion || hardZone,
-    softZone: stopState?.yellowUnion || softZoneState,
-    stopState,
-  };
+  if(!baseZone) return {validZone:null, softZone:null, stopState:null};
+  const stopState = deriveStopRegionState(baseZone, list);
+  if(stopState) return {validZone:stopState.hardUnion, softZone:null, stopState};
+  // Geometry-only consumers without a station dataset retain a conservative
+  // result; live games always reduce against their station catchments above.
+  const plan = compileConstraintPlan(baseZone, list);
+  const zone = plan.observations.length ? plan.observations[plan.observations.length-1] : plan.fixedZone;
+  return {validZone:zone, softZone:null, stopState:null};
 }
 
 function buildTentacleOptionId(option, fallbackIndex=0){
@@ -1020,6 +985,9 @@ const QDEFS = {
   },
   matching:{
     label:'Matching', colorTag:'tag-matching',
+    constraintScope:q=>q.category === 'line' ? 'station' : 'location',
+    hasSpatialContext:q=>!!q.boundary_geojson,
+    matchesStation:(station,q)=>stationMatchesQuestionLine(station,q) === (q.answer === 'Yes'),
     pickSteps:[{key:'center', label:'Tap map — your location'}],
     isReady:p=>p.center&&p.matching_cat&&p.matching_seeker_val,
     toJSON:p=>({
@@ -1052,6 +1020,7 @@ const QDEFS = {
   },
   nearest:{
     label:'Nearest', colorTag:'tag-nearest',
+    hasSpatialContext:q=>!!q.voronoi_geojson,
     pickSteps:[{key:'center', label:'Tap map — your location'}],
     isReady:p=>p.center&&p.nearest_cat&&p.nearest_seeker_poi,
     toJSON:p=>({
@@ -1090,6 +1059,7 @@ const QDEFS = {
   },
   custom_boundary:{
     label:'Boundary', colorTag:'tag-nearest',
+    constraintScope:'fixed',
     pickSteps:[],
     isReady:p=>Array.isArray(p.custom_boundary_points) && p.custom_boundary_points.length >= 3 && !!p.custom_boundary_mode,
     toJSON:p=>({

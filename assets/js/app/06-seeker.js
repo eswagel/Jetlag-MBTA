@@ -884,8 +884,8 @@ function renderLog(){
       return `<div class="citem"><span class="ctag" style="background:rgba(160,96,255,0.2);color:var(--purple)">RANDOM</span><div class="cdesc"><b>Randomize card played</b> - preloaded question: <b>${q._preset_label || (def ? def.label : q._qtype)}</b></div>${delBtn}</div>`;
     }
     const def = QDEFS[q.type];
-    const effectTag = getConstraintEffect(q) === 'soft'
-      ? `<span class="ctag" style="background:rgba(240,160,48,0.2);color:var(--gold)">SOFT</span>`
+    const effectTag = getQuestionConstraintScope(q) === 'location'
+      ? `<span class="ctag" style="background:rgba(240,160,48,0.2);color:var(--gold)">LOCATION</span>`
       : '';
     return `<div class="citem">${effectTag}<span class="ctag ${def ? def.colorTag : 'tag-radar'}">${def ? def.label : q.type}</span><div class="cdesc">${def ? def.describe(q) : JSON.stringify(q)}</div>${delBtn}</div>`;
   }).join('');
@@ -1016,11 +1016,11 @@ function recomputeZoneFromConstraints(){
   return true;
 }
 
-function commitZoneState(nextHardZone, nextConstraints){
+function commitZoneState(nextHardZone, nextConstraints, preparedState=null){
   constraints = normalizeConstraintList(nextConstraints);
-  validZone = nextHardZone;
-  stopRegionState = deriveStopRegionState(validZone, constraints);
-  validZone = stopRegionState?.hardUnion || validZone;
+  const next = preparedState || deriveZoneStateFromConstraints(buildHideRadiusZone(), constraints);
+  stopRegionState = next.stopState;
+  validZone = next.validZone;
   softZone = stopRegionState?.yellowUnion || null;
   drawHideRadiusVisuals();
   renderZone();
@@ -1042,7 +1042,7 @@ function applyConstraintIncrementally(question){
     return true;
   }
   const next = deriveZoneStateFromConstraints(buildHideRadiusZone(), nextConstraints);
-  return commitZoneState(next.validZone, nextConstraints);
+  return commitZoneState(next.validZone, nextConstraints, next);
 }
 
 function deleteConstraintAt(index){
