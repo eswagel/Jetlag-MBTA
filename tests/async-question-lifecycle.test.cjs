@@ -47,6 +47,7 @@ for(const city of ['boston','chicago']){
  test(city+': reset invalidates pending question hydration',async()=>{
   const run=game(city);
   run(`cityCompatibilityError=()=>null;validateQuestionForCity=()=>{};normalizeLatLng=p=>p;document.getElementById('hider-json-in').value=JSON.stringify({type:'tentacles',id:'old',center:{lat:42,lng:-71},category:'Park'});var finish;resolveTentacleQuestionOptions=()=>new Promise(r=>finish=r);var pending=hiderLoadQuestion();hiderReset();`);
+  await run('Promise.resolve()');
   await run(`finish([{name:'A',lat:42,lng:-71},{name:'B',lat:42,lng:-70}]);pending`);assert.equal(run('_hiderQ'),null);assert.equal(run("document.getElementById('hider-locate-state').style.display"),'none');
  });
 }

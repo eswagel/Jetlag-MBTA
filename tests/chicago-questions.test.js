@@ -70,13 +70,13 @@ test('static snapshots reject version mismatch, station subsets and duplicates',
   assert.throws(()=>g.run("validateQuestionServiceSnapshot({...question,service_snapshot:{...snapshot,stationIds:['1','1']}})"),/outside this dataset/);
 });
 
-test('answered JSON cannot bypass city or service snapshot checks',()=>{
+test('answered JSON cannot bypass city or service snapshot checks',async()=>{
   const g=game(); g.run(lineFixture);
   g.run('var applied=false; var message=""; toast=text=>message=text; applyAnswerObject=()=>applied=true;');
-  g.run(`applyAnswerFromRaw(JSON.stringify({id:'bad',type:'matching',category:'line',line_id:'Red',answer:'Yes',city_id:'chicago',dataset_version:'chicago-v1'}),()=>{});`);
+  await g.run(`applyAnswerFromRaw(JSON.stringify({id:'bad',type:'matching',category:'line',line_id:'Red',answer:'Yes',city_id:'chicago',dataset_version:'chicago-v1'}),()=>{});`);
   assert.equal(g.run('applied'),false);
   assert.match(g.run('message'),/snapshot/);
-  g.run(`applyAnswerFromRaw(JSON.stringify({id:'bad',answer:'Yes',city_id:'boston',dataset_version:'boston-v1'}),()=>{});`);
+  await g.run(`applyAnswerFromRaw(JSON.stringify({id:'bad',answer:'Yes',city_id:'boston',dataset_version:'boston-v1'}),()=>{});`);
   assert.equal(g.run('applied'),false);
   assert.match(g.run('message'),/belongs to boston/);
 });
