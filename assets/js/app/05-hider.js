@@ -61,45 +61,7 @@ async function resolveNearestValue(categoryLabel, loc){
 }
 
 async function resolveMeasureValue(question, loc){
-  if(question.mode === 'elevation'){
-    const elevation = await fetchPointElevation(loc.lat, loc.lng);
-    return {
-      kind:'elevation',
-      feet:elevation.feet,
-      meters:elevation.meters,
-    };
-  }
-
-  const catObj = findMeasureCategory(question.category);
-  if(!catObj) throw new Error(`Unknown measure category: ${question.category}`);
-
-  if(isLinearMeasure(question.category)){
-    const lineFeatures = (await getMeasureLinearFeatures(catObj, loc))
-      .map(item => ({name:item.name || item.properties?.name || catObj.label, feature:coerceFeature(item, item.name)}))
-      .filter(item => item.feature);
-    if(!lineFeatures.length) return null;
-
-    const point = turf.point([loc.lng, loc.lat]);
-    let best = null;
-    lineFeatures.forEach(item => {
-      try{
-        const snapped = turf.nearestPointOnLine(item.feature, point, {units:'miles'});
-        const dist = snapped?.properties?.dist;
-        if(!Number.isFinite(dist) || (best && dist >= best.dist)) return;
-        best = {name:item.name || question.category_label, dist};
-      }catch(e){}
-    });
-    return best ? {kind:'distance', name:best.name, dist:best.dist} : null;
-  }
-
-  const items = await getCategoryInstances(catObj, loc, 35000);
-  if(!items.length) return null;
-  const nearest = items.sort((a,b)=>turfDist(loc,a)-turfDist(loc,b))[0];
-  return {
-    kind:'distance',
-    name:nearest.name,
-    dist:turfDist(loc, nearest),
-  };
+  return (await resolveMeasurement(question, loc)).value;
 }
 
 async function hiderLoadQuestion(){

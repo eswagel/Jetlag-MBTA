@@ -301,83 +301,9 @@ function buildStoredMeasureQuestion(payload){
 async function rebuildMeasureQuestion(payload){
   buildStoredQuestionBase(payload, 'measure');
   const center = normalizeLatLng(payload.center);
-  const categoryLabel = payload.category_label || payload.category;
-  const catObj = MEASURE_CATS.find(c => c.label === categoryLabel);
-  if(!center || !catObj) throw new Error('Unknown measure category');
-
-  if(isSeaLevelMeasure(categoryLabel) || payload.mode === 'elevation'){
-    const grid = await loadElevationData();
-    if(!grid?.values?.length) throw new Error('No elevation grid data available');
-    const elevation = await fetchPointElevation(center.lat, center.lng);
-    return {
-      id:payload.id,
-      ...QDEFS.measure.toJSON({
-        center,
-        measure_mode:'elevation',
-        measure_cat:catObj.label,
-        measure_cat_label:payload.category_label || catObj.label,
-        measure_seeker_elevation_ft:elevation.feet,
-        measure_seeker_elevation_m:elevation.meters,
-      }),
-    };
-  }
-
-  if(isLinearMeasure(catObj.label)){
-    const lineFeatures = (await getMeasureLinearFeatures(catObj, center))
-      .map(item => ({name:item.name || item.properties?.name || catObj.label, feature:coerceFeature(item, item.name)}))
-      .filter(item => item.feature);
-    if(!lineFeatures.length) throw new Error(`No ${catObj.label} geometry found`);
-
-    const seekerPoint = turf.point([center.lng, center.lat]);
-    let best = null;
-    lineFeatures.forEach(item => {
-      try{
-        const snapped = turf.nearestPointOnLine(item.feature, seekerPoint, {units:'miles'});
-        const dist = snapped?.properties?.dist;
-        if(!Number.isFinite(dist)) return;
-        if(!best || dist < best.dist){
-          const [lng, lat] = snapped.geometry.coordinates;
-          best = {name:item.name, lat, lng, dist};
-        }
-      }catch(e){}
-    });
-    if(!best) throw new Error(`Could not resolve ${catObj.label}`);
-
-    return {
-      id:payload.id,
-      ...QDEFS.measure.toJSON({
-        center,
-        measure_mode:'distance',
-        measure_cat:catObj.label,
-        measure_cat_label:payload.category_label || catObj.label,
-        measure_seeker_nearest:{lat:best.lat,lng:best.lng,name:best.name},
-        measure_seeker_dist:best.dist,
-        measure_all_instances:[{lat:best.lat,lng:best.lng,name:best.name}],
-        measure_linear_features:lineFeatures.map(item => ({
-          name:item.name,
-          geometry:item.feature.geometry,
-        })),
-      }),
-    };
-  }
-
-  const instances = await getCategoryInstances(catObj, center, 35000);
-  if(!instances.length) throw new Error(`No ${catObj.label} found nearby`);
-  instances.sort((a,b)=>turfDist(center,a)-turfDist(center,b));
-  const nearest = instances[0];
-  return {
-    id:payload.id,
-    ...QDEFS.measure.toJSON({
-      center,
-      measure_mode:'distance',
-      measure_cat:catObj.label,
-      measure_cat_label:payload.category_label || catObj.label,
-      measure_seeker_nearest:nearest,
-      measure_seeker_dist:turfDist(center, nearest),
-      measure_all_instances:adaptivePointConfig(catObj.label) ? [] : instances,
-      measure_linear_features:[],
-    }),
-  };
+  if(!center) throw new Error('Unknown measure center');
+  const result = await resolveMeasurement(payload, center);
+  return {id:payload.id,...QDEFS.measure.toJSON(measurementBuildParams(result))};
 }
 
 async function hydrateOutgoingQuestionContent(payload){

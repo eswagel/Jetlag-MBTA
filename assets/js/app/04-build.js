@@ -1681,11 +1681,66 @@ class MeasurePointOverlay {
   remove(){this.map.off('zoomend moveend resize',this.redraw);this.layer.remove();}
 }
 
+// All question entry points resolve the same source and metric. Display limits and
+// packet compression belong to callers, never to the calculation dataset.
+async function resolveMeasurement(categoryOrQuestion, center){
+  const input = typeof categoryOrQuestion === 'string' ? {category:categoryOrQuestion} : categoryOrQuestion;
+  const label = input.label || input.category || input.category_label;
+  const category = MEASURE_CATS.find(item=>item.label===label);
+  if(!category) throw new Error(`Unknown measure category: ${label}`);
+  if(input.mode === 'elevation' || isSeaLevelMeasure(category.label)){
+    const grid = await loadElevationData();
+    if(!grid?.values?.length) throw new Error('No elevation grid data available');
+    const elevation = await fetchPointElevation(center.lat, center.lng);
+    return {category, center, mode:'elevation', value:{kind:'elevation', feet:elevation.feet, meters:elevation.meters}, nearest:null, instances:[], linearFeatures:[]};
+  }
+  if(isLinearMeasure(category.label)){
+    const linearFeatures = (await getMeasureLinearFeatures(category, center))
+      .map(item => ({name:item.name || item.properties?.name || category.label, feature:coerceFeature(item, item.name)}))
+      .filter(item => item.feature);
+    if(!linearFeatures.length) throw new Error(`No ${category.label} geometry found`);
+    const point = turf.point([center.lng, center.lat]);
+    let best = null;
+    for(const item of linearFeatures){
+      try{
+        const snapped = turf.nearestPointOnLine(item.feature, point, {units:'miles'});
+        const dist = snapped?.properties?.dist;
+        if(!Number.isFinite(dist) || (best && dist >= best.dist)) continue;
+        const [lng,lat] = snapped.geometry.coordinates;
+        best = {name:item.name,lat,lng,dist};
+      }catch(e){}
+    }
+    if(!best) throw new Error(`Could not resolve ${category.label}`);
+    const nearest = {name:best.name,lat:best.lat,lng:best.lng};
+    return {category,center,mode:'distance',value:{kind:'distance',name:best.name,dist:best.dist},nearest,instances:[nearest],linearFeatures};
+  }
+  const instances = [...await getCategoryInstances(category, center, 35000)]
+    .sort((a,b)=>turfDist(center,a)-turfDist(center,b));
+  if(!instances.length) throw new Error(`No ${category.label} found nearby`);
+  const nearest = instances[0];
+  return {category,center,mode:'distance',value:{kind:'distance',name:nearest.name,dist:turfDist(center,nearest)},nearest,instances,linearFeatures:[]};
+}
+
+function measurementBuildParams(result){
+  const {category,center,mode,value,nearest,instances,linearFeatures} = result;
+  return {
+    center,measure_cat:category.label,measure_cat_label:category.label,measure_mode:mode,
+    measure_seeker_nearest:nearest,
+    measure_seeker_dist:mode === 'distance' ? value.dist : null,
+    measure_seeker_elevation_ft:mode === 'elevation' ? value.feet : null,
+    measure_seeker_elevation_m:mode === 'elevation' ? value.meters : null,
+    measure_instance_count:instances.length,
+    measure_all_instances:adaptivePointConfig(category.label) ? [] : instances,
+    measure_linear_features:ACTIVE_CITY.measureFilters?.[category.label] ? [] : linearFeatures.map(item=>({name:item.name,geometry:item.feature.geometry})),
+  };
+}
+
 async function selectMeasureCat(catObj){
   const unavailable = cityQuestionUnavailableReason({type:'measure',category:catObj.label});
   if(unavailable){ toast(unavailable, 6000); return; }
   if(!qparams.center){toast('Set your location first');return;}
   const isCurrent = beginBuildLookup();
+  const center = {...qparams.center};
   currentBuiltQuestion = null;
   clearZonePreview();
   qparams._mcat=catObj.label; qparams._mcatlabel=catObj.label; qparams._msearching=true;
@@ -1698,115 +1753,22 @@ async function selectMeasureCat(catObj){
   else clearBoundaryHighlight();
   renderBuildBody();
   try{
-    if(isSeaLevelMeasure(catObj.label)){
-      const grid = await loadElevationData();
-      if(!isCurrent()) return;
-      if(!grid?.values?.length){
-        toast('No elevation grid data available');
-        qparams._msearching=false;
-        renderBuildBody();
-        return;
-      }
-      const elevation = await fetchPointElevation(qparams.center.lat, qparams.center.lng);
-      if(!isCurrent()) return;
-      qparams._msearching=false;
-      qparams.measure_mode='elevation';
-      qparams.measure_seeker_elevation_ft=elevation.feet;
-      qparams.measure_seeker_elevation_m=elevation.meters;
-      clearPoiMarkers();
-      renderBuildBody(); updatePreview(); tryGenerate();
-      return;
-    }
-
-    if(isLinearMeasure(catObj.label)){
-      const lineFeatures = (await getMeasureLinearFeatures(catObj, qparams.center))
-        .map(item => ({name:item.name || item.properties?.name || catObj.label, feature:coerceFeature(item, item.name)}))
-        .filter(item => item.feature);
-      if(!isCurrent()) return;
-      if(!lineFeatures.length){
-        toast(`No ${catObj.label} geometry found`);
-        qparams._msearching=false;
-        renderBuildBody();
-        return;
-      }
-
-      const seekerPoint = turf.point([qparams.center.lng, qparams.center.lat]);
-      let best = null;
-      lineFeatures.forEach(item => {
-        try{
-          const snapped = turf.nearestPointOnLine(item.feature, seekerPoint, {units:'miles'});
-          const dist = snapped?.properties?.dist;
-          if(!Number.isFinite(dist)) return;
-          if(!best || dist < best.dist){
-            const [lng, lat] = snapped.geometry.coordinates;
-            best = {name:item.name, lat, lng, dist};
-          }
-        }catch(e){}
-      });
-      if(!best){
-        toast('Could not determine the nearest point on this feature');
-        qparams._msearching=false;
-        renderBuildBody();
-        return;
-      }
-
-      qparams._msearching=false;
-      qparams.measure_seeker_nearest={lat:best.lat,lng:best.lng,name:best.name};
-      qparams.measure_seeker_dist=best.dist;
-      qparams.measure_linear_features=ACTIVE_CITY.measureFilters?.[catObj.label] ? [] : lineFeatures.map(item => ({
-        name:item.name,
-        geometry:item.feature.geometry,
-      }));
-      qparams.measure_all_instances=[{lat:best.lat,lng:best.lng,name:best.name}];
-      if(ACTIVE_CITY.measureFilters?.[catObj.label]) toast('Distances use mapped edges. Map filtering keeps uncertain boundary cells in play for either answer.', 7000);
-
-      clearPoiMarkers();
-      if(catObj.label === 'An Amtrak Line'){
-        renderAmtrakMeasureLines(qparams.center, best.name);
-      }
-      const m=L.marker([best.lat,best.lng],{icon:measurePin(),zIndexOffset:1500}).addTo(map);
-      m.bindPopup(measureNearestPopup(catObj.label, best.name),{offset:[0,-12],maxWidth:220});
-      pickedMarkers.push(m);
-      const bounds = L.latLngBounds([[best.lat,best.lng],[qparams.center.lat,qparams.center.lng]]).pad(0.3);
-      map.fitBounds(bounds);
-      renderBuildBody(); updatePreview(); tryGenerate();
-      return;
-    }
-
-    const instances = await getCategoryInstances(catObj, qparams.center, 35000);
+    const result = await resolveMeasurement(catObj, center);
     if(!isCurrent()) return;
-    if(!instances.length){toast('No '+catObj.label+' found nearby');qparams._msearching=false;renderBuildBody();return;}
-
-    // Find seeker's nearest
-    instances.sort((a,b)=>turfDist(qparams.center,a)-turfDist(qparams.center,b));
-    const nearest=instances[0];
-    const dist=turfDist(qparams.center,nearest);
-
-    qparams._msearching=false;
-    qparams.measure_seeker_nearest={lat:nearest.lat,lng:nearest.lng,name:nearest.name};
-    qparams.measure_seeker_dist=dist;
-    qparams.measure_instance_count=instances.length;
-    qparams.measure_all_instances=adaptivePointConfig(catObj.label) ? [] : instances; // Profile-enabled filters resolve the complete local source.
-
-    // Drop teardrop pins — gold #1 for nearest, teal for rest
+    Object.assign(qparams,measurementBuildParams(result),{_msearching:false});
     clearPoiMarkers();
-    const POI_CATS_LINEAR = new Set(['An Amtrak Line','A County Border','A City Border','Sea Level','A Coastline']);
-    const isLinear = POI_CATS_LINEAR.has(catObj.label);
-    if(isLinear){
-      if(catObj.label === 'An Amtrak Line'){
-        renderAmtrakMeasureLines(qparams.center, nearest.name);
+    if(result.nearest){
+      const nearest = result.nearest;
+      if(result.linearFeatures.length){
+        if(ACTIVE_CITY.measureFilters?.[catObj.label]) toast('Distances use mapped edges. Map filtering keeps uncertain boundary cells in play for either answer.', 7000);
+        if(catObj.label === 'An Amtrak Line') renderAmtrakMeasureLines(center, nearest.name);
+        const marker=L.marker([nearest.lat,nearest.lng],{icon:measurePin(),zIndexOffset:1500}).addTo(map);
+        marker.bindPopup(measureNearestPopup(catObj.label, nearest.name),{offset:[0,-12],maxWidth:220});
+        pickedMarkers.push(marker);
+      }else{
+        pickedMarkers.push(new MeasurePointOverlay(map,result.instances));
       }
-      // For linear/edge categories, show a single teal diamond at the nearest point
-      const m=L.marker([nearest.lat,nearest.lng],{icon:measurePin(),zIndexOffset:1500}).addTo(map);
-      m.bindPopup(measureNearestPopup(catObj.label, nearest.name),{offset:[0,-12],maxWidth:220});
-      pickedMarkers.push(m);
-    } else {
-      pickedMarkers.push(new MeasurePointOverlay(map,instances));
-    }
-    // Fit map to show nearest + seeker location
-    if(nearest.lat && nearest.lng){
-      const bounds = L.latLngBounds([[nearest.lat,nearest.lng],[qparams.center.lat,qparams.center.lng]]).pad(0.3);
-      map.fitBounds(bounds);
+      map.fitBounds(L.latLngBounds([[nearest.lat,nearest.lng],[center.lat,center.lng]]).pad(0.3));
     }
     renderBuildBody(); updatePreview(); tryGenerate();
   }catch(e){if(!isCurrent()) return;qparams._msearching=false;toast('Search failed: '+e.message);renderBuildBody();}
