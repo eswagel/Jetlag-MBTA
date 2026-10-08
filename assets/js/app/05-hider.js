@@ -8,8 +8,10 @@ let _pendingRandomizeType = null; // set when seekers receive a randomize_card
 // Every asynchronous answer belongs to one question and one input revision.
 // The same guard covers GPS, geographic lookups, re-picking, and question loading.
 let hiderRequestRevision = 0;
+let hiderLookupUiRestore = null;
 function invalidateHiderRequest(){
   ++hiderRequestRevision;
+  if(hiderLookupUiRestore) hiderLookupUiRestore();
   const btn = document.getElementById('hider-gps-btn');
   if(btn){ btn.textContent = '📡 Use My GPS Location'; btn.disabled = false; }
 }
@@ -68,39 +70,15 @@ async function hiderLoadQuestion(){
   const raw = document.getElementById('hider-json-in').value.trim();
   if(!raw){ toast('Paste a question JSON first'); return; }
   let q; try{ q=JSON.parse(raw); }catch(e){ toast('Invalid JSON'); return; }
-  const compatibilityError = cityCompatibilityError(q);
-  if(compatibilityError){ toast(compatibilityError); return; }
-  try{ validateQuestionForCity(q); }catch(e){ toast(e.message); return; }
   cancelPointPicking();
   const isCurrent = beginHiderRequest();
-  if(q?.type === 'tentacles'){
-    const center = normalizeLatLng(q.center);
-    const radius = Number(q.radius_miles || 1);
-    const options = Array.isArray(q.options)
-      ? q.options.map((opt, i) => normalizeTentacleOption(opt, i)).filter(Boolean)
-      : [];
-    if(options.length >= 2){
-      q.options = options;
-    } else {
-      const categoryLabel = String(q.category_id || q.category || q.category_label || '').trim();
-      if(!center || !categoryLabel){
-        toast('Tentacles question is missing category or center');
-        return;
-      }
-      try{
-        toast('Loading tentacles options...', 2400);
-        q.options = await resolveTentacleQuestionOptions(categoryLabel, center, radius);
-        if(!isCurrent()) return;
-      }catch(e){
-        if(!isCurrent()) return;
-        toast(`Could not load tentacles options: ${e.message}`);
-        return;
-      }
-      if(!q.options.length){
-        toast(`No ${categoryLabel} found nearby`);
-        return;
-      }
-    }
+  try{
+    // Use the same contract, defaults and geography hydration as seeker imports.
+    q = await hydrateOutgoingQuestion(q);
+    if(!isCurrent()) return;
+  }catch(e){
+    if(isCurrent()) toast(`Could not load question: ${e.message}`);
+    return;
   }
   q = decorateHiderQuestion(q);
   const def = QDEFS[q.type];
@@ -212,17 +190,30 @@ function renderHiderStationBadge(){
   el.style.display = 'block';
 }
 
+// Preserve manual answers and retry controls across GPS and geographic failures.
+// Invalidating a request also restores its controls before the next request starts.
+function beginHiderLookupUi(){
+  const isCurrent = beginHiderRequest();
+  const btns = document.getElementById('hider-manual-btns');
+  const previous = btns?.innerHTML;
+  const restore = () => {
+    if(hiderLookupUiRestore !== restore) return;
+    hiderLookupUiRestore = null;
+    if(btns) btns.innerHTML = previous;
+  };
+  hiderLookupUiRestore = restore;
+  if(btns) btns.innerHTML = '<div style="font-size:9px;color:var(--dim);margin-top:6px">📡 Getting your location…</div>';
+  return {isCurrent, btns, finish:()=>{ if(isCurrent()) restore(); }};
+}
+
 async function hiderAutoMatchLookup(){
   const q = _hiderQ;
   if(!q || q.type !== 'matching') return;
   const cat = findMatchingCategory(q.category);
   if(!cat){ toast('Unknown category'); return; }
 
-  const isCurrent = beginHiderRequest();
-  const btns = document.getElementById('hider-manual-btns');
-  if(btns) btns.innerHTML = '<div style="font-size:9px;color:var(--dim);margin-top:6px">📡 Getting your location…</div>';
-
-  if(!navigator.geolocation){ toast('Geolocation not available'); return; }
+  const {isCurrent, btns, finish} = beginHiderLookupUi();
+  if(!navigator.geolocation){ finish(); toast('Geolocation not available'); return; }
   navigator.geolocation.getCurrentPosition(
     async (pos) => {
       if(!isCurrent()) return;
@@ -240,8 +231,9 @@ async function hiderAutoMatchLookup(){
         const expl = `Your ${q.category_label}: <b>${hiderVal}</b> / Seeker's: <b>${q.seeker_val}</b> → <b>${answer.toUpperCase()}</b>`;
         hiderPickAnswer(answer, expl);
       } catch(e){ if(isCurrent()) toast('Lookup failed: '+e.message); }
+      finally{ finish(); }
     },
-    (err) => { if(isCurrent()) toast(err.code===1?'Location permission denied':'Location unavailable'); },
+    (err) => { if(isCurrent()){ finish(); toast(err.code===1?'Location permission denied':'Location unavailable'); } },
     {enableHighAccuracy:true, timeout:10000, maximumAge:30000}
   );
 }
@@ -269,11 +261,8 @@ async function hiderAutoNearestLookup(){
   const cat = findNearestCategory(q.category);
   if(!cat){ toast('Unknown category'); return; }
 
-  const isCurrent = beginHiderRequest();
-  const btns = document.getElementById('hider-manual-btns');
-  if(btns) btns.innerHTML = '<div style="font-size:9px;color:var(--dim);margin-top:6px">📡 Getting your location…</div>';
-
-  if(!navigator.geolocation){ toast('Geolocation not available'); return; }
+  const {isCurrent, btns, finish} = beginHiderLookupUi();
+  if(!navigator.geolocation){ finish(); toast('Geolocation not available'); return; }
   navigator.geolocation.getCurrentPosition(
     async (pos) => {
       if(!isCurrent()) return;
@@ -291,8 +280,9 @@ async function hiderAutoNearestLookup(){
         const expl = `Your nearest ${q.category_label}: <b>${nearest.name}</b> / Seeker's: <b>${q.seeker_poi.name}</b> → <b>${answer.toUpperCase()}</b>`;
         hiderPickAnswer(answer, expl);
       }catch(e){ if(isCurrent()) toast('Lookup failed: '+e.message); }
+      finally{ finish(); }
     },
-    (err) => { if(isCurrent()) toast(err.code===1?'Location permission denied':'Location unavailable'); },
+    (err) => { if(isCurrent()){ finish(); toast(err.code===1?'Location permission denied':'Location unavailable'); } },
     {enableHighAccuracy:true, timeout:10000, maximumAge:30000}
   );
 }
@@ -379,7 +369,8 @@ async function hiderComputeAnswer(hiderLoc){
     if(!isCurrent()) return;
     if(!seekerMeasure || !hiderMeasure){ toast('Could not determine nearest measure feature'); return; }
 
-    if(q.mode === 'elevation'){
+    if(seekerMeasure.kind === 'elevation'){
+      q.mode = 'elevation';
       const hiderFt = hiderMeasure.feet;
       const seekerFt = seekerMeasure.feet;
       answer = hiderFt >= seekerFt ? 'higher' : 'lower';

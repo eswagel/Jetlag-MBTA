@@ -119,3 +119,51 @@ for(const city of ['boston','chicago']){
   assert.equal(run("buildQuestionPacket({type:'matching',category:'line',center:{lat:42,lng:-71},constraint_effect:'soft'}).constraint_effect"),undefined);
  });
 }
+
+for(const city of ['boston','chicago']){
+ for(const type of ['matching','nearest']){
+  for(const failure of ['denied','unavailable','lookup-error','empty']) test(`${city}: ${type} ${failure} restores manual answers and GPS retry`,async()=>{
+   const run=game(city);
+   run(`_hiderQ={id:'q',type:'${type}',category:'city',category_label:'City',center:{lat:42,lng:-71}};
+    document.getElementById('hider-manual-btns').innerHTML='<button>Retry GPS</button><button>Manual answer</button>';
+    findMatchingCategory=()=>({resolve:async()=>null});findNearestCategory=()=>({});resolveMatchingValue=resolveNearestValue=async()=>null;`);
+   if(failure==='unavailable')run('navigator.geolocation=null');
+   if(failure==='lookup-error')run(`findMatchingCategory=()=>({resolve:async()=>{throw new Error('offline')}});resolveNearestValue=async()=>{throw new Error('offline')};`);
+   await run(type==='matching'?'hiderAutoMatchLookup()':'hiderAutoNearestLookup()');
+   if(failure==='denied')run('gps[0].error({code:1})');
+   if(['lookup-error','empty'].includes(failure))await run('gps[0].success({coords:{latitude:42,longitude:-71}})');
+   assert.equal(run("document.getElementById('hider-manual-btns').innerHTML"),'<button>Retry GPS</button><button>Manual answer</button>');
+   assert.equal(run('results.length'),0);
+  });
+ }
+ test(city+': hider import shares seeker input validation',async()=>{
+  const run=game(city);
+  run(`cityCompatibilityError=()=>null;validateQuestionForCity=()=>{};document.getElementById('hider-json-in').value=JSON.stringify({type:'radar',id:'bad',center:{lat:42,lng:-71},radius_miles:-1});`);
+  await run('hiderLoadQuestion()');
+  assert.equal(run('_hiderQ'),null);assert.equal(run('notices.some(x=>x.includes("positive"))'),true);
+ });
+ test(city+': all hider categories use shared hydration and ignore obsolete completion',async()=>{
+  const run=game(city);
+  run(`var requests=[];hydrateOutgoingQuestion=q=>new Promise(resolve=>requests.push({q,resolve}));
+    document.getElementById('hider-json-in').value=JSON.stringify({id:'first',type:'photo'});var first=hiderLoadQuestion();
+    document.getElementById('hider-json-in').value=JSON.stringify({id:'second',type:'photo'});var second=hiderLoadQuestion();`);
+  await run(`requests[1].resolve({id:'second',type:'photo',prompt:'Normalized prompt'});second`);
+  await run(`requests[0].resolve({id:'first',type:'photo',prompt:'Obsolete prompt'});first`);
+  assert.equal(run('_hiderQ.id'),'second');assert.equal(run('_hiderQ.prompt'),'Normalized prompt');
+ });
+ test(city+': hider elevation answer follows resolved measurement kind',async()=>{
+  const run=game(city);
+  run(`_hiderQ={id:'elevation',type:'measure',category:'Sea Level',center:{lat:42,lng:-71}};
+    resolveMeasureValue=async(q,loc)=>({kind:'elevation',feet:loc.lat===42?10:20,meters:3});`);
+  await run('hiderComputeAnswer({lat:43,lng:-71})');
+  assert.equal(run('results[0].answer'),'higher');assert.equal(run('notices.length'),0);
+ });
+ test(city+': obsolete GPS failure cannot restore controls over a new pending lookup',async()=>{
+  const run=game(city);
+  run(`_hiderQ={id:'q',type:'matching',category:'city',category_label:'City'};findMatchingCategory=()=>({});
+    document.getElementById('hider-manual-btns').innerHTML='Manual controls';`);
+  await run('hiderAutoMatchLookup()');await run('hiderAutoMatchLookup()');
+  run('gps[0].error({code:1})');assert.match(run("document.getElementById('hider-manual-btns').innerHTML"),/Getting your location/);
+  run('gps[1].error({code:1})');assert.equal(run("document.getElementById('hider-manual-btns').innerHTML"),'Manual controls');
+ });
+}
