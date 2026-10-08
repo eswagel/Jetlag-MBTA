@@ -26,3 +26,12 @@ test('Chicago descriptors are configured before use without replacing shared fun
  assert(!source.includes('getMeasureLinearFeatures ='));
  assert(!source.includes('highlightBoundary ='));
 });
+
+for(const city of ['boston','chicago'])test(`${city}: empty selection never resolves to first category`,()=>{
+ const run=game(city);
+ for(const kind of ['matching','measure','nearest','tentacles']){
+  assert.equal(run(`resolveCategory('${kind}',undefined)`),null);
+  assert.equal(run(`resolveCategory('${kind}',{})`),null);
+  assert.equal(run(`resolveCategory('${kind}','')`),null);
+ }
+});

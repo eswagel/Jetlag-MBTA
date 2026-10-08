@@ -102,6 +102,7 @@ function configureQuestionCategories(kind, definitions){
 function resolveCategory(kind,value){
   const definitions=kind==='matching'?MATCHING_CATS:kind==='measure'?MEASURE_CATS:kind==='nearest'?NEAREST_CATS:TENTACLES_CATS;
   const key=typeof value==='object'?value?.category_id || value?.category || value?.id || value?.label:value;
+  if(key==null || key==='')return null;
   return definitions.find(item=>item.id===key || item.cat===key || item.label===key || item.aliases?.includes(key));
 }
 const CITY_PROFILES = Object.freeze({
