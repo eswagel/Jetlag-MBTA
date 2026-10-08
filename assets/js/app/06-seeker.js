@@ -314,9 +314,8 @@ async function hydrateOutgoingQuestionContent(payload){
 async function hydrateOutgoingQuestion(payload){
   const error = cityCompatibilityError(payload);
   if(error) throw new Error(error);
-  if(adaptivePointConfig(payload)) await loadPointDistanceData(payload);
+  await ensureQuestionDataReady(payload);
   validateQuestionForCity(payload);
-  if(adaptiveLinearConfig(payload) && !await loadPoiData()) throw new Error('Distance geography could not be loaded');
   return normalizeConstraintEntry(stampCityPayload(await hydrateOutgoingQuestionContent(payload)));
 }
 

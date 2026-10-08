@@ -830,10 +830,12 @@ async function resumeGame(){
   if(!mbdataReady){ toast(`Wait for ${ACTIVE_CITY.networkLabel} station data before resuming.`); return; }
   try{
     const questions = [...(save.constraints || []), ...Object.values(save.outgoingQuestions || {}), save.buildState?.currentBuiltQuestion];
-    if(questions.some(q=>adaptiveLinearConfig(q)) || measureFilterConfig(save.buildState?.qparams?.measure_cat)){
-      if(!await loadPoiData()) throw new Error('Distance geography could not be loaded. Retry when the dataset is available.');
+    const build = save.buildState;
+    const buildType = getActiveBuildQType(build?.qtype, build?.qparams);
+    if(QUESTION_CONTRACTS[buildType] && build?.qparams){
+      questions.push(questionFromBuildParams(buildType, build.qparams));
     }
-    for(const question of questions) if(adaptivePointConfig(question)) await loadPointDistanceData(question);
+    for(const question of questions) await ensureQuestionDataReady(question);
     validateSavedCityQuestions(save);
   }catch(e){ toast(e.message); return; }
   clearTimeout(_saveGameTimer);
@@ -912,6 +914,8 @@ const QUESTION_CONTRACTS = {
   thermo:{packet:['center','thermo_dest','travel_miles'], inputs:{center:'point',thermo_dest:'point',travel_miles:'positive'}, answers:['closer','further'],
     fields:{center:'center',thermo_dest:'thermo_dest',travel_miles:'travel_miles'},presets:['travel_miles'],hydrate:q=>buildStoredThermoQuestion(q)},
   measure:{packet:['center','mode','category','category_id','category_label','linear_filter_version','point_filter_version','point_dataset'],inputs:{center:'point'},
+    requiredData:q=>(q.mode==='elevation' || isSeaLevelMeasure(q)) ? ['elevation'] :
+      adaptivePointConfig(q) ? ['point-distance'] : adaptiveLinearConfig(q) ? ['pois'] : [],
     defaults:{mode:'distance'}, answers:q=>q.mode==='elevation'?['higher','lower']:['closer','further'],
     fields:{center:'center',category:'measure_cat',category_label:'measure_cat_label',mode:'measure_mode',seeker_nearest:'measure_seeker_nearest',seeker_dist:'measure_seeker_dist',seeker_elevation_ft:'measure_seeker_elevation_ft',seeker_elevation_m:'measure_seeker_elevation_m',all_instances:'measure_all_instances',linear_features:'measure_linear_features'},
     editorDefaults:{measure_seeker_nearest:null,measure_seeker_dist:null,measure_seeker_elevation_ft:null,measure_seeker_elevation_m:null,measure_all_instances:[],measure_linear_features:[]},
@@ -934,6 +938,35 @@ const QUESTION_CONTRACTS = {
     editorDefaults:{_matching_mode:'nearest',nearest_all_pois:[],nearest_voronoi:null},presets:['category','category_label'],hydrate:async q=>buildStoredNearestQuestion(q)||await rebuildNearestQuestion(q)},
   photo:{packet:['prompt'],fields:{prompt:'photo_prompt'},defaults:{prompt:''},presets:['prompt'],hydrate:q=>buildStoredPhotoQuestion(q)},
 };
+// Entry points await declared dependencies before accepting or reducing a question.
+// A missing dataset is a failed operation, never evidence that its clue keeps everything.
+const QUESTION_DATA_LOADERS = {
+  elevation:async()=>{
+    const grid = await loadElevationData();
+    if(!Array.isArray(grid?.latitudes) || grid.latitudes.length < 2 ||
+       !Array.isArray(grid?.longitudes) || grid.longitudes.length < 2 ||
+       !Array.isArray(grid?.values) || !grid.values.some(row=>Array.isArray(row) && row.some(validElevationNumber))){
+      throw new Error('Elevation geography could not be loaded. Retry when the dataset is available.');
+    }
+  },
+  'point-distance':async question=>{ await loadPointDistanceData(question); },
+  pois:async()=>{
+    if(!await loadPoiData()) throw new Error('Distance geography could not be loaded. Retry when the dataset is available.');
+  },
+};
+async function ensureQuestionDataReady(question){
+  const contract = QUESTION_CONTRACTS[question?.type];
+  if(!contract?.requiredData) return;
+  const normalized = contractQuestion(question, contract);
+  const dependencies = typeof contract.requiredData === 'function'
+    ? contract.requiredData(normalized) : contract.requiredData;
+  for(const dependency of new Set(dependencies)){
+    const load = QUESTION_DATA_LOADERS[dependency];
+    if(!load) throw new Error(`Unknown question dataset: ${dependency}`);
+    await load(normalized);
+  }
+}
+
 function contractQuestion(q, contract){
   const value={...contract.defaults,...q};
   // Undefined fields from older packets must not mask contract defaults.
