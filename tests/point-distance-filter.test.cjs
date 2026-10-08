@@ -44,8 +44,8 @@ test('empty certified geometry stays empty and profiles retain Boston legacy com
   const empty=g.run('QDEFS.measure.applyToZone(turf.bboxPolygon([-87.8,41.8,-87.79,41.81]),question)');
   assert.equal(empty.geometry.type,'MultiPolygon');assert.equal(empty.geometry.coordinates.length,0);
   const boston=game('boston');
-  assert.equal(boston.run("adaptivePointConfig('A Park')"),null);
-  boston.run("var legacy=QDEFS.measure.toJSON({measure_cat:'A Park',measure_cat_label:'A Park',measure_seeker_dist:1,measure_all_instances:[{lat:42.3,lng:-71.1}]})");
+  assert.equal(boston.run("adaptivePointConfig('A Park').mode"),'adaptive-point');
+  boston.run("var legacy={id:'legacy-park',type:'measure',category:'A Park',category_label:'A Park',seeker_dist:1,all_instances:[{lat:42.3,lng:-71.1}]} ");
   assert.equal(boston.run('legacy.all_instances.length'),1);
   assert.doesNotThrow(()=>boston.run('validateAdaptiveLinearQuestion(legacy)'));
   // A future city can opt in with a differently named source, without renderer branches.
@@ -88,4 +88,38 @@ test('commuter rail loads its own full source and binds both Metra and South Sho
   assert.equal(g.run('rail.point_dataset.version'),`${data.sources.metra.sha256}:${data.sources.southshore.sha256}`);
   assert.doesNotThrow(()=>g.run('validateAdaptiveLinearQuestion(rail)'));
   assert.throws(()=>g.run("validateAdaptiveLinearQuestion({...rail,point_dataset:{...rail.point_dataset,version:'stale-Metra'}})"),/different local dataset/);
+});
+
+test('Boston Newton Centre remains possible using all local parks, including legacy replay',async()=>{
+  const g=game('boston');g.ctx.pois=require('../data/pois.json');
+  g.run('preloadedData.pois=pois;loadPoiData=async()=>preloadedData.pois');
+  g.run(`var center={lat:42.3601,lng:-71.0589};var station={lat:42.329443,lng:-71.192414};var parks=normalizePlaces(pois.parks).sort((a,b)=>turfDist(center,a)-turfDist(center,b));var threshold=turfDist(center,parks[0]);var catchment=makeCircle(station,.25);var legacy={id:'legacy-park',type:'measure',category:'A Park',category_label:'A Park',center,seeker_dist:threshold,all_instances:parks.slice(0,200),answer:'closer'};`);
+  assert(g.run('turfDist(station,parks.find(p=>p.name==="Union Street Historic District"))<threshold'));
+  assert(g.run('parks.slice(0,200).every(p=>turfDist(station,p)>.25+threshold)'), 'Old truncation eliminated the whole station');
+  const kept=g.run('QDEFS.measure.applyToZone(catchment,legacy)');
+  assert(inside([-71.192414,42.329443],kept));
+  const restored=await g.run('hydrateOutgoingQuestion({...legacy,answer:undefined})');g.ctx.restored=restored;
+  assert.equal(restored.all_instances.length,0);
+  assert.equal(restored.seeker_dist,g.run('threshold'));
+  assert.equal(restored.point_dataset.version,g.ctx.pois.generatedAt);
+  assert(inside([-71.192414,42.329443],g.run("QDEFS.measure.applyToZone(catchment,{...restored,answer:'closer'})")));
+});
+
+test('Adams Park identity survives lookup and question roundtrip without conflating names',async()=>{
+  const g=game();g.ctx.pois=require('../data/chicago/pois.json');
+  g.run('preloadedData.pois=pois;loadPoiData=async()=>preloadedData.pois;var adams=normalizePlaces(pois.parks.filter(p=>p.name==="Adams Park"));');
+  assert.equal(g.run('samePlace(adams[0],adams[1])'),false);
+  assert.equal(g.run('samePlace(adams[0],{...adams[0],name:"Renamed Park"})'),true);
+  assert.equal(g.run('samePlace(adams[0],{lat:adams[0].lat,lng:adams[0].lng,name:"Legacy Park"})'),true);
+  assert.equal(g.run('samePlace(adams[0],{...adams[1],osmId:undefined})'),false);
+  const a=await g.run('resolveNearestValue("Park",adams[0])');
+  const b=await g.run('resolveNearestValue("Park",adams[1])');g.ctx.a=a;g.ctx.b=b;
+  assert.equal(g.run('samePlace(a,b)'),false);
+  g.run('var q=QDEFS.nearest.toJSON({center:adams[0],nearest_cat:"Park",nearest_cat_label:"Park",nearest_seeker_poi:a,nearest_all_pois:adams})');
+  const restored=await g.run("hydrateOutgoingQuestion(stampCityPayload({...q,id:'nearest-adams'}))");
+  assert.equal(restored.seeker_poi.osmId,a.osmId);
+  assert.equal(restored.all_pois[1].osmId,b.osmId);
+  g.run('var answers=[];hiderPickAnswer=(answer)=>answers.push(answer);_hiderQ=q;navigator.geolocation={getCurrentPosition:callback=>{globalThis.lookup=callback({coords:{latitude:b.lat,longitude:b.lng}})}};hiderAutoNearestLookup();');
+  await g.ctx.lookup;
+  assert.equal(g.run('answers[0]'),'No','Automatic answer must distinguish the two Adams Parks');
 });

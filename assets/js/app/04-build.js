@@ -1253,7 +1253,8 @@ async function overpassSearch(overpassBody, near, radiusM=5000){
     name: e.tags.name,
     lat:  e.lat  ?? e.center?.lat,
     lng:  e.lon  ?? e.center?.lon,
-    id:   e.id
+    id:   e.id,
+    osmId: `${e.type}/${e.id}`
   })).filter(p=>p.lat&&p.lng);
   pts.sort((a,b)=>turfDist({lat:a.lat,lng:a.lng},near)-turfDist({lat:b.lat,lng:b.lng},near));
   return pts;
@@ -1781,7 +1782,7 @@ async function selectMeasureCat(catObj){
     qparams.measure_seeker_nearest={lat:nearest.lat,lng:nearest.lng,name:nearest.name};
     qparams.measure_seeker_dist=dist;
     qparams.measure_instance_count=instances.length;
-    qparams.measure_all_instances=adaptivePointConfig(catObj.label) ? [] : instances.slice(0,200); // Profile-enabled filters resolve the complete local source.
+    qparams.measure_all_instances=adaptivePointConfig(catObj.label) ? [] : instances; // Profile-enabled filters resolve the complete local source.
 
     // Drop teardrop pins — gold #1 for nearest, teal for rest
     clearPoiMarkers();

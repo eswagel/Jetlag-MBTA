@@ -29,9 +29,14 @@ const CHICAGO_LINES = [
   return {weight:4, ...line, physicalLineId, branchId:line.id === physicalLineId ? null : line.id.slice(physicalLineId.length + 1), displayLabel:`${physicalLineId} Line`};
 });
 // Point categories share one engine and reference local datasets, independently of city.
-function pointMeasureFilters(categories, dataset='pois', versionPaths=['sources.poi-osm.snapshotSha256']){
+const POINT_MEASURE_CATEGORIES = {
+  'A Park':'parks','An Amusement Park':'amusementParks','A Zoo / Aquarium':'zooAquariums',
+  'A Golf Course':'golfCourses','A Museum':'museums','A Movie Theater':'movieTheaters',
+  'A Hospital':'hospitals','A Library':'libraries','A Foreign Consulate':'foreignConsulates',
+};
+function pointMeasureFilters(categories, dataset='pois', versionPaths=['sources.poi-osm.snapshotSha256'], options={}){
   return Object.fromEntries(Object.entries(categories).map(([label,dataKey]) =>
-    [label,{mode:'adaptive-point',version:'adaptive-point-v1',dataKey,dataset,versionPaths}]));
+    [label,{mode:'adaptive-point',version:'adaptive-point-v1',dataKey,dataset,versionPaths,...options}]));
 }
 const CITY_PROFILES = Object.freeze({
   boston: {
@@ -40,16 +45,16 @@ const CITY_PROFILES = Object.freeze({
     bounds:{south:41.85,west:-71.70,north:42.80,east:-70.40},
     transitBounds:{south:42.18,west:-71.55,north:42.67,east:-70.85},
     dataFiles:{mbta:'data/mbta-data.json',pois:'data/pois.json',boundaries:'data/boundaries.json',landmasses:'data/landmasses.json',elevation:'data/elevation-grid.json'},
+    measureFilters:{
+      ...pointMeasureFilters({...POINT_MEASURE_CATEGORIES,'A Body of Water':'bodiesOfWater'},'pois',['generatedAt'],{acceptLegacyQuestions:true}),
+      ...pointMeasureFilters({'A Commuter Rail Station':'commuterRail'},'mbta',['generatedAt'],{acceptLegacyQuestions:true}),
+    },
     lines:BOSTON_LINES,
   },
   chicago: {
     id:'chicago', name:'Chicago', networkLabel:'CTA', timezone:'America/Chicago',
     datasetVersion:'chicago-v1', center:[41.90,-87.69],
-    measureFilters:{...pointMeasureFilters({
-      'A Park':'parks','An Amusement Park':'amusementParks','A Zoo / Aquarium':'zooAquariums',
-      'A Golf Course':'golfCourses','A Museum':'museums','A Movie Theater':'movieTheaters',
-      'A Hospital':'hospitals','A Library':'libraries','A Foreign Consulate':'foreignConsulates',
-    }),...pointMeasureFilters({'A Commuter Rail Station':'commuterRail'},'mbta',['sources.metra.sha256','sources.southshore.sha256']),
+    measureFilters:{...pointMeasureFilters(POINT_MEASURE_CATEGORIES),...pointMeasureFilters({'A Commuter Rail Station':'commuterRail'},'mbta',['sources.metra.sha256','sources.southshore.sha256']),
     'A Body of Water':{mode:'adaptive-linear',version:'adaptive-linear-v1',dataKey:'bodiesOfWaterLines'}},
     previewNote:'Purple uses a saved timetable when live data is unavailable. ZIP matching uses Census ZIP areas (ZCTAs).',
     bounds:{south:41.60,west:-88.00,north:42.12,east:-87.48},

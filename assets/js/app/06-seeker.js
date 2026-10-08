@@ -187,7 +187,7 @@ function buildStoredNearestQuestion(payload){
     ? payload.all_pois
         .map(poi => {
           const point = normalizeLatLng(poi);
-          return point ? {name:String(poi?.name || categoryLabel || 'POI'), ...point} : null;
+          return point ? {...placeIdentity(poi),name:String(poi?.name || categoryLabel || 'POI'), ...point} : null;
         })
         .filter(Boolean)
     : [];
@@ -198,7 +198,7 @@ function buildStoredNearestQuestion(payload){
       center,
       nearest_cat:categoryLabel,
       nearest_cat_label:categoryLabel,
-      nearest_seeker_poi:{name:String(payload.seeker_poi?.name || categoryLabel), ...seekerPoiPoint},
+      nearest_seeker_poi:{...placeIdentity(payload.seeker_poi),name:String(payload.seeker_poi?.name || categoryLabel), ...seekerPoiPoint},
       nearest_all_pois:allPois,
       nearest_voronoi:payload.voronoi_geojson || null,
     }),
@@ -374,7 +374,7 @@ async function rebuildMeasureQuestion(payload){
       measure_cat_label:payload.category_label || catObj.label,
       measure_seeker_nearest:nearest,
       measure_seeker_dist:turfDist(center, nearest),
-      measure_all_instances:adaptivePointConfig(catObj.label) ? [] : instances.slice(0,200),
+      measure_all_instances:adaptivePointConfig(catObj.label) ? [] : instances,
       measure_linear_features:[],
     }),
   };

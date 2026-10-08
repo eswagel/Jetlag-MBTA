@@ -135,7 +135,7 @@ test('water filtering is versioned and enabled through shared profile configurat
   assert.equal(g.run("QDEFS.measure.applyToZone(turf.bboxPolygon([-87.69,41.808,-87.685,41.812]),{...restored,seeker_dist:.001,answer:'closer'}).geometry.coordinates.length"),0,'A fully contradicted region must not silently return the original zone');
   await assert.rejects(g.run("hydrateOutgoingQuestion({...packet,linear_filter_version:'unknown'})"),/different map-filter version/);
   const boston=game('boston');
-  assert.equal(boston.run("adaptiveLinearConfig({type:'measure',category:'A Body of Water'})"),null);
+  assert.equal(boston.run("adaptivePointConfig('A Body of Water').dataKey"),'bodiesOfWater');
 });
 
 

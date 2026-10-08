@@ -327,7 +327,7 @@ async function hiderAutoNearestLookup(){
         q._seeker_nearest = seekerNearest;
         if(!nearest || !seekerNearest){ toast('No '+q.category_label+' found'); return; }
         q.seeker_poi = seekerNearest;
-        const match = normKey(nearest.name) === normKey(seekerNearest.name);
+        const match = samePlace(nearest,seekerNearest);
         const answer = match ? 'Yes' : 'No';
         const expl = `Your nearest ${q.category_label}: <b>${nearest.name}</b> / Seeker's: <b>${q.seeker_poi.name}</b> → <b>${answer.toUpperCase()}</b>`;
         hiderPickAnswer(answer, expl);

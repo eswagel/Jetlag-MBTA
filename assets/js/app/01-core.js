@@ -603,8 +603,22 @@ function findFirstArray(obj, keys){
   return keys.map(k => obj[k]).find(v => Array.isArray(v)) || null;
 }
 
+// Source IDs distinguish identically named places. Legacy snapshots use their exact coordinates.
+function placeIdentity(place){
+  return Object.fromEntries(['osmId','id','parentId'].filter(key=>place?.[key]!=null).map(key=>[key,String(place[key])]));
+}
+function samePlace(a,b){
+  if(!a || !b) return false;
+  for(const key of ['osmId','parentId','id']){
+    if(a[key]!=null && b[key]!=null) return String(a[key])===String(b[key]);
+  }
+  return Number.isFinite(Number(a.lat)) && Number.isFinite(Number(a.lng??a.lon)) &&
+    Math.abs(Number(a.lat)-Number(b.lat))<1e-7 && Math.abs(Number(a.lng??a.lon)-Number(b.lng??b.lon))<1e-7;
+}
+
 function normalizePlaces(items, fallbackName='Place'){
   return (items || []).map(item => ({
+    ...placeIdentity(item),
     name: item.name || fallbackName,
     lat: Number(item.lat),
     lng: Number(item.lng ?? item.lon),
@@ -773,7 +787,7 @@ async function getCategoryInstances(catObj, center, radiusM){
   }
   if(catObj.overpass){
     const items = await overpassSearch(catObj.overpass(center, radiusM), center, radiusM);
-    return items.map(it=>({name:it.name || catObj.label, lat:it.lat, lng:it.lon || it.lng}));
+    return normalizePlaces(items,catObj.label);
   }
   return [];
 }
@@ -1301,6 +1315,8 @@ function localPointFeatures(config){
 function validateAdaptiveLinearQuestion(question){
   const config = adaptiveLinearConfig(question);
   if(config?.mode==='adaptive-point'){
+    // Existing unversioned questions use the complete local source with their original distance threshold.
+    if(config.acceptLegacyQuestions && !question.point_filter_version && !question.point_dataset) return;
     if(question.point_filter_version!==config.version || !question.point_dataset){
       throw new Error('This point-distance question uses an old map-filter version. Rebuild the question.');
     }
