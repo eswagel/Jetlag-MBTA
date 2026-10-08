@@ -583,25 +583,41 @@ function applyAnswer(){
   applyAnswerFromRaw(raw, ()=>{ document.getElementById('json-in').value=''; switchTab('log'); });
 }
 
-function applyAnswerFromRaw(raw, onSuccess){
+let answerLoadRevision = 0;
+async function applyAnswerFromRaw(raw, onSuccess){
   let payload;
-  try{
-    payload = JSON.parse(raw);
-  }catch(e){
-    toast('Invalid JSON - check format');
-    return;
-  }
+  try{ payload = JSON.parse(raw); }
+  catch(e){ toast('Invalid JSON - check format'); return; }
   const compatibilityError = cityCompatibilityError(payload);
   if(compatibilityError){ toast(compatibilityError); return; }
-  const q = resolveAnsweredQuestion(payload);
-  if(!q){
-    toast(payload?.id
-      ? 'Original question data not found on this device'
-      : 'Invalid answer JSON - missing question context');
+  const candidate = resolveAnsweredQuestion(payload);
+  if(!candidate){
+    toast('Original question data not found on this device or answer is missing');
     return;
   }
-  try{ validateQuestionForCity(q); validateQuestionInputs(q); }catch(e){ toast(e.message); return; }
-  applyAnswerObject(q, onSuccess);
+  const revision = ++answerLoadRevision;
+  const previousConstraints = constraints.slice(), previousRadius = hideRadiusMi;
+  const isCurrent = () => revision === answerLoadRevision && hideRadiusMi === previousRadius &&
+    constraints.length === previousConstraints.length && constraints.every((q,i)=>q===previousConstraints[i]);
+  try{
+    let question = candidate;
+    if(QUESTION_CONTRACTS[candidate.type]){
+      // Every answer entry point needs the same canonical context as an imported
+      // question. Compact packets cannot be applied as geometry-free clues.
+      const original = {...candidate};
+      delete original.answer;
+      question = {...await hydrateOutgoingQuestion(original),answer:candidate.answer};
+      if(candidate.answer_label != null)question.answer_label=candidate.answer_label;
+    }
+    if(!isCurrent())return;
+    validateQuestionForCity(question);
+    validateQuestionInputs(question);
+    const def=QDEFS[question.type];
+    if(def?.hasSpatialContext && getQuestionConstraintScope(question)==='location' && !def.hasSpatialContext(question)){
+      throw new Error('Question geography could not be reconstructed');
+    }
+    applyAnswerObject(question, onSuccess);
+  }catch(e){ if(isCurrent())toast(`Could not apply answer: ${e.message}`); }
 }
 
 function showResult(emoji, title, sub, qboxHTML, autoSelectType=null){

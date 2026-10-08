@@ -919,6 +919,7 @@ const QUESTION_CONTRACTS = {
     deriveEditor:q=>({measure_instance_count:q.point_dataset?preloadedData[q.point_dataset.dataset]?.[q.point_dataset.key]?.length:q.all_instances?.length}),
     hydrate:async q=>buildStoredMeasureQuestion(q)||await rebuildMeasureQuestion(q)},
   tentacles:{packet:['center','radius_miles','category','category_id','category_label','options'],inputs:{center:'point',radius_miles:'positive'}, defaults:{radius_miles:1},
+    answers:q=>['no',...getTentacleOptionsInReach(q).map(option=>option.id)],
     normalize:q=>({...q,category:q.category||q.category_label||null,category_label:q.category_label||q.category||null}),
     packetValues:{options:q=>getTentacleDisplayOptions(q).map(({id,name,lat,lng})=>({id,name,lat,lng}))},
     fields:{center:'center',radius_miles:'radius_miles',category:'_tcat',category_label:['_tcatlabel','tentacles_cat_label'],options:'tentacle_options'},editorDefaults:{tentacle_options:[]},presets:['radius_miles','category','category_label'],hydrate:q=>buildStoredTentaclesQuestion(q)},
