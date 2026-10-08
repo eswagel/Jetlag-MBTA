@@ -1860,74 +1860,7 @@ function updatePreview(){
 
 function buildQuestionPacketContent(question){
   const q = decorateConstraintQuestion(question);
-  if(!q) return null;
-  if(q.type === 'radar'){
-    return {id:q.id, type:q.type, center:q.center, radius_miles:q.radius_miles};
-  }
-  if(q.type === 'thermo'){
-    return {
-      id:q.id,
-      type:q.type,
-      center:q.center,
-      thermo_dest:q.thermo_dest,
-      travel_miles:q.travel_miles,
-    };
-  }
-  if(q.type === 'measure'){
-    return {
-      id:q.id,
-      type:q.type,
-      center:q.center,
-      mode:q.mode || 'distance',
-      category:q.category,
-      category_label:q.category_label,
-      ...(q.linear_filter_version ? {linear_filter_version:q.linear_filter_version} : {}),
-      ...(q.point_filter_version ? {point_filter_version:q.point_filter_version,point_dataset:cloneForStorage(q.point_dataset)} : {}),
-    };
-  }
-  if(q.type === 'tentacles'){
-    const options = getTentacleDisplayOptions(q).map(opt => ({
-      id: opt.id,
-      name: opt.name,
-      lat: opt.lat,
-      lng: opt.lng,
-    }));
-    return {
-      id:q.id,
-      type:q.type,
-      center:q.center,
-      radius_miles:q.radius_miles || 1,
-      category:q.category || q.category_label || null,
-      category_label:q.category_label || q.category || null,
-      options,
-    };
-  }
-  if(q.type === 'matching'){
-    return {
-      id:q.id,
-      type:q.type,
-      center:q.center,
-      category:q.category,
-      category_label:q.category_label,
-      ...legacyConstraintMetadata(q),
-      ...(Array.isArray(q.answer_opts) ? {answer_opts: cloneForStorage(q.answer_opts)} : {}),
-      ...(q.category === 'line'
-        ? {
-            seeker_val:q.seeker_val,
-            line_id:q.line_id || null,
-            hide_radius_miles:q.hide_radius_miles ?? hideRadiusMi,
-            service_snapshot:cloneForStorage(q.service_snapshot || null),
-          }
-        : {}),
-    };
-  }
-  if(q.type === 'nearest'){
-    return {id:q.id, type:q.type, center:q.center, category:q.category, category_label:q.category_label};
-  }
-  if(q.type === 'photo'){
-    return {id:q.id, type:q.type, prompt:q.prompt};
-  }
-  return cloneForStorage(q);
+  return q ? questionContractPacket(q) : null;
 }
 
 function buildQuestionPacket(question){

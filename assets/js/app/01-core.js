@@ -904,12 +904,83 @@ function applyHideRadiusVisuals(){
 // ══════════════════════════════════════════════════════
 //  QUESTION DEFINITIONS
 // ══════════════════════════════════════════════════════
+// One contract owns transport fields, editor aliases, presets and input validation.
+// Resolvers remain type-specific because their geographic data requirements differ.
+const QUESTION_CONTRACTS = {
+  radar:{packet:['center','radius_miles'], inputs:{center:'point',radius_miles:'positive'}, answers:['yes','no'],
+    fields:{center:'center',radius_miles:'radius_miles'}, presets:['radius_miles'], hydrate:q=>buildStoredRadarQuestion(q)},
+  thermo:{packet:['center','thermo_dest','travel_miles'], inputs:{center:'point',thermo_dest:'point',travel_miles:'positive'}, answers:['closer','further'],
+    fields:{center:'center',thermo_dest:'thermo_dest',travel_miles:'travel_miles'},presets:['travel_miles'],hydrate:q=>buildStoredThermoQuestion(q)},
+  measure:{packet:['center','mode','category','category_id','category_label','linear_filter_version','point_filter_version','point_dataset'],inputs:{center:'point'},
+    defaults:{mode:'distance'}, answers:q=>q.mode==='elevation'?['higher','lower']:['closer','further'],
+    fields:{center:'center',category:'measure_cat',category_label:'measure_cat_label',mode:'measure_mode',seeker_nearest:'measure_seeker_nearest',seeker_dist:'measure_seeker_dist',seeker_elevation_ft:'measure_seeker_elevation_ft',seeker_elevation_m:'measure_seeker_elevation_m',all_instances:'measure_all_instances',linear_features:'measure_linear_features'},
+    editorDefaults:{measure_seeker_nearest:null,measure_seeker_dist:null,measure_seeker_elevation_ft:null,measure_seeker_elevation_m:null,measure_all_instances:[],measure_linear_features:[]},
+    presets:['category','category_label'], presetFields:{category_label:['_mcat','_mcatlabel']},
+    deriveEditor:q=>({measure_instance_count:q.point_dataset?preloadedData[q.point_dataset.dataset]?.[q.point_dataset.key]?.length:q.all_instances?.length}),
+    hydrate:async q=>buildStoredMeasureQuestion(q)||await rebuildMeasureQuestion(q)},
+  tentacles:{packet:['center','radius_miles','category','category_id','category_label','options'],inputs:{center:'point',radius_miles:'positive'}, defaults:{radius_miles:1},
+    normalize:q=>({...q,category:q.category||q.category_label||null,category_label:q.category_label||q.category||null}),
+    packetValues:{options:q=>getTentacleDisplayOptions(q).map(({id,name,lat,lng})=>({id,name,lat,lng}))},
+    fields:{center:'center',radius_miles:'radius_miles',category_label:['_tcat','_tcatlabel','tentacles_cat_label'],options:'tentacle_options'},editorDefaults:{tentacle_options:[]},presets:['radius_miles','category_label'],hydrate:q=>buildStoredTentaclesQuestion(q)},
+  matching:{packet:['center','category','category_id','category_label','answer_opts'],inputs:{center:'point'},answers:['Yes','No'],
+    packetExtra:q=>({...legacyConstraintMetadata(q),...(q.category==='line'?{seeker_val:q.seeker_val,line_id:q.line_id||null,hide_radius_miles:q.hide_radius_miles??hideRadiusMi,service_snapshot:q.service_snapshot||null}:{})}),
+    fields:{center:'center',category:'matching_cat',category_label:'matching_cat_label',seeker_val:['matching_seeker_val','matching_line_label'],line_id:'matching_line_id',service_snapshot:'matching_service_snapshot',hide_radius_miles:'matching_hide_radius_miles',boundary_geojson:['matching_boundary','_matching_boundary_simplified']},
+    editorDefaults:{_matching_mode:'matching',matching_line_id:null,matching_line_label:null,matching_service_snapshot:null,matching_boundary:null,_matching_boundary_simplified:null},
+    deriveEditor:q=>({matching_hide_radius_miles:q.hide_radius_miles??hideRadiusMi}),presets:['category','category_label','line_id','seeker_val','hide_radius_miles'],
+    hydrate:async q=>buildStoredMatchingQuestion(q)||await rebuildMatchingQuestion(q)},
+  nearest:{packet:['center','category','category_id','category_label'],inputs:{center:'point'},answers:['Yes','No'],
+    fields:{center:'center',category:'nearest_cat',category_label:'nearest_cat_label',seeker_poi:'nearest_seeker_poi',all_pois:'nearest_all_pois',voronoi_geojson:'nearest_voronoi'},
+    editorDefaults:{_matching_mode:'nearest',nearest_all_pois:[],nearest_voronoi:null},presets:['category','category_label'],hydrate:async q=>buildStoredNearestQuestion(q)||await rebuildNearestQuestion(q)},
+  photo:{packet:['prompt'],fields:{prompt:'photo_prompt'},defaults:{prompt:''},presets:['prompt'],hydrate:q=>buildStoredPhotoQuestion(q)},
+};
+function contractQuestion(q, contract){
+  const value={...contract.defaults,...q};
+  // Undefined fields from older packets must not mask contract defaults.
+  for(const [key,fallback] of Object.entries(contract.defaults||{}))if(value[key]==null)value[key]=fallback;
+  const normalized=contract.normalize?contract.normalize(value):value;
+  const category=typeof resolveCategory==='function'?resolveCategory(q.type,q.category_id||q.category||q.category_label):null;
+  if(category){normalized.category_id=category.id;normalized.category_label=category.label;}
+  return normalized;
+}
+function questionContractPacket(question){
+  const contract=QUESTION_CONTRACTS[question.type];
+  if(!contract)return cloneForStorage(question);
+  const q=contractQuestion(question,contract), packet={id:q.id,type:q.type};
+  for(const field of contract.packet){
+    const value=contract.packetValues?.[field]?contract.packetValues[field](q):q[field];
+    if(value!==undefined)packet[field]=cloneForStorage(value);
+  }
+  return {...packet,...cloneForStorage(contract.packetExtra?.(q)||{})};
+}
+function contractBuildParams(question,{preset=false}={}){
+  const base={radius_miles:1,travel_miles:0.5}, contract=QUESTION_CONTRACTS[question.type];
+  if(!contract)return base;
+  const q=contractQuestion(question,contract), result={...base,...cloneForStorage(contract.editorDefaults||{})};
+  const fields=preset?contract.presets:Object.keys(contract.fields);
+  for(const field of fields){
+    if(q[field]===undefined)continue;
+    for(const target of [].concat(contract.fields[field]||[]))result[target]=cloneForStorage(q[field]);
+    if(preset)for(const target of [].concat(contract.presetFields?.[field]||[]))result[target]=cloneForStorage(q[field]);
+  }
+  Object.assign(result,contract.deriveEditor?.(q)||{});
+  return result;
+}
+// Reverse the same aliases used by restoration rather than maintaining another field list.
+function questionFromBuildParams(type, params){
+  const contract=QUESTION_CONTRACTS[type], question={type};
+  params={...cloneForStorage(contract.editorDefaults||{}),...params};
+  for(const [field,aliases] of Object.entries(contract.fields)){
+    for(const alias of [].concat(aliases))if(params[alias]!==undefined){question[field]=cloneForStorage(params[alias]);break;}
+  }
+  return contractQuestion(question,contract);
+}
+
 const QDEFS = {
   radar:{
     label:'Radar', colorTag:'tag-radar',
     pickSteps:[{key:'center', label:'Tap map — set your location'}],
     isReady:p=>p.center&&p.radius_miles,
-    toJSON:p=>({type:'radar',center:p.center,radius_miles:p.radius_miles}),
+    toJSON:p=>questionFromBuildParams('radar',p),
     applyToZone:(zone,q)=>q.answer==='yes'?safeIsect(zone,makeCircle(q.center,q.radius_miles,'miles')):safeDiff(zone,makeCircle(q.center,q.radius_miles,'miles')),
     describe:q=>`<b>${q.answer==='yes'?'WITHIN':'OUTSIDE'}</b> ${q.radius_miles}mi radar`
   },
@@ -917,7 +988,7 @@ const QDEFS = {
     label:'Thermometer', colorTag:'tag-thermo',
     pickSteps:[{key:'center', label:'Tap map — your current position'}],
     isReady:p=>p.center&&p.travel_miles&&p.thermo_dest,
-    toJSON:p=>({type:'thermo',center:p.center,travel_miles:p.travel_miles,thermo_dest:p.thermo_dest}),
+    toJSON:p=>questionFromBuildParams('thermo',p),
     applyToZone:(zone,q)=>{
       if(!q.center || !q.thermo_dest) return zone;
       const half = thermoHalf(q.center, q.thermo_dest, q.answer==='closer' ? 'b' : 'a');
@@ -934,15 +1005,7 @@ const QDEFS = {
         : p.measure_seeker_dist!=null
     ),
     toJSON:p=>({
-      type:'measure',
-      center:p.center,
-      mode:p.measure_mode || 'distance',
-      category:p.measure_cat,
-      category_label:p.measure_cat_label,
-      seeker_nearest:p.measure_seeker_nearest,   // {lat,lng,name} — seeker's nearest instance
-      seeker_dist:p.measure_seeker_dist,          // seeker's distance to their nearest
-      seeker_elevation_ft:p.measure_seeker_elevation_ft ?? null,
-      seeker_elevation_m:p.measure_seeker_elevation_m ?? null,
+      ...questionFromBuildParams('measure',p),
       all_instances:adaptivePointConfig(p.measure_cat_label || p.measure_cat) ? [] : p.measure_all_instances||[],  // all known instances for zone geometry
       linear_features:ACTIVE_CITY.measureFilters?.[p.measure_cat] ? [] : (p.measure_linear_features||[]),
       ...(ACTIVE_CITY.measureFilters?.[p.measure_cat_label || p.measure_cat]?.mode==='adaptive-linear' ? {linear_filter_version:ACTIVE_CITY.measureFilters[p.measure_cat_label || p.measure_cat].version} : {}),
@@ -981,11 +1044,7 @@ const QDEFS = {
     pickSteps:[{key:'center', label:'Tap map — your location'}],
     isReady:p=>p.center&&p.tentacle_options&&p.tentacle_options.length>=2,
     toJSON:p=>({
-      type:'tentacles',
-      center:p.center,
-      radius_miles:p.radius_miles||1,
-      category:p._tcatlabel || p._tcat || p.tentacles_cat_label || null,
-      category_label:p._tcatlabel || p._tcat || p.tentacles_cat_label || null,
+      ...questionFromBuildParams('tentacles',p),
       options:getTentacleOptionsInReach({
         center:p.center,
         radius_miles:p.radius_miles||1,
@@ -1015,11 +1074,7 @@ const QDEFS = {
     pickSteps:[{key:'center', label:'Tap map — your location'}],
     isReady:p=>p.center&&p.matching_cat&&p.matching_seeker_val,
     toJSON:p=>({
-      type:'matching',
-      center:p.center,
-      category:p.matching_cat,
-      category_label:p.matching_cat_label,
-      seeker_val:p.matching_seeker_val,
+      ...questionFromBuildParams('matching',p),
       service_snapshot:p.matching_service_snapshot || null,
       line_id:p.matching_cat === 'line' ? (p.matching_line_id || null) : null,
       hide_radius_miles:p.matching_cat === 'line' ? (p.matching_hide_radius_miles ?? hideRadiusMi) : null,
@@ -1048,13 +1103,7 @@ const QDEFS = {
     pickSteps:[{key:'center', label:'Tap map — your location'}],
     isReady:p=>p.center&&p.nearest_cat&&p.nearest_seeker_poi,
     toJSON:p=>({
-      type:'nearest',
-      center:p.center,
-      category:p.nearest_cat,
-      category_label:p.nearest_cat_label,
-      seeker_poi:p.nearest_seeker_poi,
-      all_pois:p.nearest_all_pois||[],
-      voronoi_geojson:p.nearest_voronoi||null,
+      ...questionFromBuildParams('nearest',p),
       question:`Is the nearest ${p.nearest_cat_label} to you the same as mine? Mine is "${p.nearest_seeker_poi.name}".`,
       answer_opts:['Yes','No']
     }),
@@ -1077,7 +1126,7 @@ const QDEFS = {
     label:'Photo', colorTag:'tag-photo',
     pickSteps:[],
     isReady:p=>p.photo_prompt&&p.photo_prompt.trim(),
-    toJSON:p=>({type:'photo',prompt:p.photo_prompt}),
+    toJSON:p=>questionFromBuildParams('photo',p),
     applyToZone:(zone)=>zone,
     describe:q=>`📸 ${q.prompt}`
   },

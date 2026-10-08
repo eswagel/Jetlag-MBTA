@@ -7,24 +7,18 @@ function isLatLngLike(value){
   return valid(value?.lat) && valid(value?.lng) && Math.abs(Number(value.lat)) <= 90 && Math.abs(Number(value.lng)) <= 180;
 }
 
-function validateQuestionInputs(q){
-  if(['radar','thermo','measure','matching','nearest','tentacles'].includes(q?.type) && !isLatLngLike(q.center)){
-    throw new Error('Question needs valid latitude and longitude');
-  }
-  if(['radar','tentacles'].includes(q?.type)){
-    const radius = q.radius_miles ?? (q.type === 'tentacles' ? 1 : null);
-    if(radius == null || radius === '' || !Number.isFinite(Number(radius)) || Number(radius) <= 0){
-      throw new Error('Question radius must be a positive number');
+function validateQuestionInputs(question){
+  const contract=QUESTION_CONTRACTS[question?.type];
+  if(!contract)return;
+  const q=contractQuestion(question,contract);
+  for(const [field,rule] of Object.entries(contract.inputs||{})){
+    if(rule==='point'&&!isLatLngLike(q[field]))throw new Error('Question needs valid latitude and longitude');
+    if(rule==='positive'&&(q[field]==null||q[field]===''||!Number.isFinite(Number(q[field]))||Number(q[field])<=0)){
+      throw new Error(field==='radius_miles'?'Question radius must be a positive number':'Thermometer needs a valid destination and positive travel distance');
     }
   }
-  if(q?.type === 'thermo' && (!isLatLngLike(q.thermo_dest) || !Number.isFinite(Number(q.travel_miles)) || Number(q.travel_miles) <= 0)){
-    throw new Error('Thermometer needs a valid destination and positive travel distance');
-  }
-  if(q?.answer != null){
-    const options = {radar:['yes','no'],thermo:['closer','further'],matching:['Yes','No'],nearest:['Yes','No'],
-      measure:q.mode === 'elevation' ? ['higher','lower'] : ['closer','further']}[q.type];
-    if(options && !options.includes(q.answer)) throw new Error('Question has an invalid answer');
-  }
+  const answers=typeof contract.answers==='function'?contract.answers(q):contract.answers;
+  if(q.answer!=null&&answers&&!answers.includes(q.answer))throw new Error('Question has an invalid answer');
 }
 
 function normalizeLatLng(value){
@@ -313,17 +307,9 @@ async function hydrateOutgoingQuestionContent(payload){
   if(payload.type === 'veto' || payload.type === 'randomize_card') throw new Error('Card results are not loadable questions');
   if(!payload.type) throw new Error('Question is missing a type');
 
-  switch(payload.type){
-    case 'radar': return buildStoredRadarQuestion(payload);
-    case 'thermo': return buildStoredThermoQuestion(payload);
-    case 'tentacles': return await buildStoredTentaclesQuestion(payload);
-    case 'photo': return buildStoredPhotoQuestion(payload);
-    case 'matching': return buildStoredMatchingQuestion(payload) || await rebuildMatchingQuestion(payload);
-    case 'nearest': return buildStoredNearestQuestion(payload) || await rebuildNearestQuestion(payload);
-    case 'measure': return buildStoredMeasureQuestion(payload) || await rebuildMeasureQuestion(payload);
-    default:
-      throw new Error(`Unsupported question type: ${payload.type}`);
-  }
+  const contract = QUESTION_CONTRACTS[payload.type];
+  if(!contract) throw new Error(`Unsupported question type: ${payload.type}`);
+  return await contract.hydrate(contractQuestion(payload, contract));
 }
 
 async function hydrateOutgoingQuestion(payload){
@@ -372,137 +358,12 @@ function loadQuestionInline(){
 }
 
 function questionToBuildParams(question){
-  const base = {radius_miles:1, travel_miles:0.5};
-  switch(question.type){
-    case 'radar':
-      return {
-        ...base,
-        center:question.center,
-        radius_miles:question.radius_miles,
-      };
-    case 'thermo':
-      return {
-        ...base,
-        center:question.center,
-        travel_miles:question.travel_miles,
-        thermo_dest:question.thermo_dest,
-      };
-    case 'measure':
-      return {
-        ...base,
-        center:question.center,
-        measure_cat:question.category,
-        measure_cat_label:question.category_label,
-        measure_mode:question.mode || 'distance',
-        measure_seeker_nearest:question.seeker_nearest || null,
-        measure_seeker_dist:question.seeker_dist ?? null,
-        measure_seeker_elevation_ft:question.seeker_elevation_ft ?? null,
-        measure_seeker_elevation_m:question.seeker_elevation_m ?? null,
-        measure_instance_count:question.point_dataset ? preloadedData[question.point_dataset.dataset]?.[question.point_dataset.key]?.length : question.all_instances?.length,
-        measure_all_instances:question.all_instances || [],
-        measure_linear_features:question.linear_features || [],
-      };
-    case 'tentacles':
-      return {
-        ...base,
-        center:question.center,
-        radius_miles:question.radius_miles || 1,
-        _tcat:question.category_label || question.category || null,
-        _tcatlabel:question.category_label || question.category || null,
-        tentacles_cat_label:question.category_label || question.category || null,
-        tentacle_options:question.options || [],
-      };
-    case 'matching':
-      return {
-        ...base,
-        _matching_mode:'matching',
-        center:question.center,
-        matching_cat:question.category,
-        matching_cat_label:question.category_label,
-        matching_seeker_val:question.seeker_val,
-        matching_line_id:question.line_id || null,
-        matching_service_snapshot:question.service_snapshot || null,
-        matching_line_label:question.seeker_val || null,
-        matching_hide_radius_miles:question.hide_radius_miles ?? hideRadiusMi,
-        matching_boundary:question.boundary_geojson || null,
-        _matching_boundary_simplified:question.boundary_geojson || null,
-      };
-    case 'nearest':
-      return {
-        ...base,
-        _matching_mode:'nearest',
-        center:question.center,
-        nearest_cat:question.category_label || question.category,
-        nearest_cat_label:question.category_label || question.category,
-        nearest_seeker_poi:question.seeker_poi,
-        nearest_all_pois:question.all_pois || [],
-        nearest_voronoi:question.voronoi_geojson || null,
-      };
-    case 'photo':
-      return {
-        ...base,
-        photo_prompt:question.prompt || '',
-      };
-    default:
-      return base;
-  }
+  return contractBuildParams(question);
 }
 
 function presetToBuildParams(preset){
-  const base = {radius_miles:1, travel_miles:0.5};
-  switch(preset?.build_qtype){
-    case 'radar':
-      return {
-        ...base,
-        radius_miles:preset.radius_miles,
-      };
-    case 'thermo':
-      return {
-        ...base,
-        travel_miles:preset.travel_miles,
-      };
-    case 'measure':
-      return {
-        ...base,
-        _mcat:preset.category_label,
-        _mcatlabel:preset.category_label,
-        measure_cat:preset.category,
-        measure_cat_label:preset.category_label,
-      };
-    case 'tentacles':
-      return {
-        ...base,
-        radius_miles:preset.radius_miles || 1,
-        _tcat:preset.category_label,
-        _tcatlabel:preset.category_label,
-        tentacles_cat_label:preset.category_label,
-      };
-    case 'matching':
-      if(preset.mode === 'nearest'){
-        return {
-          ...base,
-          _matching_mode:'nearest',
-          nearest_cat:preset.category,
-          nearest_cat_label:preset.category_label,
-        };
-      }
-      return {
-        ...base,
-        _matching_mode:'matching',
-        matching_cat:preset.category,
-        matching_cat_label:preset.category_label,
-        matching_line_id:preset.line_id || null,
-        matching_line_label:preset.seeker_val || null,
-        matching_hide_radius_miles:preset.hide_radius_miles ?? hideRadiusMi,
-      };
-    case 'photo':
-      return {
-        ...base,
-        photo_prompt:preset.prompt || '',
-      };
-    default:
-      return base;
-  }
+  const type=preset?.build_qtype==='matching'&&preset.mode==='nearest'?'nearest':preset?.build_qtype;
+  return contractBuildParams({...preset,type},{preset:true});
 }
 
 function syncLoadedQuestionHighlights(question){
