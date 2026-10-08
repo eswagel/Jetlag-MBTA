@@ -950,7 +950,8 @@ const QDEFS = {
           const excluded = q.answer === 'closer' ? filter.excludeForCloser : filter.excludeForFurther;
           return excluded ? (turf.difference(zone, excluded) || {type:'Feature',properties:{},geometry:{type:'MultiPolygon',coordinates:[]}}) : zone;
         }
-        const union = q._constraint_union || buildMeasureConstraintUnion(q, zone);
+        // Always use this reduction scope; old caches may cover a smaller pre-undo zone.
+        const union = buildMeasureConstraintUnion(q, zone);
         if(!union) return zone;
         if(q.mode==='elevation' && preloadedData.elevation?.interpolation==='triangulated-linear'){
           const empty={type:'Feature',properties:{},geometry:{type:'MultiPolygon',coordinates:[]}};

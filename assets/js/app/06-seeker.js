@@ -469,7 +469,6 @@ function questionToBuildParams(question){
         measure_instance_count:question.point_dataset ? preloadedData[question.point_dataset.dataset]?.[question.point_dataset.key]?.length : question.all_instances?.length,
         measure_all_instances:question.all_instances || [],
         measure_linear_features:question.linear_features || [],
-        measure_constraint_union:question._constraint_union || null,
       };
     case 'tentacles':
       return {

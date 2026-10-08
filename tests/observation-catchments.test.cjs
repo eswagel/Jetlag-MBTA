@@ -90,3 +90,16 @@ for(const city of ['boston','chicago']){
     });
   }
 }
+
+test('legacy Measure cache cannot eliminate a restored station after undo',()=>{
+  const {run}=game('boston');
+  run(`var second=turf.bboxPolygon([origin.lng+.08,origin.lat-.006,origin.lng+.092,origin.lat+.006]);
+    entries.push({id:'two',stop:{id:'two',lat:origin.lat,lng:origin.lng+.086,lines:['Red']},baseRegion:second});
+    var full=turf.union(base,second);
+    var q={type:'measure',category:'fixture-linear',category_label:'A Coastline',seeker_dist:.2,answer:'closer',linear_features:[turf.lineString([[origin.lng-.02,origin.lat],[origin.lng+.11,origin.lat]])]};
+    q._constraint_union=buildMeasureConstraintUnion(q,base);`);
+  const cached=run('deriveZoneStateFromConstraints(full,[q])');
+  const fresh=run('deriveZoneStateFromConstraints(full,[{...q,_constraint_union:null}])');
+  assert.equal(cached.stopState.byStop.two.status,'temporary');
+  sameArea(cached.validZone,fresh.validZone,'replay restores full station eligibility');
+});

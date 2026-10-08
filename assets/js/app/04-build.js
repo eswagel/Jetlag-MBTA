@@ -1691,7 +1691,7 @@ async function selectMeasureCat(catObj){
   qparams._mcat=catObj.label; qparams._mcatlabel=catObj.label; qparams._msearching=true;
   qparams.measure_cat=catObj.label; qparams.measure_cat_label=catObj.label;
   qparams.measure_mode='distance';
-  qparams.measure_seeker_nearest=null; qparams.measure_seeker_dist=null; qparams.measure_seeker_elevation_ft=null; qparams.measure_seeker_elevation_m=null; qparams.measure_all_instances=null; qparams.measure_instance_count=null; qparams.measure_linear_features=null; qparams.measure_constraint_union=null;
+  qparams.measure_seeker_nearest=null; qparams.measure_seeker_dist=null; qparams.measure_seeker_elevation_ft=null; qparams.measure_seeker_elevation_m=null; qparams.measure_all_instances=null; qparams.measure_instance_count=null; qparams.measure_linear_features=null;
   if(catObj.label==='A County Border') highlightBoundary('county');
   else if(catObj.label==='A City Border') highlightBoundary('city');
   else if(catObj.label==='A Ward Border') highlightBoundary('ward');
@@ -1989,7 +1989,6 @@ function generateJSON(){
   fullQuestion.id='q'+Date.now().toString(36);
   currentBuiltQuestion = decorateConstraintQuestion({
     ...fullQuestion,
-    _constraint_union: fullQuestion.type === 'measure' ? qparams.measure_constraint_union || null : null,
   });
   rememberOutgoingQuestion(currentBuiltQuestion);
   saveGame();
@@ -2003,18 +2002,6 @@ function generateJSON(){
     renderSimulBtns(json);
     renderDirectApplyBtns(json);
   },0);
-}
-
-function ensureMeasureConstraint(question){
-  if(!question || question.type !== 'measure' || question._constraint_union) return question;
-  if(adaptiveLinearConfig(question)){ buildAdaptiveLinearConstraint(question, validZone); return question; }
-  const union = buildMeasureConstraintUnion(question, validZone);
-  if(!union) return question;
-  question._constraint_union = union;
-  if(currentBuiltQuestion && currentBuiltQuestion.id === question.id){
-    currentBuiltQuestion._constraint_union = union;
-  }
-  return question;
 }
 
 function normalizeConstraintEffect(effect){
@@ -2053,7 +2040,6 @@ function shouldWarnSlowMeasure(question){
   return !!(
     question &&
     question.type === 'measure' &&
-    !question._constraint_union &&
     (adaptiveLinearConfig(question) || /coast/i.test(question.category_label || question.category || ''))
   );
 }
@@ -2359,7 +2345,6 @@ function getLivePreviewQuestion(){
   try{
     return decorateConstraintQuestion({
       ...QDEFS[activeType].toJSON(qparams),
-      _constraint_union: activeType === 'measure' ? qparams.measure_constraint_union || null : null,
     });
   }catch(e){
     return null;
@@ -2437,7 +2422,6 @@ function refreshActiveAnswerPreview(){
   if(!opt) return;
   if(!liveQ) return;
   try{
-    ensureMeasureConstraint(liveQ);
     const q = decorateConstraintQuestion({...liveQ, answer:_simulActive, answer_label: opt.label});
     const previewState = derivePreviewZoneState(q);
     if(!previewState) return;
@@ -2580,7 +2564,6 @@ function previewAnswer(val){
     const baseQ = liveQ || getQuestionWithLocalContext(JSON.parse(document.getElementById('json-out').value));
     runSlowMeasureAction(baseQ, () => {
       try{
-        ensureMeasureConstraint(baseQ);
         const q = decorateConstraintQuestion(opt ? {...baseQ, answer: val, answer_label: opt.label} : {...baseQ, answer: val});
         const previewState = derivePreviewZoneState(q);
         if(!previewState){ toast('Nothing left in zone for this answer'); return; }
@@ -2611,7 +2594,6 @@ function applyBuiltAnswer(val, effectOverride=null){
     }
     runSlowMeasureAction(q, () => {
       try{
-        ensureMeasureConstraint(q);
         applyAnswerObject(q, ()=>{
           resetBuild();
           switchTab('log');

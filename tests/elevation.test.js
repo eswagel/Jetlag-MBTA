@@ -41,9 +41,9 @@ test('all-above and all-below contours are explicit regions',()=>{
 });
 test('elevation applies empty/full answers without the legacy no-op overlay fallback',()=>{
  const g=game(fixture);g.run('var z=turf.bboxPolygon([0,0,1,1]);');
- // Supply the unsimplified contour as the application does when cached.
+ // Compute the contour from the question threshold for the current reduction scope.
  for(const [threshold,answer,empty] of [[101,'higher',true],[101,'lower',false],[-1,'higher',false],[-1,'lower',true]]){
-  const result=g.run(`QDEFS.measure.applyToZone(z,{mode:'elevation',answer:'${answer}',_constraint_union:buildElevationConstraintFeature({seeker_elevation_ft:${threshold}})})`);
+  const result=g.run(`QDEFS.measure.applyToZone(z,{mode:'elevation',answer:'${answer}',seeker_elevation_ft:${threshold}})`);
   assert.equal(turf.area(result)===0,empty);
  }
 });
