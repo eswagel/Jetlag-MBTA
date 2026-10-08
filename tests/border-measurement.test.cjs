@@ -49,3 +49,40 @@ for(const [city,id] of [['boston','city_border'],['boston','county_border'],['ch
  assert.equal(result.mode,'linear');assert.ok(result.key);assert.ok(result.features.length);
  assert.ok(result.features.every(item=>['LineString','MultiLineString'].includes(item.geometry.type)));
 });
+function resumeFixture(){
+ const g=game('boston');
+ g.run(`var messages=[],writes=0;toast=message=>messages.push(message);mbdataReady=true;
+   var element={style:{},classList:{add(){},remove(){}}};document.getElementById=()=>element;
+   setTimeout=()=>0;clearTimeout=()=>{};
+   var oldBorder={id:'old-border',type:'measure',category:'A City Border',category_label:'A City Border',mode:'distance',center:{lat:42.44177465,lng:-71.05437745},seeker_dist:1.320037385,all_instances:[{lat:42.46,lng:-71.05}],answer:'further',_label:'Original observation'};
+   var unanswered={...oldBorder,id:'outgoing'};delete unanswered.answer;
+   var saved={hideRadiusMi:.25,gameMode:'hider',validZone:cloneGeo(INIT_POLY),constraints:[oldBorder],outgoingQuestions:{outgoing:unanswered},buildState:{qtype:'measure',qparams:contractBuildParams(unanswered),currentBuiltQuestion:unanswered,pickStep:-1}};
+   loadSave=()=>saved;validateSavedCityQuestions=()=>{};applyHideRadiusVisuals=()=>{};applyGameMode=()=>{};recomputeZoneFromConstraints=()=>{};switchTab=()=>{};
+   var restoredBuild=null;restoreSerializableBuildState=state=>{restoredBuild=state};saveGame=()=>{writes++};`);
+ return g;
+}
+test('resume migrates legacy border constraints and all editor contexts, preserving historical answers',async()=>{
+ const g=resumeFixture(),original=g.run('JSON.stringify(saved)');
+ await g.run('resumeGame()');
+ assert.equal(g.run('constraints[0].answer'),'further');
+ assert.equal(g.run('constraints[0]._label'),'Original observation');
+ for(const expr of ['constraints[0]','outgoingQuestions.outgoing','restoredBuild.currentBuiltQuestion']){
+  assert.ok(g.run(`${expr}.seeker_dist`)<0.001);
+  assert.ok(g.run(`${expr}.linear_features.length`)>0);
+ }
+ assert.ok(g.run('restoredBuild.qparams.measure_seeker_dist')<0.001);
+ assert.ok(g.run('restoredBuild.qparams.measure_linear_features.length')>0);
+ assert.match(g.run('messages.at(-1)'),/review 1 previous border answer/);
+ assert.equal(g.run('writes'),1,'persist migration after restoring editor state');
+ assert.equal(g.run('JSON.stringify(saved)'),original,'prepare migration must not mutate the source save');
+ const already=await g.run('migrateSavedQuestionContexts({...saved,constraints,outgoingQuestions,buildState:restoredBuild})');
+ assert.equal(already.count,0,'corrected contexts are migrated only once');
+});
+test('failed resume migration leaves active game and saved question contexts intact',async()=>{
+ const g=resumeFixture();
+ g.run("loadBoundaryData=async()=>{throw new Error('Boundary unavailable')};var beforeState=JSON.stringify({constraints,outgoingQuestions,validZone,hideRadiusMi,saved})");
+ await g.run('resumeGame()');
+ assert.equal(g.run('JSON.stringify({constraints,outgoingQuestions,validZone,hideRadiusMi,saved})'),g.run('beforeState'));
+ assert.equal(g.run('restoredBuild'),null);assert.equal(g.run('writes'),0);
+ assert.match(g.run('messages.at(-1)'),/Boundary unavailable/);
+});

@@ -825,7 +825,8 @@ function checkForResume(){
 }
 
 async function resumeGame(){
-  const save = loadSave();
+  let save = loadSave();
+  let migration = null;
   if(!save){ discardAndNew(); return; }
   if(!mbdataReady){ toast(`Wait for ${ACTIVE_CITY.networkLabel} station data before resuming.`); return; }
   try{
@@ -836,6 +837,8 @@ async function resumeGame(){
       questions.push(questionFromBuildParams(buildType, build.qparams));
     }
     for(const question of questions) await ensureQuestionDataReady(question);
+    migration = await migrateSavedQuestionContexts(save);
+    save = migration.save;
     validateSavedCityQuestions(save);
   }catch(e){ toast(e.message); return; }
   clearTimeout(_saveGameTimer);
@@ -868,10 +871,13 @@ async function resumeGame(){
       renderHiderStationBadge();
     }
     const km2 = (turf.area(validZone)/1e6).toFixed(1);
-    toast(`Game resumed — ${km2} km² in play`);
+    toast(migration?.answeredCount
+      ? `Game resumed — ${km2} km² in play. Border distances were corrected; review ${migration.answeredCount} previous border answer${migration.answeredCount===1?'':'s'} because their old distances were inaccurate.`
+      : `Game resumed — ${km2} km² in play`, migration?.answeredCount ? 12000 : 3200);
     if(save.buildState && typeof restoreSerializableBuildState === 'function'){
       restoreSerializableBuildState(save.buildState);
     }
+    if(migration?.count) saveGame();
     if(gameMode !== 'hider'){
       document.getElementById('panel').classList.remove('collapsed');
       setTimeout(()=>document.getElementById('panel').classList.add('collapsed'), 2000);
@@ -921,6 +927,8 @@ const QUESTION_CONTRACTS = {
     editorDefaults:{measure_seeker_nearest:null,measure_seeker_dist:null,measure_seeker_elevation_ft:null,measure_seeker_elevation_m:null,measure_all_instances:[],measure_linear_features:[]},
     presets:['category','category_label'], presetFields:{category:'_mcat',category_label:'_mcatlabel'},
     deriveEditor:q=>({measure_instance_count:q.point_dataset?preloadedData[q.point_dataset.dataset]?.[q.point_dataset.key]?.length:q.all_instances?.length}),
+    migrateContext:async q=>categorySpec('measure',q)?.boundaryKey && !q.linear_features?.length
+      && q.center && Number.isFinite(q.seeker_dist) ? await rebuildMeasureQuestion(q) : null,
     hydrate:async q=>buildStoredMeasureQuestion(q)||await rebuildMeasureQuestion(q)},
   tentacles:{packet:['center','radius_miles','category','category_id','category_label','options'],inputs:{center:'point',radius_miles:'positive'}, defaults:{radius_miles:1},
     answers:q=>['no',...getTentacleOptionsInReach(q).map(option=>option.id)],
@@ -965,6 +973,41 @@ async function ensureQuestionDataReady(question){
     if(!load) throw new Error(`Unknown question dataset: ${dependency}`);
     await load(normalized);
   }
+}
+
+// Migrations are declared per question contract and prepared without mutating live
+// state. Keep historical answers; their original location cannot be reconstructed.
+async function migrateQuestionContext(question){
+  const migrate = QUESTION_CONTRACTS[question?.type]?.migrateContext;
+  if(!migrate) return {question,migrated:false};
+  const rebuilt = await migrate(question);
+  if(!rebuilt) return {question,migrated:false};
+  return {question:{...question,...rebuilt},migrated:true};
+}
+async function migrateSavedQuestionContexts(saved){
+  const save=cloneForStorage(saved);
+  let count=0,answeredCount=0;
+  const migrate=async question=>{
+    const result=await migrateQuestionContext(question);
+    if(result.migrated){count++;if(question.answer!=null)answeredCount++;}
+    return result.question;
+  };
+  save.constraints=await Promise.all((save.constraints||[]).map(migrate));
+  for(const [id,question] of Object.entries(save.outgoingQuestions||{}))save.outgoingQuestions[id]=await migrate(question);
+  const build=save.buildState;
+  if(build){
+    if(build.currentBuiltQuestion)build.currentBuiltQuestion=await migrate(build.currentBuiltQuestion);
+    const type=getActiveBuildQType(build.qtype,build.qparams);
+    if(QUESTION_CONTRACTS[type] && build.qparams){
+      const original=questionFromBuildParams(type,build.qparams);
+      const result=await migrateQuestionContext({...original,id:build.currentBuiltQuestion?.id || '_restored_build'});
+      if(result.migrated){
+        count++;
+        build.qparams={...build.qparams,...contractBuildParams(result.question)};
+      }
+    }
+  }
+  return {save,count,answeredCount};
 }
 
 function contractQuestion(q, contract){
