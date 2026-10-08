@@ -99,18 +99,21 @@ function cloneForStorage(value){
   }));
 }
 
-function getConstraintEffect(constraint){
-  const effect = String(constraint?.constraint_effect ?? constraint?.zone_effect ?? 'hard').toLowerCase();
-  return effect === 'soft' ? 'soft' : 'hard';
-}
-
+// Old packets may contain hard/soft flags. They are accepted at ingestion,
+// but cannot override the question definition's location/station/fixed scope.
 function normalizeConstraintEntry(constraint){
   if(!constraint || typeof constraint !== 'object') return constraint;
-  const effect = getConstraintEffect(constraint);
-  if(constraint.constraint_effect === effect && (!('zone_effect' in constraint) || constraint.zone_effect === effect)) return constraint;
-  const next = {...constraint, constraint_effect: effect};
-  if('zone_effect' in constraint) next.zone_effect = effect;
+  const next = {...constraint, constraint_scope:getQuestionConstraintScope(constraint)};
+  delete next.constraint_effect;
+  delete next.zone_effect;
+  delete next.constraint_policy;
   return next;
+}
+
+// Compatibility belongs only at the wire boundary, never in gameplay or UI.
+function legacyConstraintMetadata(question){
+  return question?.type === 'matching' && getQuestionConstraintScope(question) === 'location'
+    ? {constraint_effect:'soft', constraint_policy:{allow_soft:true, default_effect:'soft'}} : {};
 }
 
 function normalizeConstraintList(list){

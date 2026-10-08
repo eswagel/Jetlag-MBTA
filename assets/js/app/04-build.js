@@ -1954,8 +1954,7 @@ function buildQuestionPacketContent(question){
       center:q.center,
       category:q.category,
       category_label:q.category_label,
-      constraint_effect:q.constraint_effect || null,
-      constraint_policy:q.constraint_policy || null,
+      ...legacyConstraintMetadata(q),
       ...(Array.isArray(q.answer_opts) ? {answer_opts: cloneForStorage(q.answer_opts)} : {}),
       ...(q.category === 'line'
         ? {
@@ -1992,9 +1991,11 @@ function generateJSON(){
   });
   rememberOutgoingQuestion(currentBuiltQuestion);
   saveGame();
-  const json = buildQuestionPacket(currentBuiltQuestion);
+  const question = currentBuiltQuestion, params = qparams, revision = buildLookupRevision;
+  const json = buildQuestionPacket(question);
   // Yield to UI thread before heavy stringify (prevents freeze on mobile)
   setTimeout(()=>{
+    if(question !== currentBuiltQuestion || params !== qparams || revision !== buildLookupRevision) return;
     document.getElementById('json-out').value=JSON.stringify(json,null,2);
     document.getElementById('json-out-section').style.display='block';
     if(currentBuiltQuestion?.type === 'tentacles') renderTentacleOptionPins(currentBuiltQuestion);
@@ -2004,36 +2005,8 @@ function generateJSON(){
   },0);
 }
 
-function normalizeConstraintEffect(effect){
-  const val = String(effect || '').trim().toLowerCase();
-  if(val === 'soft' || val === 'hard') return val;
-  return null;
-}
-
-function resolveConstraintEffect(question){
-  const explicit = normalizeConstraintEffect(question?.constraint_effect);
-  if(explicit) return explicit;
-  const policyEffect = normalizeConstraintEffect(question?.constraint_policy?.default_effect);
-  if(policyEffect) return policyEffect;
-  return question?.type === 'matching' && question?.category !== 'line' ? 'soft' : null;
-}
-
 function decorateConstraintQuestion(question){
-  if(!question) return question;
-  const q = cloneForStorage(question);
-  const effect = resolveConstraintEffect(q);
-  if(effect) q.constraint_effect = effect;
-  if(q.type === 'matching' && q.category !== 'line'){
-    q.constraint_policy = {
-      allow_soft: true,
-      default_effect: 'soft',
-      ...(q.constraint_policy || {}),
-    };
-    if(Array.isArray(q.answer_opts)) q.answer_opts = cloneForStorage(q.answer_opts);
-  } else if(q.constraint_policy && typeof q.constraint_policy === 'object'){
-    q.constraint_policy = cloneForStorage(q.constraint_policy);
-  }
-  return q;
+  return question ? normalizeConstraintEntry(cloneForStorage(question)) : question;
 }
 
 function shouldWarnSlowMeasure(question){
@@ -2223,14 +2196,6 @@ function setPreviewMapMode(active){
   }
 }
 
-function isSoftConstraintQuestion(question){
-  return resolveConstraintEffect(question) === 'soft';
-}
-
-function isSoftMatchingQuestion(question){
-  return !!(question && question.type === 'matching' && isSoftConstraintQuestion(question));
-}
-
 function getPreviewCutLegend(question){
   return 'green stays · yellow temporary · red goes';
 }
@@ -2297,7 +2262,6 @@ function renderZonePreviewState(previewState, label, shouldFit=true){
     document.getElementById('map-simul-bar')?.classList.add('visible');
     return;
   }
-  const isSoft = isSoftConstraintQuestion(previewQuestion);
   const redMask = exactDiff(stopRegionState?.survivingCatchments || validZone, previewState.stopState?.survivingCatchments || previewState.hardZone);
   const greenFeatures = previewState.greenFeatures || [];
   const yellowFeatures = previewState.yellowFeatures || [];
@@ -2326,9 +2290,7 @@ function renderZonePreviewState(previewState, label, shouldFit=true){
   }
   const area = (turf.area(previewState.hardZone)/1e6).toFixed(1);
   if(hint){
-    const detail = isSoft
-      ? 'Green remains possible now. Yellow is temporarily ruled out. Red is impossible.'
-      : 'Green remains possible. Yellow marks excluded portions of still-possible station catchments. Red has no surviving catchment.';
+    const detail = 'Green remains possible. Orange marks current exclusions within a possible station catchment. Red has no possible station.';
     hint.innerHTML = `<b>${label}:</b> ${area} km² still in play<br><span style="font-size:8px;color:var(--dim)">${detail}</span>`;
     hint.className = 'simul-result-hint visible';
   }
@@ -2577,7 +2539,7 @@ function previewAnswer(val){
   }
 }
 
-function applyBuiltAnswer(val, effectOverride=null){
+function applyBuiltAnswer(val){
   const raw = document.getElementById('json-out').value.trim();
   if(!raw){ toast('Generate a question first'); return; }
   try{
@@ -2589,9 +2551,6 @@ function applyBuiltAnswer(val, effectOverride=null){
     const q = decorateConstraintQuestion(base
       ? {...base, answer: val, ...(opt ? {answer_label: opt.label} : {})}
       : {...parsed, answer: val, ...(opt ? {answer_label: opt.label} : {})});
-    if(effectOverride === 'soft' || effectOverride === 'hard'){
-      q.constraint_effect = effectOverride;
-    }
     runSlowMeasureAction(q, () => {
       try{
         applyAnswerObject(q, ()=>{

@@ -406,9 +406,10 @@ async function hydrateOutgoingQuestion(payload){
   if(adaptivePointConfig(payload)) await loadPointDistanceData(payload);
   validateQuestionForCity(payload);
   if(adaptiveLinearConfig(payload) && !await loadPoiData()) throw new Error('Distance geography could not be loaded');
-  return stampCityPayload(await hydrateOutgoingQuestionContent(payload));
+  return normalizeConstraintEntry(stampCityPayload(await hydrateOutgoingQuestionContent(payload)));
 }
 
+let seekerLoadRevision = 0;
 async function loadQuestionFromRaw(raw, onSuccess){
   let payload;
   try{
@@ -418,13 +419,18 @@ async function loadQuestionFromRaw(raw, onSuccess){
     return;
   }
 
+  const revision = ++seekerLoadRevision;
+  const buildIsCurrent = beginBuildLookup();
+  const isCurrent = () => revision === seekerLoadRevision && buildIsCurrent();
   try{
     toast('Loading question context...', 3200);
     const question = await hydrateOutgoingQuestion(payload);
+    if(!isCurrent()) return;
     rememberOutgoingQuestion(question);
     saveGame();
     onSuccess(question);
   }catch(e){
+    if(!isCurrent()) return;
     toast(`Could not load question: ${e.message}`);
   }
 }
@@ -589,6 +595,7 @@ function syncLoadedQuestionHighlights(question){
 }
 
 function setLoadQuestionPanelOpen(open){
+  if(!open) ++seekerLoadRevision;
   const panel = document.getElementById('load-question-panel');
   const btn = document.getElementById('load-question-toggle');
   if(!panel || !btn) return;
@@ -960,7 +967,7 @@ async function prepareQuestionLog(parsed){
     delete original.answer;
     // Hydration loads and checks referenced local datasets before any game mutation.
     const question = await hydrateOutgoingQuestion(original);
-    hydrated.push({...question, answer:entry.answer, constraint_effect:getConstraintEffect(entry),
+    hydrated.push({...question, answer:entry.answer,
       ...(entry._label ? {_label:entry._label} : {})});
   }
   const nextConstraints = normalizeConstraintList(hydrated);
