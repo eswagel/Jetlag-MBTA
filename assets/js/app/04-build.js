@@ -500,7 +500,7 @@ const PICK_INPUT_KEYS = ['radius_miles', '_customR', 'travel_miles',
   '_matching_mode', 'matching_cat', 'matching_cat_label', 'matching_line_id',
   'matching_line_label', 'nearest_cat', 'nearest_cat_label', 'measure_cat',
   'measure_cat_label', '_mcat', '_mcatlabel', '_tcat', '_tcatlabel',
-  'tentacles_cat_label', 'constraint_effect'];
+  'tentacles_cat_label'];
 let buildLookupRevision = 0;
 function beginBuildLookup(){
   const revision = ++buildLookupRevision;
@@ -2475,7 +2475,6 @@ function applyCustomBoundary(){
     type:'custom_boundary',
     boundary_geojson: poly,
     mode: qparams.custom_boundary_mode,
-    constraint_effect:'hard',
   };
   if(!applyConstraintIncrementally(q)) return;
   toast(`Custom boundary ${q.mode === 'include' ? 'included' : 'excluded'} ✓`);

@@ -156,7 +156,6 @@ function excludePendingYellowRegion(){
     boundary_geojson: feature,
     mode:'exclude',
     _label:'Exclude region',
-    constraint_effect:'hard',
   });
   dismissYellowRegionMenu();
   if(!applyConstraintIncrementally(nextConstraint)) return;

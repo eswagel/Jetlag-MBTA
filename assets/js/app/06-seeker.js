@@ -128,8 +128,6 @@ function buildStoredMatchingQuestion(payload){
       _matching_boundary_simplified:boundary,
     }),
   };
-  if(payload.constraint_effect) question.constraint_effect = payload.constraint_effect;
-  if(payload.constraint_policy) question.constraint_policy = cloneForStorage(payload.constraint_policy);
   return typeof decorateConstraintQuestion === 'function'
     ? decorateConstraintQuestion(question)
     : question;
@@ -165,8 +163,6 @@ async function rebuildMatchingQuestion(payload){
       _matching_boundary_simplified:boundary,
     }),
   };
-  if(payload.constraint_effect) question.constraint_effect = payload.constraint_effect;
-  if(payload.constraint_policy) question.constraint_policy = cloneForStorage(payload.constraint_policy);
   return typeof decorateConstraintQuestion === 'function'
     ? decorateConstraintQuestion(question)
     : question;
@@ -526,7 +522,7 @@ function resolveAnsweredQuestion(payload){
 function applyAnswerObject(q, onSuccess){
   // Veto
   if(q.type === 'veto'){
-    constraints.push({type:'_veto', _label:'Veto card played - question nullified', constraint_effect:'hard'});
+    constraints.push({type:'_veto', _label:'Veto card played - question nullified'});
     renderLog();
     saveGame();
     onSuccess();
@@ -549,7 +545,6 @@ function applyAnswerObject(q, onSuccess){
       _qtype: preset?.question_type || q.question_type,
       _preset_label: label,
       _label:`Randomize card - preloaded question: ${label}`,
-      constraint_effect:'hard',
     });
     renderLog();
     saveGame();
