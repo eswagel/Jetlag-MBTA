@@ -785,7 +785,7 @@ function getPreloadedBorderPoints(type){
 }
 
 async function getCategoryInstances(catObj, center, radiusM){
-  if(adaptivePointConfig(catObj.label)) return normalizePlaces(await loadPointDistanceData(catObj.label),catObj.label);
+  if(adaptivePointConfig(catObj.id)) return normalizePlaces(await loadPointDistanceData(catObj.id),catObj.label);
   if(catObj.instances){
     try{
       const items = normalizePlaces(await catObj.instances(center, radiusM), catObj.label);
@@ -830,7 +830,7 @@ async function resumeGame(){
   if(!mbdataReady){ toast(`Wait for ${ACTIVE_CITY.networkLabel} station data before resuming.`); return; }
   try{
     const questions = [...(save.constraints || []), ...Object.values(save.outgoingQuestions || {}), save.buildState?.currentBuiltQuestion];
-    if(questions.some(q=>adaptiveLinearConfig(q)) || ACTIVE_CITY.measureFilters?.[save.buildState?.qparams?.measure_cat]){
+    if(questions.some(q=>adaptiveLinearConfig(q)) || measureFilterConfig(save.buildState?.qparams?.measure_cat)){
       if(!await loadPoiData()) throw new Error('Distance geography could not be loaded. Retry when the dataset is available.');
     }
     for(const question of questions) if(adaptivePointConfig(question)) await loadPointDistanceData(question);
@@ -915,13 +915,13 @@ const QUESTION_CONTRACTS = {
     defaults:{mode:'distance'}, answers:q=>q.mode==='elevation'?['higher','lower']:['closer','further'],
     fields:{center:'center',category:'measure_cat',category_label:'measure_cat_label',mode:'measure_mode',seeker_nearest:'measure_seeker_nearest',seeker_dist:'measure_seeker_dist',seeker_elevation_ft:'measure_seeker_elevation_ft',seeker_elevation_m:'measure_seeker_elevation_m',all_instances:'measure_all_instances',linear_features:'measure_linear_features'},
     editorDefaults:{measure_seeker_nearest:null,measure_seeker_dist:null,measure_seeker_elevation_ft:null,measure_seeker_elevation_m:null,measure_all_instances:[],measure_linear_features:[]},
-    presets:['category','category_label'], presetFields:{category_label:['_mcat','_mcatlabel']},
+    presets:['category','category_label'], presetFields:{category:'_mcat',category_label:'_mcatlabel'},
     deriveEditor:q=>({measure_instance_count:q.point_dataset?preloadedData[q.point_dataset.dataset]?.[q.point_dataset.key]?.length:q.all_instances?.length}),
     hydrate:async q=>buildStoredMeasureQuestion(q)||await rebuildMeasureQuestion(q)},
   tentacles:{packet:['center','radius_miles','category','category_id','category_label','options'],inputs:{center:'point',radius_miles:'positive'}, defaults:{radius_miles:1},
     normalize:q=>({...q,category:q.category||q.category_label||null,category_label:q.category_label||q.category||null}),
     packetValues:{options:q=>getTentacleDisplayOptions(q).map(({id,name,lat,lng})=>({id,name,lat,lng}))},
-    fields:{center:'center',radius_miles:'radius_miles',category_label:['_tcat','_tcatlabel','tentacles_cat_label'],options:'tentacle_options'},editorDefaults:{tentacle_options:[]},presets:['radius_miles','category_label'],hydrate:q=>buildStoredTentaclesQuestion(q)},
+    fields:{center:'center',radius_miles:'radius_miles',category:'_tcat',category_label:['_tcatlabel','tentacles_cat_label'],options:'tentacle_options'},editorDefaults:{tentacle_options:[]},presets:['radius_miles','category','category_label'],hydrate:q=>buildStoredTentaclesQuestion(q)},
   matching:{packet:['center','category','category_id','category_label','answer_opts'],inputs:{center:'point'},answers:['Yes','No'],
     packetExtra:q=>({...legacyConstraintMetadata(q),...(q.category==='line'?{seeker_val:q.seeker_val,line_id:q.line_id||null,hide_radius_miles:q.hide_radius_miles??hideRadiusMi,service_snapshot:q.service_snapshot||null}:{})}),
     fields:{center:'center',category:'matching_cat',category_label:'matching_cat_label',seeker_val:['matching_seeker_val','matching_line_label'],line_id:'matching_line_id',service_snapshot:'matching_service_snapshot',hide_radius_miles:'matching_hide_radius_miles',boundary_geojson:['matching_boundary','_matching_boundary_simplified']},
@@ -939,7 +939,7 @@ function contractQuestion(q, contract){
   for(const [key,fallback] of Object.entries(contract.defaults||{}))if(value[key]==null)value[key]=fallback;
   const normalized=contract.normalize?contract.normalize(value):value;
   const category=typeof resolveCategory==='function'?resolveCategory(q.type,q.category_id||q.category||q.category_label):null;
-  if(category){normalized.category_id=category.id;normalized.category_label=category.label;}
+  if(category){normalized.category=category.id;normalized.category_id=category.id;normalized.category_label=category.label;}
   return normalized;
 }
 function questionContractPacket(question){
@@ -1009,10 +1009,10 @@ const QDEFS = {
     ),
     toJSON:p=>({
       ...questionFromBuildParams('measure',p),
-      all_instances:adaptivePointConfig(p.measure_cat_label || p.measure_cat) ? [] : p.measure_all_instances||[],  // all known instances for zone geometry
-      linear_features:ACTIVE_CITY.measureFilters?.[p.measure_cat] ? [] : (p.measure_linear_features||[]),
-      ...(ACTIVE_CITY.measureFilters?.[p.measure_cat_label || p.measure_cat]?.mode==='adaptive-linear' ? {linear_filter_version:ACTIVE_CITY.measureFilters[p.measure_cat_label || p.measure_cat].version} : {}),
-      ...pointDistanceMetadata(p.measure_cat_label || p.measure_cat),
+      all_instances:adaptivePointConfig(p.measure_cat || p.measure_cat_label) ? [] : p.measure_all_instances||[],  // all known instances for zone geometry
+      linear_features:measureFilterConfig(p.measure_cat) ? [] : (p.measure_linear_features||[]),
+      ...(measureFilterConfig(p.measure_cat || p.measure_cat_label)?.mode==='adaptive-linear' ? {linear_filter_version:measureFilterConfig(p.measure_cat || p.measure_cat_label).version} : {}),
+      ...pointDistanceMetadata(p.measure_cat || p.measure_cat_label),
       question:(p.measure_mode === 'elevation')
         ? `Are you at a higher or lower elevation than me? I am ${p.measure_seeker_elevation_ft.toFixed(0)} ft above sea level.`
         : `Compared to me, are you closer to or further from your nearest ${p.measure_cat_label}? I am ${p.measure_seeker_dist.toFixed(2)} mi from mine.`,

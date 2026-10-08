@@ -60,7 +60,7 @@ const CATEGORY_SPECS = [
   ['ward_border',null,['A Ward Border'],'linear','ward'],
 ].map(([id,dataKey,aliases,mode='point',boundaryKey])=>({id,dataKey,aliases,mode,boundaryKey}));
 function categorySpec(kind, value){
-  const key=typeof value==='object' ? value?.id || value?.category_id || value?.category || value?.label : value;
+  const key=typeof value==='object' ? value?.category_id || value?.category || value?.id || value?.label : value;
   if(kind==='matching') return {id:key,cat:key};
   const base=CATEGORY_SPECS.find(item=>item.id===key || item.aliases.includes(key));
   if(!base)return null;
@@ -101,7 +101,7 @@ function configureQuestionCategories(kind, definitions){
 }
 function resolveCategory(kind,value){
   const definitions=kind==='matching'?MATCHING_CATS:kind==='measure'?MEASURE_CATS:kind==='nearest'?NEAREST_CATS:TENTACLES_CATS;
-  const key=typeof value==='object'?value?.id || value?.category_id || value?.category || value?.label:value;
+  const key=typeof value==='object'?value?.category_id || value?.category || value?.id || value?.label:value;
   return definitions.find(item=>item.id===key || item.cat===key || item.label===key || item.aliases?.includes(key));
 }
 const CITY_PROFILES = Object.freeze({

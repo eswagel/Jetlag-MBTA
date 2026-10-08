@@ -362,12 +362,12 @@ function renderMeasureParams(){
     h += `<div style="font-size:7.5px;letter-spacing:0.1em;text-transform:uppercase;color:var(--dim);margin:8px 0 5px">${grp}</div>`;
     h += '<div class="poi-presets">';
     cats.forEach(c=>{
-      h+=`<div class="poi-chip ${qparams._mcat===c.label?'on':''}" onclick="${_c(()=>selectMeasureCat(c))}">${c.icon} ${c.label}${cityQuestionUnavailableReason({type:'measure',category:c.label}) ? ' · pending' : ''}</div>`;
+      h+=`<div class="poi-chip ${resolveCategory('measure',qparams._mcat)?.id===c.id?'on':''}" onclick="${_c(()=>selectMeasureCat(c))}">${c.icon} ${c.label}${cityQuestionUnavailableReason({type:'measure',category:c.label}) ? ' · pending' : ''}</div>`;
     });
     h += '</div>';
   });
 
-  if(qparams._msearching) h+=`<div style="font-size:9px;color:var(--dim);margin-top:8px">${isSeaLevelMeasure(qparams.measure_cat_label) ? '⏳ Looking up elevation…' : '⏳ Finding nearest…'}</div>`;
+  if(qparams._msearching) h+=`<div style="font-size:9px;color:var(--dim);margin-top:8px">${isSeaLevelMeasure(qparams.measure_cat || qparams.measure_cat_label) ? '⏳ Looking up elevation…' : '⏳ Finding nearest…'}</div>`;
   else if(qparams.measure_mode === 'elevation' && Number.isFinite(qparams.measure_seeker_elevation_ft))
     h+=`<div class="found-result" style="margin-top:8px">
       ⛰️ <b>${qparams.measure_seeker_elevation_ft.toFixed(0)} ft above sea level</b><br>
@@ -380,7 +380,7 @@ function renderMeasureParams(){
       <span style="color:var(--dim)">${qparams.measure_seeker_dist.toFixed(2)} mi from you</span><br>
       <span style="font-size:8px;color:var(--dim)">${qparams.measure_instance_count||qparams.measure_all_instances?.length||1} mapped feature${(qparams.measure_instance_count||qparams.measure_all_instances?.length||1)===1?'':'s'} used for zone</span>
     </div>`;
-  if(ACTIVE_CITY.measureFilters?.[qparams.measure_cat]) h+='<p style="font-size:9px;color:var(--dim);line-height:1.5">Distance answers use the nearest mapped feature. Uncertain map cells remain in play for either answer.</p>';
+  if(measureFilterConfig(qparams.measure_cat)) h+='<p style="font-size:9px;color:var(--dim);line-height:1.5">Distance answers use the nearest mapped feature. Uncertain map cells remain in play for either answer.</p>';
   return h;
 }
 
@@ -393,7 +393,7 @@ function renderTentaclesParams(){
   });
   let h='<div class="sec">Tentacle Type</div><div class="poi-presets">';
   TENTACLES_CATS.forEach(c=>{
-    h+=`<div class="poi-chip ${qparams._tcat===c.label?'on':''}" onclick="${_c(()=>selectTentacleCat(c))}">${c.icon} ${c.label}</div>`;
+    h+=`<div class="poi-chip ${resolveCategory('tentacles',qparams._tcat)?.id===c.id?'on':''}" onclick="${_c(()=>selectTentacleCat(c))}">${c.icon} ${c.label}</div>`;
   });
   h+='</div>';
   const radPresets=[{r:0.5,l:'½ mi'},{r:1,l:'1 mi'},{r:2,l:'2 mi'}];
@@ -469,7 +469,7 @@ function renderMatchingParams(){
   h += '<div class="sec" style="margin-top:14px;padding-top:14px;border-top:1px solid var(--border)">Is the nearest ___ to me the same as to you?</div>';
   h += '<div style="display:flex;flex-direction:column;gap:5px;margin-top:6px">';
   NEAREST_CATS.forEach(c=>{
-    const sel = qparams.nearest_cat === c.label;
+    const sel = resolveCategory('nearest',qparams.nearest_cat)?.id === c.id;
     h += `<div class="sitem${sel?' active-row':''}" style="${sel?'border-color:var(--teal);background:rgba(32,200,176,0.08)':''}"
       onclick="${_c(()=>selectNearestCat(c))}">
       <span style="font-size:16px;margin-right:10px;vertical-align:middle">${c.icon}</span>
@@ -623,7 +623,7 @@ async function selectNearestCat(catObj){
   qparams.matching_service_snapshot = null;
   qparams.matching_boundary = null;
   qparams._matching_boundary_simplified = null;
-  qparams.nearest_cat = catObj.label;
+  qparams.nearest_cat = catObj.id;
   qparams.nearest_cat_label = catObj.label;
   qparams.nearest_seeker_poi = null;
   qparams.nearest_all_pois = null;
@@ -1154,7 +1154,7 @@ function getRandomizeQuestionCatalog(){
       build_qtype:'measure',
       question_type:'measure',
       label:`Measure · ${cat.label}`,
-      category:cat.label,
+      category:cat.id,
       category_label:cat.label,
     });
   });
@@ -1164,7 +1164,7 @@ function getRandomizeQuestionCatalog(){
         build_qtype:'tentacles',
         question_type:'tentacles',
         label:`Tentacles · ${cat.label} · ${preset.label}`,
-        category:cat.label,
+        category:cat.id,
         category_label:cat.label,
         radius_miles:preset.radius_miles,
       });
@@ -1202,7 +1202,7 @@ function getRandomizeQuestionCatalog(){
       question_type:'nearest',
       mode:'nearest',
       label:`Nearest · ${cat.label}`,
-      category:cat.label,
+      category:cat.id,
       category_label:cat.label,
     });
   });
@@ -1678,16 +1678,16 @@ class MeasurePointOverlay {
 // packet compression belong to callers, never to the calculation dataset.
 async function resolveMeasurement(categoryOrQuestion, center){
   const input = typeof categoryOrQuestion === 'string' ? {category:categoryOrQuestion} : categoryOrQuestion;
-  const label = input.label || input.category || input.category_label;
-  const category = MEASURE_CATS.find(item=>item.label===label);
+  const label = input.category_id || input.category || input.id || input.label || input.category_label;
+  const category = resolveCategory('measure',label);
   if(!category) throw new Error(`Unknown measure category: ${label}`);
-  if(input.mode === 'elevation' || isSeaLevelMeasure(category.label)){
+  if(input.mode === 'elevation' || isSeaLevelMeasure(category)){
     const grid = await loadElevationData();
     if(!grid?.values?.length) throw new Error('No elevation grid data available');
     const elevation = await fetchPointElevation(center.lat, center.lng);
     return {category, center, mode:'elevation', value:{kind:'elevation', feet:elevation.feet, meters:elevation.meters}, nearest:null, instances:[], linearFeatures:[]};
   }
-  if(isLinearMeasure(category.label)){
+  if(isLinearMeasure(category)){
     const linearFeatures = (await getMeasureLinearFeatures(category, center))
       .map(item => ({name:item.name || item.properties?.name || category.label, feature:coerceFeature(item, item.name)}))
       .filter(item => item.feature);
@@ -1717,14 +1717,14 @@ async function resolveMeasurement(categoryOrQuestion, center){
 function measurementBuildParams(result){
   const {category,center,mode,value,nearest,instances,linearFeatures} = result;
   return {
-    center,measure_cat:category.label,measure_cat_label:category.label,measure_mode:mode,
+    center,measure_cat:category.id,measure_cat_label:category.label,measure_mode:mode,
     measure_seeker_nearest:nearest,
     measure_seeker_dist:mode === 'distance' ? value.dist : null,
     measure_seeker_elevation_ft:mode === 'elevation' ? value.feet : null,
     measure_seeker_elevation_m:mode === 'elevation' ? value.meters : null,
     measure_instance_count:instances.length,
-    measure_all_instances:adaptivePointConfig(category.label) ? [] : instances,
-    measure_linear_features:ACTIVE_CITY.measureFilters?.[category.label] ? [] : linearFeatures.map(item=>({name:item.name,geometry:item.feature.geometry})),
+    measure_all_instances:adaptivePointConfig(category.id) ? [] : instances,
+    measure_linear_features:measureFilterConfig(category) ? [] : linearFeatures.map(item=>({name:item.name,geometry:item.feature.geometry})),
   };
 }
 
@@ -1736,13 +1736,11 @@ async function selectMeasureCat(catObj){
   const center = {...qparams.center};
   currentBuiltQuestion = null;
   clearZonePreview();
-  qparams._mcat=catObj.label; qparams._mcatlabel=catObj.label; qparams._msearching=true;
-  qparams.measure_cat=catObj.label; qparams.measure_cat_label=catObj.label;
+  qparams._mcat=catObj.id; qparams._mcatlabel=catObj.label; qparams._msearching=true;
+  qparams.measure_cat=catObj.id; qparams.measure_cat_label=catObj.label;
   qparams.measure_mode='distance';
   qparams.measure_seeker_nearest=null; qparams.measure_seeker_dist=null; qparams.measure_seeker_elevation_ft=null; qparams.measure_seeker_elevation_m=null; qparams.measure_all_instances=null; qparams.measure_instance_count=null; qparams.measure_linear_features=null;
-  if(catObj.label==='A County Border') highlightBoundary('county');
-  else if(catObj.label==='A City Border') highlightBoundary('city');
-  else if(catObj.label==='A Ward Border') highlightBoundary('ward');
+  if(catObj.boundaryKey) highlightBoundary(catObj.boundaryKey);
   else clearBoundaryHighlight();
   renderBuildBody();
   try{
@@ -1753,8 +1751,8 @@ async function selectMeasureCat(catObj){
     if(result.nearest){
       const nearest = result.nearest;
       if(result.linearFeatures.length){
-        if(ACTIVE_CITY.measureFilters?.[catObj.label]) toast('Distances use mapped edges. Map filtering keeps uncertain boundary cells in play for either answer.', 7000);
-        if(catObj.label === 'An Amtrak Line') renderAmtrakMeasureLines(center, nearest.name);
+        if(measureFilterConfig(catObj)) toast('Distances use mapped edges. Map filtering keeps uncertain boundary cells in play for either answer.', 7000);
+        if(catObj.id === 'amtrak') renderAmtrakMeasureLines(center, nearest.name);
         const marker=L.marker([nearest.lat,nearest.lng],{icon:measurePin(),zIndexOffset:1500}).addTo(map);
         marker.bindPopup(measureNearestPopup(catObj.label, nearest.name),{offset:[0,-12],maxWidth:220});
         pickedMarkers.push(marker);
@@ -1772,14 +1770,14 @@ async function selectTentacleCat(catObj){
   const isCurrent = beginBuildLookup();
   currentBuiltQuestion = null;
   clearZonePreview();
-  qparams._tcat=catObj.label; qparams._tcatlabel=catObj.label; qparams._tsearching=true;
+  qparams._tcat=catObj.id; qparams._tcatlabel=catObj.label; qparams._tsearching=true;
   _tentacleSelection = null;
   _simulActive = null;
   qparams.tentacle_options=null;
   clearPoiMarkers();
   renderBuildBody();
   try{
-    const opts = await resolveTentacleQuestionOptions(catObj.label, qparams.center, qparams.radius_miles || 1);
+    const opts = await resolveTentacleQuestionOptions(catObj.id, qparams.center, qparams.radius_miles || 1);
     if(!isCurrent()) return;
     if(opts.length < 2){
       toast(`Found fewer than 2 ${catObj.label} nearby — try a larger radius`);
@@ -1804,7 +1802,7 @@ async function resolveTentacleQuestionOptions(categoryLabel, center, radiusMiles
   const searchRadiusMiles = Math.round(reachMiles * 1.5 * 100) / 100; // search wider, but only keep true in-range options
   const searchRadiusM = Math.round(searchRadiusMiles * 1609.34);
   await loadPoiData();
-  const preloaded = getNamedPoiCollection(catObj.label);
+  const preloaded = getNamedPoiCollection(catObj.id);
   let items = preloaded;
   if(items.length){
     items = items
@@ -1901,7 +1899,7 @@ function shouldWarnSlowMeasure(question){
   return !!(
     question &&
     question.type === 'measure' &&
-    (adaptiveLinearConfig(question) || /coast/i.test(question.category_label || question.category || ''))
+    (adaptiveLinearConfig(question) || categorySpec('measure',question)?.id==='coastline')
   );
 }
 

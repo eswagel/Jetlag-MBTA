@@ -82,7 +82,7 @@ async function hiderLoadQuestion(){
     if(options.length >= 2){
       q.options = options;
     } else {
-      const categoryLabel = String(q.category_label || q.category || '').trim();
+      const categoryLabel = String(q.category_id || q.category || q.category_label || '').trim();
       if(!center || !categoryLabel){
         toast('Tentacles question is missing category or center');
         return;

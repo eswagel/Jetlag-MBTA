@@ -67,3 +67,20 @@ test('builder ignores a completed measurement for a superseded location',async()
   assert.equal(g.run('qparams.measure_seeker_nearest'),null);
   assert.equal(g.run('qparams.center.lat'),41);
 });
+
+for(const city of ['boston','chicago']) for(const id of ['park','amtrak','elevation']){
+ test(`${city} renamed ${id}: stable category survives build, packet import and hider resolution`,async()=>{
+  const g=game(city);
+  g.run(`var category=resolveCategory('measure','${id}');category.label='Renamed display text';`);
+  await g.run('selectMeasureCat(category)');
+  const packet=g.run('questionContractPacket(QDEFS.measure.toJSON(qparams))');
+  assert.equal(packet.category,id);assert.equal(packet.category_id,id);assert.equal(packet.category_label,'Renamed display text');
+  g.ctx.packet={...packet,id:'unrelated-question-id'};
+  const restored=await g.run('hydrateOutgoingQuestionContent(packet)');
+  const answer=await g.run('resolveMeasureValue(packet,qparams.center)');
+  assert.equal(restored.category,id);
+  assert.equal(restored.category_label,'Renamed display text');
+  assert.equal(restored.mode,id==='elevation'?'elevation':'distance');
+  assert.equal(id==='elevation'?restored.seeker_elevation_ft:restored.seeker_dist,id==='elevation'?answer.feet:answer.dist);
+ });
+}

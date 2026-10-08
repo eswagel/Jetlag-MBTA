@@ -28,7 +28,7 @@ for(const city of ['boston','chicago'])test(`${city}: every type restores editor
 test('presets use contract aliases and defaults without carrying computed context',()=>{
  const g=game('boston');
  const result=JSON.parse(g.run(`JSON.stringify({radar:presetToBuildParams({build_qtype:'radar'}),nearest:presetToBuildParams({build_qtype:'matching',mode:'nearest',category:'park',category_label:'Park'}),measure:presetToBuildParams({build_qtype:'measure',category:'park',category_label:'Park',center:{lat:42,lng:-71},seeker_dist:8})})`));
- assert.equal(result.radar.radius_miles,1);assert.equal(result.nearest._matching_mode,'nearest');assert.equal(result.nearest.nearest_cat,'park');assert.equal(result.measure._mcat,'Park');assert.equal(result.measure.measure_cat,'park');assert.equal(result.measure.center,undefined);assert.equal(result.measure.measure_seeker_dist,null);
+ assert.equal(result.radar.radius_miles,1);assert.equal(result.nearest._matching_mode,'nearest');assert.equal(result.nearest.nearest_cat,'park');assert.equal(result.measure._mcat,'park');assert.equal(result.measure.measure_cat,'park');assert.equal(result.measure.center,undefined);assert.equal(result.measure.measure_seeker_dist,null);
 });
 test('hydration uses registered type resolvers and rejects unsupported types',async()=>{
  const g=game('boston');

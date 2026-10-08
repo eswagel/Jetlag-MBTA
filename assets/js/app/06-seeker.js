@@ -77,7 +77,7 @@ async function buildStoredTentaclesQuestion(payload){
         .filter(Boolean)
     : [];
   if(options.length < 2){
-    const categoryLabel = String(payload.category_label || payload.category || '').trim();
+    const categoryLabel = String(payload.category_id || payload.category || payload.category_label || '').trim();
     if(!categoryLabel) throw new Error('Tentacles question is missing category');
     options = await resolveTentacleQuestionOptions(categoryLabel, center, radius);
   }
@@ -190,7 +190,7 @@ function buildStoredNearestQuestion(payload){
     id:payload.id,
     ...QDEFS.nearest.toJSON({
       center,
-      nearest_cat:categoryLabel,
+      nearest_cat:payload.category_id || payload.category || categoryLabel,
       nearest_cat_label:categoryLabel,
       nearest_seeker_poi:{...placeIdentity(payload.seeker_poi),name:String(payload.seeker_poi?.name || categoryLabel), ...seekerPoiPoint},
       nearest_all_pois:allPois,
@@ -203,7 +203,7 @@ async function rebuildNearestQuestion(payload){
   buildStoredQuestionBase(payload, 'nearest');
   const center = normalizeLatLng(payload.center);
   const categoryLabel = payload.category_label || payload.category;
-  const catObj = NEAREST_CATS.find(c => c.label === categoryLabel);
+  const catObj = resolveCategory('nearest',payload.category_id || payload.category || categoryLabel);
   if(!center || !catObj) throw new Error('Unknown nearest category');
   const pois = await getCategoryInstances(catObj, center, 35000);
   if(!pois.length) throw new Error(`No ${categoryLabel} found nearby`);
@@ -232,7 +232,7 @@ async function rebuildNearestQuestion(payload){
     id:payload.id,
     ...QDEFS.nearest.toJSON({
       center,
-      nearest_cat:catObj.label,
+      nearest_cat:catObj.id,
       nearest_cat_label:payload.category_label || catObj.label,
       nearest_seeker_poi:nearest,
       nearest_all_pois:pois.slice(0,20),
@@ -245,7 +245,7 @@ function buildStoredMeasureQuestion(payload){
   buildStoredQuestionBase(payload, 'measure');
   const center = normalizeLatLng(payload.center);
   const categoryLabel = payload.category_label || payload.category;
-  const mode = payload.mode || (isSeaLevelMeasure(categoryLabel) ? 'elevation' : 'distance');
+  const mode = payload.mode || (isSeaLevelMeasure(payload) ? 'elevation' : 'distance');
   if(!center || !categoryLabel) throw new Error('Measure question is missing center or category');
   if(mode === 'elevation'){
     const seekerFeet = payload.seeker_elevation_ft;
@@ -255,7 +255,7 @@ function buildStoredMeasureQuestion(payload){
       ...QDEFS.measure.toJSON({
         center,
         measure_mode:'elevation',
-        measure_cat:categoryLabel,
+        measure_cat:payload.category_id || payload.category || categoryLabel,
         measure_cat_label:categoryLabel,
         measure_seeker_elevation_ft:seekerFeet,
         measure_seeker_elevation_m:Number(payload.seeker_elevation_m) || (seekerFeet * 0.3048),
@@ -282,7 +282,7 @@ function buildStoredMeasureQuestion(payload){
     ...QDEFS.measure.toJSON({
       center,
       measure_mode:'distance',
-      measure_cat:categoryLabel,
+      measure_cat:payload.category_id || payload.category || categoryLabel,
       measure_cat_label:categoryLabel,
       measure_seeker_nearest:seekerNearest,
       measure_seeker_dist:seekerDist,
@@ -372,9 +372,8 @@ function syncLoadedQuestionHighlights(question){
     return;
   }
   if(question.type === 'measure'){
-    if(question.category_label === 'A County Border') highlightBoundary('county');
-    else if(question.category_label === 'A City Border') highlightBoundary('city');
-    else if(question.category_label === 'A Ward Border') highlightBoundary('ward');
+    const boundaryKey=resolveCategory('measure',question)?.boundaryKey;
+    if(boundaryKey) highlightBoundary(boundaryKey);
     else clearBoundaryHighlight();
     return;
   }
@@ -460,9 +459,8 @@ function syncRestoredBuildUi(){
     if(currentBuiltQuestion) syncLoadedQuestionHighlights(currentBuiltQuestion);
     else if(qtype === 'matching' && qparams.matching_cat) highlightBoundary(qparams.matching_cat);
     else if(qtype === 'measure'){
-      if(qparams.measure_cat_label === 'A County Border' || qparams.measure_cat === 'A County Border') highlightBoundary('county');
-      else if(qparams.measure_cat_label === 'A City Border' || qparams.measure_cat === 'A City Border') highlightBoundary('city');
-      else if(qparams.measure_cat_label === 'A Ward Border' || qparams.measure_cat === 'A Ward Border') highlightBoundary('ward');
+      const boundaryKey=resolveCategory('measure',qparams.measure_cat || qparams.measure_cat_label)?.boundaryKey;
+      if(boundaryKey) highlightBoundary(boundaryKey);
       else clearBoundaryHighlight();
     } else {
       clearBoundaryHighlight();
