@@ -13,9 +13,7 @@ function validateQuestionForCity(question){
 }
 
 function isLinearMeasure(label){
-  if(ACTIVE_CITY.measureFilters?.[label]?.mode === 'adaptive-linear') return true;
-  return ['An Amtrak Line', 'A Coastline', 'Lake Michigan shoreline'].includes(label) ||
-    (isChicagoGame() && ['A Body of Water', 'A City Border', 'A Ward Border'].includes(label));
+  return measureFilterConfig(label)?.mode === 'adaptive-linear' || categorySpec('measure',label)?.mode === 'linear';
 }
 
 async function resolveChicagoBoundary(category, center){
@@ -163,77 +161,5 @@ async function resolveChicagoLine(_center, options={}){
     line_id:line.id,
     service_snapshot:cloneForStorage(snapshot),
     boundary:lineSnapshotBoundary(snapshot, options.hideRadiusMiles ?? hideRadiusMi),
-  };
-}
-
-if(isChicagoGame()){
-  const line = MATCHING_CATS.find(item => item.cat === 'line');
-  line.label = 'CTA Line';
-  line.resolve = resolveChicagoLine;
-  const landmass = MATCHING_CATS.find(item => item.cat === 'landmass');
-  const makeBoundary = (cat, label, icon) => ({cat,label,icon,resolve:center => resolveChicagoBoundary(cat, center)});
-  MATCHING_CATS.splice(0, MATCHING_CATS.length, line, landmass,
-    makeBoundary('city', 'City / Municipality', '🏙️'),
-    makeBoundary('ward', 'Ward', '🏛️'),
-    makeBoundary('community_area', 'Community Area', '🏘️'),
-    makeBoundary('postcode', 'ZIP Code (ZCTA)', '📮'));
-
-  MEASURE_CATS.find(item => item.label === 'Sea Level').label = 'Elevation';
-  MEASURE_CATS.find(item => item.label === 'A Coastline').label = 'Lake Michigan shoreline';
-  const countyBorder = MEASURE_CATS.find(item => item.label === 'A County Border');
-  countyBorder.label = 'A Ward Border';
-
-  // Strict local datasets: a missing Chicago source must never trigger a Boston or generic fallback.
-  for(const category of [...MEASURE_CATS, ...NEAREST_CATS, ...TENTACLES_CATS]){
-    if(category.label === 'A Commuter Rail Station'){
-      category.instances = async () => commuterRailStopsList;
-    } else {
-      category.instances = async () => {
-        await loadPoiData();
-        const values = getNamedPoiCollection(category.label);
-        if(!values.length) throw new Error(`Verified Chicago ${category.label} data is not available yet`);
-        return values;
-      };
-    }
-    delete category.overpass;
-  }
-
-  const sharedLinearFeatures = getMeasureLinearFeatures;
-  getMeasureLinearFeatures = async function(category, center){
-    if(category.label === 'A City Border' || category.label === 'A Ward Border'){
-      await loadBoundaryData();
-      const key = category.label === 'A Ward Border' ? 'ward' : 'city';
-      return (getBoundaryDataset(key) || []).flatMap(item =>
-        featureToDisplayLines(coerceFeature(item, item.name)).map(feature => ({...feature, name:item.name})));
-    }
-    await loadPoiData();
-    const keys = {
-      'Lake Michigan shoreline':'coastlineLines',
-      'A Body of Water':'bodiesOfWaterLines',
-      'An Amtrak Line':'amtrakLines',
-    };
-    if(keys[category.label]) return preloadedData.pois?.[keys[category.label]] || [];
-    return sharedLinearFeatures(category, center);
-  };
-
-  const sharedHighlight = highlightBoundary;
-  highlightBoundary = function(category){
-    const key = category === 'A Ward Border' ? 'ward' : category === 'A City Border' ? 'city' : category;
-    if(!['ward','community_area','postcode','city'].includes(key)) return sharedHighlight(category);
-    if(!boundaryHighlightLayer) return;
-    boundaryHighlightLayer.clearLayers();
-    boundaryHighlightLayer.remove();
-    const features = (getBoundaryDataset(key) || []).map(item => coerceFeature(item, item.name)).filter(Boolean);
-    if(features.length){
-      boundaryHighlightLayer.addData({type:'FeatureCollection', features});
-      boundaryHighlightLayer.setStyle(feature => {
-        const selected = qparams.center && turf.booleanPointInPolygon(
-          turf.point([qparams.center.lng, qparams.center.lat]), feature);
-        return selected
-          ? {color:'#d48b25', weight:2.5, opacity:0.95, fill:false}
-          : {color:'#788b98', weight:0.8, opacity:0.35, fill:false};
-      });
-      boundaryHighlightLayer.addTo(map);
-    }
   };
 }

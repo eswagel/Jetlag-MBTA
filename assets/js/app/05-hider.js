@@ -31,15 +31,15 @@ const ANS_OPTS = {
 };
 
 function findMatchingCategory(cat){
-  return MATCHING_CATS.find(c => c.cat === cat);
+  return resolveCategory('matching',cat);
 }
 
 function findNearestCategory(label){
-  return NEAREST_CATS.find(c => c.label === label);
+  return resolveCategory('nearest',label);
 }
 
 function findMeasureCategory(label){
-  return MEASURE_CATS.find(c => c.label === label);
+  return resolveCategory('measure',label);
 }
 
 function decorateHiderQuestion(question){

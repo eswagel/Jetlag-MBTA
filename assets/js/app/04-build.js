@@ -7,7 +7,7 @@ function _clearClicks(){ _clicks.length=0; }
 // ── Category data ──
 // ── Matching categories — "Are we in the same ___?" ──
 // resolve(latLng) returns { val: string, boundary: GeoJSON polygon | null }
-const MATCHING_CATS = [
+const MATCHING_CATS = configureQuestionCategories('matching', [
   {
     icon:'🚇', label:'T Line', cat:'line',
     resolve: async (_c, opts={}) => {
@@ -86,7 +86,7 @@ const MATCHING_CATS = [
       return { val, boundary };
     }
   },
-];
+]);
 
 const PHOTO_PROMPTS = [
   {icon:'TREE', text:'A Tree'},
@@ -98,7 +98,7 @@ const PHOTO_PROMPTS = [
 ];
 
 // ── Nearest categories — "Is the nearest ___ to me the same as to you?" ──
-const NEAREST_CATS = [
+const NEAREST_CATS = configureQuestionCategories('nearest', [
   { icon:'🌳', label:'Park',             instances: async()=>{ await loadPoiData(); return getNamedPoiCollection('Park'); }, overpass:(c,r)=>`nwr["leisure"="park"]["name"](around:${r},${c.lat},${c.lng});` },
   { icon:'⛳', label:'Golf Course',      instances: async()=>{ await loadPoiData(); return getNamedPoiCollection('Golf Course'); }, overpass:(c,r)=>`nwr["leisure"="golf_course"](around:${r},${c.lat},${c.lng});` },
   { icon:'📚', label:'Library',          instances: async()=>{ await loadPoiData(); return getNamedPoiCollection('Library'); }, overpass:(c,r)=>`nwr["amenity"="library"](around:${r},${c.lat},${c.lng});` },
@@ -107,7 +107,7 @@ const NEAREST_CATS = [
   { icon:'🎬', label:'Movie Theater',   instances: async()=>{ await loadPoiData(); return getNamedPoiCollection('Movie Theater'); }, overpass:(c,r)=>`nwr["amenity"="cinema"](around:${r},${c.lat},${c.lng});` },
   { icon:'🦒', label:'Zoo / Aquarium',  instances: async()=>{ await loadPoiData(); return getNamedPoiCollection('Zoo / Aquarium'); }, overpass:(c,r)=>`nwr["tourism"~"^(zoo|aquarium)$"](around:${r},${c.lat},${c.lng});` },
   { icon:'🏳️', label:'Foreign Consulate', instances: async()=>{ await loadPoiData(); return getNamedPoiCollection('Foreign Consulate'); }, overpass:(c,r)=>`nwr["office"~"diplomatic|consulate"](around:${r},${c.lat},${c.lng});nwr["amenity"="embassy"](around:${r},${c.lat},${c.lng});` },
-];
+]);
 // osm_class: 'boundary', 'postcode', or null (any)
 // admin_level: OSM admin level (6=county, 8=municipality, 10=neighborhood) or null
 async function fetchNominatimBoundary(query, featureClass, adminLevel){
@@ -735,7 +735,7 @@ function maybeAutoResolveBuildQuestion(){
   if(qtype === 'matching'){
     if(qparams._matching_mode === 'nearest'){
       if(qparams.nearest_cat && !qparams.nearest_seeker_poi && !qparams._nearest_searching){
-        const catObj = NEAREST_CATS.find(c => c.label === qparams.nearest_cat || c.label === qparams.nearest_cat_label);
+        const catObj = resolveCategory('nearest',qparams.nearest_cat || qparams.nearest_cat_label);
         if(catObj) selectNearestCat(catObj);
       }
       return;
@@ -752,7 +752,7 @@ function maybeAutoResolveBuildQuestion(){
       ? Number.isFinite(qparams.measure_seeker_elevation_ft)
       : qparams.measure_seeker_dist != null;
     if(qparams.measure_cat && !ready && !qparams._msearching){
-      const catObj = MEASURE_CATS.find(c => c.label === qparams.measure_cat || c.label === qparams.measure_cat_label);
+      const catObj = resolveCategory('measure',qparams.measure_cat || qparams.measure_cat_label);
       if(catObj) selectMeasureCat(catObj);
     }
     return;
@@ -760,7 +760,7 @@ function maybeAutoResolveBuildQuestion(){
 
   if(qtype === 'tentacles'){
     if(qparams._tcat && !(qparams.tentacle_options?.length) && !qparams._tsearching){
-      const catObj = TENTACLES_CATS.find(c => c.label === qparams._tcat || c.label === qparams.tentacles_cat_label);
+      const catObj = resolveCategory('tentacles',qparams._tcat || qparams.tentacles_cat_label);
       if(catObj) selectTentacleCat(catObj);
     }
   }
@@ -894,21 +894,18 @@ async function loadAdminBoundaries(){
 }
 
 // Highlight boundaries relevant to the active question category
-function highlightBoundary(cat){
-  if(!boundaryHighlightLayer) return;
-  boundaryHighlightLayer.clearLayers();
-  boundaryHighlightLayer.remove();
-
-  let features = [];
-  if(cat === 'county' || cat === 'A County Border'){
-    features = _adminBoundaries.counties;
-  } else if(cat === 'city' || cat === 'A City Border'){
-    features = _adminBoundaries.towns;
-  }
-  if(!features.length) return;
-
-  boundaryHighlightLayer.clearLayers();
+function highlightBoundary(category){
+  if(!boundaryHighlightLayer)return;
+  boundaryHighlightLayer.clearLayers(); boundaryHighlightLayer.remove();
+  const spec=categorySpec('measure',category);
+  const key=spec?.boundaryKey || category;
+  const features=(getBoundaryDataset(key)||[]).map(item=>coerceFeature(item,item.name)).filter(Boolean);
+  if(!features.length)return;
   boundaryHighlightLayer.addData({type:'FeatureCollection',features});
+  boundaryHighlightLayer.setStyle(feature=>{
+    const selected=qparams.center && turf.booleanPointInPolygon(turf.point([qparams.center.lng,qparams.center.lat]),feature);
+    return selected?{color:'#d48b25',weight:2.5,opacity:0.95,fill:false}:{color:'#788b98',weight:0.8,opacity:0.35,fill:false};
+  });
   boundaryHighlightLayer.addTo(map);
 }
 
@@ -977,7 +974,7 @@ async function nearestBorderPoints(center, type, adminLevel){
   return pts;
 }
 
-const MEASURE_CATS = [
+const MEASURE_CATS = configureQuestionCategories('measure', [
   // TRANSIT
   { group:'Transit', icon:'🚆', label:'An Amtrak Line',
     instances: async (c) => {
@@ -1101,15 +1098,15 @@ const MEASURE_CATS = [
   { group:'Public Utilities', icon:'🏳️', label:'A Foreign Consulate',
     instances: async ()=>{ await loadPoiData(); return getNamedPoiCollection('A Foreign Consulate'); },
     overpass:(c,r)=>`nwr["office"~"diplomatic|consulate"](around:${r},${c.lat},${c.lng});nwr["amenity"="embassy"](around:${r},${c.lat},${c.lng});` },
-];
+]);
 
-const TENTACLES_CATS = [
+const TENTACLES_CATS = configureQuestionCategories('tentacles', [
   {icon:'🏥', label:'Hospitals',    overpass:(c,r)=>`nwr["amenity"~"hospital|clinic"](around:${r},${c.lat},${c.lng});`},
   {icon:'📚', label:'Libraries',    overpass:(c,r)=>`nwr["amenity"="library"](around:${r},${c.lat},${c.lng});`},
   {icon:'🏛️', label:'Museums',     overpass:(c,r)=>`nwr["tourism"="museum"](around:${r},${c.lat},${c.lng});`},
   {icon:'🎬', label:'Movie Theaters', overpass:(c,r)=>`nwr["amenity"="cinema"](around:${r},${c.lat},${c.lng});`},
   {icon:'☕', label:"Dunkin'",      overpass:(c,r)=>`nwr["name"~"Dunkin",i](around:${r},${c.lat},${c.lng});`},
-];
+]);
 
 // ── Overpass API search ──
 const RANDOMIZE_RADAR_PRESETS = [
@@ -1440,7 +1437,7 @@ function measureNearestPopup(categoryLabel, nearestName){
 }
 
 function isSeaLevelMeasure(label){
-  return ['sea level', 'elevation'].includes(String(label || '').toLowerCase());
+  return categorySpec('measure',label)?.mode === 'elevation';
 }
 
 function measureAnswerOptions(question){
@@ -1505,22 +1502,18 @@ function coastlineLineFeaturesFromOverpass(data, fallbackName='Coastline'){
   }];
 }
 
-async function getMeasureLinearFeatures(catObj, center){
+async function getMeasureLinearFeatures(category, center){
+  const spec=categorySpec('measure',category);
+  if(!spec)return [];
+  if(spec.boundaryKey){
+    await loadBoundaryData();
+    return (getBoundaryDataset(spec.boundaryKey)||[]).flatMap(item=>featureToDisplayLines(coerceFeature(item,item.name)).map(feature=>({...feature,name:item.name})));
+  }
   await loadPoiData();
-  const configured = ACTIVE_CITY.measureFilters?.[catObj.label];
-  if(configured?.dataKey) return preloadedData.pois?.[configured.dataKey] || [];
-  if(catObj.label === 'An Amtrak Line'){
-    return getNamedLinearFeatures(catObj.label);
-  }
-  if(catObj.label === 'A Coastline'){
-    const preloaded = getNamedLinearFeatures(catObj.label);
-    if(preloaded.length) return preloaded;
-    const r = 50000;
-    const q = `[out:json][timeout:25];way["natural"="coastline"](around:${r},${center.lat},${center.lng});out geom 300;`;
-    const data = await overpassRaw(q);
-    return coastlineLineFeaturesFromOverpass(data, 'Coastline');
-  }
-  return [];
+  const features=preloadedData.pois?.[measureFilterConfig(spec)?.dataKey || spec.dataKey] || [];
+  if(features.length || ACTIVE_CITY.localQuestionsOnly || spec.id!=='coastline')return features;
+  const query=`[out:json][timeout:25];way["natural"="coastline"](around:50000,${center.lat},${center.lng});out geom 300;`;
+  return coastlineLineFeaturesFromOverpass(await overpassRaw(query),'Coastline');
 }
 
 // Display-only corridor grouping: calculation geometry remains the original dataset.
@@ -1805,7 +1798,7 @@ async function selectTentacleCat(catObj){
 }
 
 async function resolveTentacleQuestionOptions(categoryLabel, center, radiusMiles=1){
-  const catObj = TENTACLES_CATS.find(c => c.label === categoryLabel);
+  const catObj = resolveCategory('tentacles',categoryLabel);
   if(!catObj) throw new Error(`Unknown tentacles category: ${categoryLabel}`);
   const reachMiles = Math.max(0, Number(radiusMiles || 1));
   const searchRadiusMiles = Math.round(reachMiles * 1.5 * 100) / 100; // search wider, but only keep true in-range options

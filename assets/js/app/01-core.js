@@ -712,6 +712,8 @@ function lookupLinearPoiFeatures(keys){
 }
 
 function getNamedPoiCollection(label){
+  const spec=categorySpec('nearest',label);
+  if(spec?.dataKey)return lookupPoiCollection([spec.dataKey]);
   const keyMap = {
     'Park': ['parks'],
     'A Park': ['parks'],
@@ -749,6 +751,8 @@ function getNamedPoiCollection(label){
 }
 
 function getNamedLinearCollection(label){
+  const spec=categorySpec('measure',label);
+  if(spec?.mode==='linear' && spec.dataKey)return lookupLinearPoiCollection([spec.dataKey],spec.id);
   const keyMap = {
     'Lake Michigan shoreline': ['coastlineLines'],
     'A Body of Water': ACTIVE_CITY.id === 'chicago' ? ['bodiesOfWaterLines'] : [],
@@ -761,6 +765,8 @@ function getNamedLinearCollection(label){
 }
 
 function getNamedLinearFeatures(label){
+  const spec=categorySpec('measure',label);
+  if(spec?.mode==='linear' && spec.dataKey)return lookupLinearPoiFeatures([spec.dataKey]);
   const keyMap = {
     'Lake Michigan shoreline': ['coastlineLines'],
     'A Body of Water': ACTIVE_CITY.id === 'chicago' ? ['bodiesOfWaterLines'] : [],
@@ -1270,7 +1276,7 @@ function buildElevationConstraintFeature(q, zone=null){
 
 function adaptiveLinearConfig(question){
   if(question?.type !== 'measure') return null;
-  const config = ACTIVE_CITY.measureFilters?.[question.category] || ACTIVE_CITY.measureFilters?.[question.category_label];
+  const config = measureFilterConfig(question.category_id || question.category || question.category_label);
   return ['adaptive-linear','adaptive-point'].includes(config?.mode) ? config : null;
 }
 

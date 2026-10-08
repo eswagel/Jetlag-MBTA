@@ -1,5 +1,5 @@
 const test=require('node:test'),assert=require('node:assert/strict'),fs=require('node:fs'),vm=require('node:vm');
-function context(){const c=vm.createContext({console});vm.runInContext(fs.readFileSync('assets/js/app/04-build.js','utf8'),c);return c;}
+function context(){const c=vm.createContext({console,URLSearchParams,window:{location:{search:''}}});vm.runInContext(fs.readFileSync('assets/js/app/00-cities.js','utf8'),c);vm.runInContext(fs.readFileSync('assets/js/app/04-build.js','utf8'),c);return c;}
 test('dense POI markers are separated on screen while retaining nearest and full source',()=>{
  const c=context();
  c.items=Array.from({length:3230},(_,i)=>({lat:0,lng:0,name:'Park'+i}));

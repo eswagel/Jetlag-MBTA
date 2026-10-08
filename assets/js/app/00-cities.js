@@ -38,6 +38,72 @@ function pointMeasureFilters(categories, dataset='pois', versionPaths=['sources.
   return Object.fromEntries(Object.entries(categories).map(([label,dataKey]) =>
     [label,{mode:'adaptive-point',version:'adaptive-point-v1',dataKey,dataset,versionPaths,...options}]));
 }
+// Stable identities are independent of translated or city-specific display labels.
+const CATEGORY_SPECS = [
+  ['park','parks',['Park','A Park','Parks']],
+  ['golf_course','golfCourses',['Golf Course','A Golf Course']],
+  ['library','libraries',['Library','A Library','Libraries']],
+  ['hospital','hospitals',['Hospital','A Hospital','Hospitals']],
+  ['museum','museums',['Museum','A Museum','Museums']],
+  ['movie_theater','movieTheaters',['Movie Theater','A Movie Theater','Movie Theaters']],
+  ['zoo_aquarium','zooAquariums',['Zoo / Aquarium','A Zoo / Aquarium']],
+  ['consulate','foreignConsulates',['Foreign Consulate','A Foreign Consulate']],
+  ['amusement_park','amusementParks',['An Amusement Park']],
+  ['dunkin','dunkin',["Dunkin'"]],
+  ['commuter_rail','commuterRail',['A Commuter Rail Station']],
+  ['amtrak','amtrakLines',['An Amtrak Line'],'linear'],
+  ['coastline','coastlineLines',['A Coastline','Lake Michigan shoreline'],'linear'],
+  ['elevation',null,['Sea Level','Elevation'],'elevation'],
+  ['water','bodiesOfWater',['A Body of Water']],
+  ['county_border',null,['A County Border'],'point','county'],
+  ['city_border',null,['A City Border'],'point','city'],
+  ['ward_border',null,['A Ward Border'],'linear','ward'],
+].map(([id,dataKey,aliases,mode='point',boundaryKey])=>({id,dataKey,aliases,mode,boundaryKey}));
+function categorySpec(kind, value){
+  const key=typeof value==='object' ? value?.id || value?.category_id || value?.category || value?.label : value;
+  if(kind==='matching') return {id:key,cat:key};
+  const base=CATEGORY_SPECS.find(item=>item.id===key || item.aliases.includes(key));
+  if(!base)return null;
+  const overrides=ACTIVE_CITY.questionCategories?.[base.id] || {};
+  return {...base,...overrides};
+}
+function measureFilterConfig(value){
+  const spec=categorySpec('measure',value);
+  if(!spec)return null;
+  return ACTIVE_CITY.measureFilters?.[spec.id] || spec.aliases.map(alias=>ACTIVE_CITY.measureFilters?.[alias]).find(Boolean) || null;
+}
+function configureQuestionCategories(kind, definitions){
+  if(kind==='matching'){
+    const config=ACTIVE_CITY.matchingCategories;
+    if(!config)return definitions.map(item=>({...item,id:item.cat}));
+    return config.map(({id,label,icon,resolver})=>{
+      const original=definitions.find(item=>item.cat===id);
+      return {...original,id,cat:id,label:label || original?.label,icon:icon || original?.icon,
+        resolve:resolver==='service' ? (...args)=>resolveChicagoLine(...args) : resolver==='boundary' ? center=>resolveChicagoBoundary(id,center) : original.resolve};
+    });
+  }
+  return definitions.map(original=>{
+    const spec=categorySpec(kind,original.label);
+    if(!spec)throw new Error(`Unknown ${kind} category: ${original.label}`);
+    const item={...original,...spec,label:spec.label || original.label};
+    if(ACTIVE_CITY.localQuestionsOnly){
+      delete item.overpass;
+      item.instances=async()=>{
+        if(item.id==='commuter_rail')return commuterRailStopsList;
+        await loadPoiData();
+        const values=lookupPoiCollection([item.dataKey]);
+        if(!values.length)throw new Error(`Verified ${ACTIVE_CITY.name} ${item.label} data is not available yet`);
+        return values;
+      };
+    }
+    return item;
+  });
+}
+function resolveCategory(kind,value){
+  const definitions=kind==='matching'?MATCHING_CATS:kind==='measure'?MEASURE_CATS:kind==='nearest'?NEAREST_CATS:TENTACLES_CATS;
+  const key=typeof value==='object'?value?.id || value?.category_id || value?.category || value?.label:value;
+  return definitions.find(item=>item.id===key || item.cat===key || item.label===key || item.aliases?.includes(key));
+}
 const CITY_PROFILES = Object.freeze({
   boston: {
     id:'boston', name:'Boston', networkLabel:'MBTA', timezone:'America/New_York',
@@ -53,6 +119,19 @@ const CITY_PROFILES = Object.freeze({
   },
   chicago: {
     id:'chicago', name:'Chicago', networkLabel:'CTA', timezone:'America/Chicago',
+    localQuestionsOnly:true,
+    matchingCategories:[
+      {id:'line',label:'CTA Line',resolver:'service'}, {id:'landmass'},
+      {id:'city',label:'City / Municipality',icon:'🏙️',resolver:'boundary'},
+      {id:'ward',label:'Ward',icon:'🏛️',resolver:'boundary'},
+      {id:'community_area',label:'Community Area',icon:'🏘️',resolver:'boundary'},
+      {id:'postcode',label:'ZIP Code (ZCTA)',icon:'📮',resolver:'boundary'},
+    ],
+    questionCategories:{
+      elevation:{label:'Elevation'},coastline:{label:'Lake Michigan shoreline'},
+      county_border:{id:'ward_border',label:'A Ward Border',boundaryKey:'ward',mode:'linear'},
+      city_border:{mode:'linear'},water:{mode:'linear',dataKey:'bodiesOfWaterLines'},
+    },
     datasetVersion:'chicago-v1', center:[41.90,-87.69],
     measureFilters:{...pointMeasureFilters(POINT_MEASURE_CATEGORIES),...pointMeasureFilters({'A Commuter Rail Station':'commuterRail'},'mbta',['sources.metra.sha256','sources.southshore.sha256']),
     'A Body of Water':{mode:'adaptive-linear',version:'adaptive-linear-v1',dataKey:'bodiesOfWaterLines'}},
