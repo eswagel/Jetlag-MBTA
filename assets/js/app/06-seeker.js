@@ -239,6 +239,9 @@ async function rebuildNearestQuestion(payload){
 
 function buildStoredMeasureQuestion(payload){
   buildStoredQuestionBase(payload, 'measure');
+  // Original border questions stored nearest-vertex distances. Rebuild imported
+  // questions from the current boundary segments rather than trusting that context.
+  if(categorySpec('measure',payload)?.boundaryKey) return null;
   const center = normalizeLatLng(payload.center);
   const categoryLabel = payload.category_label || payload.category;
   const mode = payload.mode || (isSeaLevelMeasure(payload) ? 'elevation' : 'distance');

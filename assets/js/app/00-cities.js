@@ -55,8 +55,8 @@ const CATEGORY_SPECS = [
   ['coastline','coastlineLines',['A Coastline','Lake Michigan shoreline'],'linear'],
   ['elevation',null,['Sea Level','Elevation'],'elevation'],
   ['water','bodiesOfWater',['A Body of Water']],
-  ['county_border',null,['A County Border'],'point','county'],
-  ['city_border',null,['A City Border'],'point','city'],
+  ['county_border',null,['A County Border'],'linear','county'],
+  ['city_border',null,['A City Border'],'linear','city'],
   ['ward_border',null,['A Ward Border'],'linear','ward'],
 ].map(([id,dataKey,aliases,mode='point',boundaryKey])=>({id,dataKey,aliases,mode,boundaryKey}));
 function categorySpec(kind, value){
