@@ -37,6 +37,7 @@ function startGame(){
 }
 
 function promptHiderStationPick(){
+  cancelPointPicking();
   _pickingHiderStation = true;
   document.getElementById('panel').classList.add('collapsed');
   showBanner('🫣 TAP YOUR STATION on the map to set your hiding location');
@@ -345,9 +346,15 @@ function onMapClick(e){
 // ══════════════════════════════════════════════════════
 function showBanner(msg){document.getElementById('banner-msg').textContent=msg;document.getElementById('pick-banner').classList.add('visible');}
 function hideBanner(){document.getElementById('pick-banner').classList.remove('visible');}
-function dismissBanner(){
+function cancelPointPicking(){
   pickStep=-1;
-  if(qtype==='custom_boundary') qparams._drawingBoundary = false;
+  if(qparams) qparams._drawingBoundary = false;
+  if(typeof _hiderPickingLocation !== 'undefined') _hiderPickingLocation = false;
+  _pickingHiderStation = false;
+  if(typeof invalidateHiderRequest === 'function') invalidateHiderRequest();
+}
+function dismissBanner(){
+  cancelPointPicking();
   hideBanner();
   if(qtype==='custom_boundary' && typeof renderBoundaryBody === 'function') renderBoundaryBody();
   else renderBuildBody();
@@ -382,6 +389,7 @@ function useMyLocation(key, stepIndex){
 //  BUILD UI
 // ══════════════════════════════════════════════════════
 function selectQType(type){
+  cancelPointPicking();
   qtype=type;
   qparams={radius_miles:1, travel_miles:0.5};
   currentBuiltQuestion = null;

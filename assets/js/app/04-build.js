@@ -403,13 +403,6 @@ function renderTentaclesParams(){
       setParam('radius_miles',p.r);
       updatePreview();
       renderBuildBody();
-      if(qparams._tcat && !qparams._tsearching){
-        const catObj = TENTACLES_CATS.find(c => c.label === qparams._tcat || c.label === qparams._tcatlabel || c.label === qparams.tentacles_cat_label);
-        if(catObj) selectTentacleCat(catObj);
-        else if(qparams.tentacle_options) tryGenerate();
-      } else if(qparams.tentacle_options){
-        tryGenerate();
-      }
     })}">${p.l}</div>`;
   });
   h+='</div>';
@@ -515,8 +508,11 @@ function beginBuildLookup(){
   return () => revision === buildLookupRevision && params === qparams;
 }
 function invalidatePickedLocation(changedKey=null){
+  invalidateBuildInputs({changedPoint:changedKey});
+}
+function invalidateBuildInputs({changedPoint=null, preservePoints=false}={}){
   ++buildLookupRevision;
-  const otherPoints = changedKey ? (QDEFS[qtype]?.pickSteps || []).map(step => step.key).filter(key => key !== changedKey) : [];
+  const otherPoints = preservePoints || changedPoint ? (QDEFS[qtype]?.pickSteps || []).map(step => step.key).filter(key => key !== changedPoint) : [];
   qparams = Object.fromEntries([...PICK_INPUT_KEYS, ...otherPoints].filter(key => key in qparams).map(key => [key, qparams[key]]));
   currentBuiltQuestion = null;
   _tentacleSelection = null;
@@ -720,7 +716,14 @@ function renderCustomBoundaryParams(){
 }
 
 // Helpers for param rendering
-function setParam(k,v){ qparams[k]=v; }
+function setParam(k,v){
+  if(qparams[k] === v) return;
+  // Parameter changes share point-change invalidation, retaining picked points.
+  // A pending lookup must never publish results for an earlier input snapshot.
+  invalidateBuildInputs({preservePoints:true});
+  qparams[k]=v;
+  maybeAutoResolveBuildQuestion();
+}
 function tryGenerate(){
   const activeType = getActiveBuildQType();
   if(qtype && QDEFS[activeType] && QDEFS[activeType].isReady(qparams)) generateJSON();
@@ -764,6 +767,7 @@ function maybeAutoResolveBuildQuestion(){
 }
 
 function startCustomBoundaryDraw(){
+  cancelPointPicking();
   qparams._drawingBoundary = true;
   qparams.custom_boundary_points = qparams.custom_boundary_points || [];
   showBanner('TAP THE MAP — add boundary vertices');
@@ -1865,6 +1869,7 @@ async function resolveTentacleQuestionOptions(categoryLabel, center, radiusMiles
 }
 
 function restartPick(){
+  cancelPointPicking();
   invalidatePickedLocation();
   clearMarkers();previewLayer.clearLayers();pickStep=0;
   document.getElementById('json-out-section').style.display='none';
@@ -2659,6 +2664,7 @@ function copyQ(){
 }
 
 function resetBuild(){
+  cancelPointPicking();
   qtype=null;qparams={};pickStep=-1;pickStepDefs=[];
   currentBuiltQuestion = null;
   _tentacleSelection = null;
