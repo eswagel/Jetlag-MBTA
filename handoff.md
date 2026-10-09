@@ -1,3 +1,5 @@
+> **Current handoff (2026-10-09):** Read [Sites multiplayer handoff](docs/sites-multiplayer-handoff.md) first. The implementation now supports Boston and Chicago; the Boston-only status below is historical and is not the current task list.
+
 # Jet Lag MBTA Hide & Seek — Current Handoff
 
 ## Overview
