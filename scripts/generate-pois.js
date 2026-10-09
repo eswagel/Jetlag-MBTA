@@ -2,6 +2,7 @@
 
 const fs = require('fs/promises');
 const path = require('path');
+const {clipLineSegments} = require('./lib/line-geometry.cjs');
 const {fetchCoastlineWays, densifyCoastlineWays, coastlineWaysToMultiLineFeature} = require('./lib/shoreline');
 
 const OUTPUT = path.resolve(__dirname, '..', 'data', 'pois.json');
@@ -15,21 +16,7 @@ const OVERPASS_ENDPOINTS = [
 const REQUEST_DELAY_MS = 1200;
 
 const CATEGORY_QUERIES = {
-  parks: `nwr["leisure"="park"]["name"](${BBOX.south},${BBOX.west},${BBOX.north},${BBOX.east});`,
-  golfCourses: `nwr["leisure"="golf_course"](${BBOX.south},${BBOX.west},${BBOX.north},${BBOX.east});`,
-  libraries: `nwr["amenity"="library"](${BBOX.south},${BBOX.west},${BBOX.north},${BBOX.east});`,
-  hospitals: `nwr["amenity"="hospital"](${BBOX.south},${BBOX.west},${BBOX.north},${BBOX.east});`,
-  medicalSites: `nwr["amenity"~"hospital|clinic"](${BBOX.south},${BBOX.west},${BBOX.north},${BBOX.east});`,
-  museums: `nwr["tourism"="museum"](${BBOX.south},${BBOX.west},${BBOX.north},${BBOX.east});`,
-  movieTheaters: `nwr["amenity"="cinema"](${BBOX.south},${BBOX.west},${BBOX.north},${BBOX.east});`,
-  zooAquariums: `nwr["tourism"~"^(zoo|aquarium)$"](${BBOX.south},${BBOX.west},${BBOX.north},${BBOX.east});`,
-  foreignConsulates: `nwr["office"~"diplomatic|consulate"](${BBOX.south},${BBOX.west},${BBOX.north},${BBOX.east}); nwr["amenity"="embassy"](${BBOX.south},${BBOX.west},${BBOX.north},${BBOX.east});`,
-  amusementParks: `nwr["tourism"="theme_park"](${BBOX.south},${BBOX.west},${BBOX.north},${BBOX.east}); nwr["leisure"="amusement_arcade"](${BBOX.south},${BBOX.west},${BBOX.north},${BBOX.east});`,
-  dunkin: `nwr["name"~"Dunkin",i](${BBOX.south},${BBOX.west},${BBOX.north},${BBOX.east});`,
-  starbucks: `nwr["name"~"Starbucks",i](${BBOX.south},${BBOX.west},${BBOX.north},${BBOX.east});`,
-  cvs: `nwr["name"~"CVS",i](${BBOX.south},${BBOX.west},${BBOX.north},${BBOX.east});`,
-  mcdonalds: `nwr["name"~"McDonald",i](${BBOX.south},${BBOX.west},${BBOX.north},${BBOX.east});`,
-  gasStations: `nwr["amenity"="fuel"](${BBOX.south},${BBOX.west},${BBOX.north},${BBOX.east});`,
+  ...require('./lib/poi-categories').categoryQueries(BBOX),
   bodiesOfWater: `(
     way["natural"~"^(water|bay)$"]["name"](${BBOX.south},${BBOX.west},${BBOX.north},${BBOX.east});
     relation["natural"~"^(water|bay)$"]["name"](${BBOX.south},${BBOX.west},${BBOX.north},${BBOX.east});
@@ -170,13 +157,6 @@ function normalizeAmtrakName(name){
   return name || 'Amtrak track';
 }
 
-function extractLineCoords(geometry){
-  if(!geometry) return [];
-  if(geometry.type === 'LineString') return [geometry.coordinates];
-  if(geometry.type === 'MultiLineString') return geometry.coordinates;
-  return [];
-}
-
 function buildNamedMultiLineFeatures(elements, fallbackName, tolerance = 0.001, clipBbox = null, turf = null){
   const grouped = new Map();
 
@@ -194,8 +174,7 @@ function buildNamedMultiLineFeatures(elements, fallbackName, tolerance = 0.001, 
       const clippedGeometries = [];
       if(clipBbox && turf){
         try{
-          const clipped = turf.bboxClip(turf.lineString(coords), clipBbox);
-          clippedGeometries.push(...extractLineCoords(clipped.geometry));
+          clippedGeometries.push(...clipLineSegments(turf.lineString(coords).geometry, clipBbox, turf));
         }catch(err){}
       } else {
         clippedGeometries.push(coords);

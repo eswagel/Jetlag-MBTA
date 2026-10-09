@@ -1,19 +1,5 @@
-// ══════════════════════════════════════════════════════
-//  GAME LINE DEFINITIONS
-// ══════════════════════════════════════════════════════
-// Red has one route ID ("Red") but two branches distinguished by route patterns.
-// All other lines map 1:1 to a route ID.
-const GAME_LINES = [
-  { id:'Red-Ashmont',   label:'Red · Ashmont',    color:'#DA291C', weight:5, routeId:'Red',     branchKeyword:'Ashmont'   },
-  { id:'Red-Braintree', label:'Red · Braintree',   color:'#DA291C', weight:5, routeId:'Red',     branchKeyword:'Braintree' },
-  { id:'Orange',        label:'Orange Line',        color:'#ED8B00', weight:5, routeId:'Orange'   },
-  { id:'Blue',          label:'Blue Line',          color:'#003DA5', weight:5, routeId:'Blue'     },
-  { id:'Green-B',       label:'Green Line · B',     color:'#00843D', weight:4, routeId:'Green-B'  },
-  { id:'Green-C',       label:'Green Line · C',     color:'#00843D', weight:4, routeId:'Green-C'  },
-  { id:'Green-D',       label:'Green Line · D',     color:'#00843D', weight:4, routeId:'Green-D'  },
-  { id:'Green-E',       label:'Green Line · E',     color:'#00843D', weight:4, routeId:'Green-E'  },
-  { id:'Mattapan',      label:'Mattapan Line',       color:'#DA291C', weight:4, routeId:'Mattapan' },
-];
+// Line definitions come from the active city profile.
+const GAME_LINES = ACTIVE_CITY.lines;
 
 // stopId → { name, lat, lng, lines: Set<lineId> }
 const stopLineMap = {};
@@ -21,27 +7,21 @@ const stopLineMap = {};
 // ══════════════════════════════════════════════════════
 //  CONSTANTS & STATE
 // ══════════════════════════════════════════════════════
-const CENTER = [42.3601,-71.0589];
-const S = 41.85, N = 42.80, W = -71.70, E = -70.40;
-const T_BBOX = {minLat:42.18, maxLat:42.67, minLng:-71.55, maxLng:-70.85};
-const DATA_FILES = {
-  mbta: 'data/mbta-data.json',
-  pois: 'data/pois.json',
-  boundaries: 'data/boundaries.json',
-  landmasses: 'data/landmasses.json',
-  elevation: 'data/elevation-grid.json',
-};
-const INIT_POLY = turf.polygon([[
-  [-71.70,41.85],[-70.40,41.85],[-70.40,42.80],[-71.70,42.80],[-71.70,41.85]
-]]);
+const CENTER = ACTIVE_CITY.center;
+const {south:S, north:N, west:W, east:E} = ACTIVE_CITY.bounds;
+const transitBounds = ACTIVE_CITY.transitBounds || ACTIVE_CITY.bounds;
+const T_BBOX = {minLat:transitBounds.south, maxLat:transitBounds.north, minLng:transitBounds.west, maxLng:transitBounds.east};
+const DATA_FILES = ACTIVE_CITY.dataFiles;
+const INIT_POLY = turf.polygon([[[W,S],[E,S],[E,N],[W,N],[W,S]]]);
 
-let map, maskLayer, softLayer, yellowSelectLayer, borderLayer, radiusLayer, previewLayer, tentaclePreviewLayer, simulLayer, simulMaskLayer, pickedMarkers=[];
+let map, maskLayer, softLayer, borderLayer, radiusLayer, previewLayer, tentaclePreviewLayer, simulLayer, simulMaskLayer, pickedMarkers=[];
 let townLayer, countyLayer, boundaryHighlightLayer;
 const commuterRailStops = new Set();
 const commuterRailStopsList = [];
 let seekerPinMarkers = []; // seeker location dots — preserved across POI category changes
 let thermoHandleMarker = null;
 let validZone = cloneGeo(INIT_POLY);
+let softZone = null;
 let stopRegionState = null;
 let constraints = [];
 let qtype=null, qparams={}, pickStep=-1, pickStepDefs=[];
@@ -61,11 +41,6 @@ const preloadedData = {
   elevation: null,
 };
 const elevationPointCache = new Map();
-const measureWorkerState = {
-  worker: null,
-  nextId: 1,
-  pending: new Map(),
-};
 
 // ══════════════════════════════════════════════════════
 //  GAME MODE
@@ -114,13 +89,218 @@ function applyGameMode(){
     document.getElementById('tab-hider').classList.remove('hider-mode-fullscreen');
   }
 }
-const SAVE_KEY = 'jetlag_mbta_save';
+const SAVE_KEY = `jetlag_${ACTIVE_CITY.id}_save`;
+const LEGACY_SAVE_KEY = ACTIVE_CITY.id === 'boston' ? 'jetlag_mbta_save' : null;
 
 function cloneForStorage(value){
   return JSON.parse(JSON.stringify(value, (k,v)=>{
     if(k === '_constraint_union') return undefined;
     return v instanceof Set ? [...v] : v;
   }));
+}
+
+// Old packets may contain hard/soft flags. They are accepted at ingestion,
+// but cannot override the question definition's location/station/fixed scope.
+function normalizeConstraintEntry(constraint){
+  if(!constraint || typeof constraint !== 'object') return constraint;
+  const next = {...constraint, constraint_scope:getQuestionConstraintScope(constraint)};
+  delete next.constraint_effect;
+  delete next.zone_effect;
+  delete next.constraint_policy;
+  return next;
+}
+
+// Compatibility belongs only at the wire boundary, never in gameplay or UI.
+function legacyConstraintMetadata(question){
+  return question?.type === 'matching' && getQuestionConstraintScope(question) === 'location'
+    ? {constraint_effect:'soft', constraint_policy:{allow_soft:true, default_effect:'soft'}} : {};
+}
+
+function normalizeConstraintList(list){
+  return Array.isArray(list) ? list.map(normalizeConstraintEntry) : [];
+}
+
+function emptyPolygonFeature(){
+  return {type:'Feature',properties:{},geometry:{type:'MultiPolygon',coordinates:[]}};
+}
+function isEmptyPolygonFeature(feature){
+  const geometry=feature?.geometry || feature;
+  return ['Polygon','MultiPolygon'].includes(geometry?.type) && Array.isArray(geometry.coordinates) && !geometry.coordinates.length;
+}
+// Exact overlays use null only for a successful empty result. Invalid geometry
+// still throws; it must never be mistaken for proof that an area is eliminated.
+function exactDiff(a,b){
+  if(!a || isEmptyPolygonFeature(a))return null;
+  if(!b || isEmptyPolygonFeature(b))return a;
+  return turf.difference(a,b) || null;
+}
+
+function safeUnion(a, b){
+  if(!a || isEmptyPolygonFeature(a)) return b || null;
+  if(!b || isEmptyPolygonFeature(b)) return a || null;
+  try{
+    return turf.union(a, b) || a || b;
+  }catch(e){
+    return a || b;
+  }
+}
+
+function geometryToPolygonFeatures(feature, baseProps={}){
+  if(!feature) return [];
+  const wrapped = feature.type === 'Feature'
+    ? feature
+    : (feature.geometry ? {type:'Feature', properties:feature.properties || {}, geometry:feature.geometry} : {type:'Feature', properties:{}, geometry:feature});
+  try{
+    const flat = turf.flatten(wrapped);
+    return (flat?.features || [])
+      .filter(item => item?.geometry?.type === 'Polygon')
+      .map((item, idx) => ({
+        type:'Feature',
+        properties:{
+          ...baseProps,
+          ...(item.properties || {}),
+          regionId: `${baseProps.regionKind || 'region'}_${idx}`,
+        },
+        geometry: cloneGeo(item.geometry),
+      }));
+  }catch(e){
+    if(wrapped?.geometry?.type === 'Polygon'){
+      return [{
+        type:'Feature',
+        properties:{
+          ...baseProps,
+          ...(wrapped.properties || {}),
+          regionId: `${baseProps.regionKind || 'region'}_0`,
+        },
+        geometry: cloneGeo(wrapped.geometry),
+      }];
+    }
+  }
+  return [];
+}
+
+let _stopBaseRegionCache = { miles: null, stopCount: 0, entries: null };
+
+function buildStopBaseRegionEntries(){
+  const entries = Object.entries(stopLineMap);
+  if(
+    _stopBaseRegionCache.entries &&
+    _stopBaseRegionCache.miles === hideRadiusMi &&
+    _stopBaseRegionCache.stopCount === entries.length
+  ){
+    return _stopBaseRegionCache.entries;
+  }
+
+  const nextEntries = entries.map(([id, stop]) => {
+    const baseRegion = exactIsect(INIT_POLY, makeCircle(stop, hideRadiusMi, 'miles'));
+    return {
+      id,
+      stop:{
+        name: stop.name,
+        lat: stop.lat,
+        lng: stop.lng,
+        lines: stop.lines instanceof Set ? [...stop.lines] : [...(stop.lines || [])],
+      },
+      baseRegion,
+    };
+  }).filter(entry => entry.baseRegion);
+
+  _stopBaseRegionCache = {
+    miles: hideRadiusMi,
+    stopCount: entries.length,
+    entries: nextEntries,
+  };
+  return nextEntries;
+}
+
+// Question definitions classify constraints by what they describe, independently
+// of the legacy hard/soft presentation flag carried by older question packets.
+function getQuestionConstraintScope(question){
+  const def = QDEFS[question?.type];
+  if(!def || def.affectsZone === false) return 'none';
+  return typeof def.constraintScope === 'function'
+    ? def.constraintScope(question) : (def.constraintScope || 'location');
+}
+
+function compileConstraintPlan(baseZone, list){
+  const questions = normalizeConstraintList(list);
+  let fixedZone = baseZone;
+  for(const question of questions){
+    if(getQuestionConstraintScope(question) === 'fixed'){
+      fixedZone = QDEFS[question.type].applyToZone(fixedZone, question) || emptyPolygonFeature();
+    }
+  }
+  const observations = [];
+  const stationQuestions = [];
+  for(const question of questions){
+    const scope = getQuestionConstraintScope(question);
+    const def = QDEFS[question?.type];
+    if(scope === 'station') stationQuestions.push(question);
+    else if(scope === 'location' && (!def.hasSpatialContext || def.hasSpatialContext(question))){
+      // Compute each answer's geometry once, without intersecting earlier
+      // observations: the hider can move anywhere within their one catchment.
+      observations.push(def.applyToZone(fixedZone, question) || emptyPolygonFeature());
+    }
+  }
+  return {fixedZone, observations, stationQuestions};
+}
+
+// Cache only the union of full eligible catchments, never transient answer slices.
+let _survivingCatchmentCache = null;
+function deriveStopRegionState(baseZone, list){
+  if(!baseZone) return null;
+  const baseEntries = buildStopBaseRegionEntries();
+  if(!baseEntries.length) return null;
+  const {fixedZone, observations, stationQuestions} = compileConstraintPlan(baseZone, list);
+  const byStop = {}, greenFeatures = [], yellowFeatures = [], survivingEntries = [];
+  for(const {id, stop, baseRegion} of baseEntries){
+    const eliminated = () => {
+      byStop[id] = {stop, inPlay:false, status:'eliminated', hardRegion:null, greenRegion:null, yellowRegion:null};
+    };
+    // Station identity must be decided before geometry: neighboring stations
+    // may have overlapping circles without sharing line membership.
+    if(stationQuestions.some(q => !QDEFS[q.type].matchesStation({...stop, id}, q))){
+      eliminated(); continue;
+    }
+    const hardRegion = exactIsect(fixedZone, baseRegion);
+    if(!hardRegion){ eliminated(); continue; }
+    let greenRegion = hardRegion;
+    let possible = true;
+    for(const observation of observations){
+      const compatible = exactIsect(hardRegion, observation);
+      if(!compatible){ possible = false; break; }
+      greenRegion = compatible;
+    }
+    if(!possible){ eliminated(); continue; }
+    const yellowRegion = exactDiff(hardRegion, greenRegion);
+    survivingEntries.push({id, baseRegion});
+    greenFeatures.push(...geometryToPolygonFeatures(greenRegion, {regionKind:'green', stopId:id}));
+    if(yellowRegion) yellowFeatures.push(...geometryToPolygonFeatures(yellowRegion,
+      {regionKind:'yellow', stopId:id, menuLabel:'Exclude region'}));
+    byStop[id] = {stop, inPlay:true, hardRegion, greenRegion, yellowRegion,
+      hasGreen:true, hasYellow:!!yellowRegion, status:yellowRegion ? 'temporary' : 'in-play'};
+  }
+  const survivingIds = JSON.stringify(survivingEntries.map(entry => entry.id));
+  if(!_survivingCatchmentCache || _survivingCatchmentCache.baseEntries !== baseEntries ||
+      _survivingCatchmentCache.survivingIds !== survivingIds){
+    let union = null;
+    for(const entry of survivingEntries) union = safeUnion(union, entry.baseRegion);
+    _survivingCatchmentCache = {baseEntries, survivingIds, union:union || emptyPolygonFeature()};
+  }
+  const hardUnion = exactIsect(fixedZone, _survivingCatchmentCache.union) || emptyPolygonFeature();
+  return {byStop, hardUnion, survivingCatchments:hardUnion,
+    greenUnion:null, yellowUnion:null, greenFeatures, yellowFeatures};
+}
+
+function deriveZoneStateFromConstraints(baseZone, list){
+  if(!baseZone) return {validZone:null, softZone:null, stopState:null};
+  const stopState = deriveStopRegionState(baseZone, list);
+  if(stopState) return {validZone:stopState.hardUnion, softZone:null, stopState};
+  // Geometry-only consumers without a station dataset retain a conservative
+  // result; live games always reduce against their station catchments above.
+  const plan = compileConstraintPlan(baseZone, list);
+  const zone = plan.observations.length ? plan.observations[plan.observations.length-1] : plan.fixedZone;
+  return {validZone:zone, softZone:null, stopState:null};
 }
 
 function buildTentacleOptionId(option, fallbackIndex=0){
@@ -180,195 +360,8 @@ function getTentacleAnswerLabel(question, answer){
 }
 
 function exactIsect(a,b){
-  try{
-    return turf.intersect(a,b) || null;
-  }catch(e){
-    return null;
-  }
-}
-
-function exactDiff(a,b){
-  try{
-    return turf.difference(a,b) || null;
-  }catch(e){
-    return null;
-  }
-}
-
-function unionGeo(a,b){
-  if(!a) return b || null;
-  if(!b) return a || null;
-  try{
-    return turf.union(a,b) || a || b;
-  }catch(e){
-    return a || b;
-  }
-}
-
-function geometryToPolygonFeatures(feature, baseProps={}){
-  if(!feature) return [];
-  const wrapped = feature.type === 'Feature'
-    ? feature
-    : (feature.geometry ? {type:'Feature', properties:feature.properties || {}, geometry:feature.geometry} : {type:'Feature', properties:{}, geometry:feature});
-  try{
-    const flat = turf.flatten(wrapped);
-    return (flat?.features || [])
-      .filter(item => item?.geometry?.type === 'Polygon')
-      .map((item, idx) => ({
-        type:'Feature',
-        properties:{...baseProps, ...(item.properties || {}), regionId:`${baseProps.regionKind || 'region'}_${idx}`},
-        geometry: cloneGeo(item.geometry),
-      }));
-  }catch(e){
-    if(wrapped?.geometry?.type === 'Polygon'){
-      return [{
-        type:'Feature',
-        properties:{...baseProps, ...(wrapped.properties || {}), regionId:`${baseProps.regionKind || 'region'}_0`},
-        geometry: cloneGeo(wrapped.geometry),
-      }];
-    }
-  }
-  return [];
-}
-
-let _stopBaseRegionCache = { miles:null, stopCount:0, entries:null };
-
-function resetStopRegionCache(){
-  _stopBaseRegionCache = { miles:null, stopCount:0, entries:null };
-}
-
-function buildStopBaseRegionEntries(){
-  const entries = Object.entries(stopLineMap);
-  if(
-    _stopBaseRegionCache.entries &&
-    _stopBaseRegionCache.miles === hideRadiusMi &&
-    _stopBaseRegionCache.stopCount === entries.length
-  ){
-    return _stopBaseRegionCache.entries;
-  }
-  const nextEntries = entries.map(([id, stop]) => {
-    const baseRegion = exactIsect(INIT_POLY, makeCircle(stop, hideRadiusMi, 'miles'));
-    return {
-      id,
-      stop:{
-        name: stop.name,
-        lat: stop.lat,
-        lng: stop.lng,
-        lines: stop.lines instanceof Set ? [...stop.lines] : [...(stop.lines || [])],
-      },
-      baseRegion,
-    };
-  }).filter(entry => entry.baseRegion);
-  _stopBaseRegionCache = { miles:hideRadiusMi, stopCount:entries.length, entries:nextEntries };
-  return nextEntries;
-}
-
-function isZoneConstraint(q){
-  return !!(q && q.type && !['_setup','_veto','_randomize_card'].includes(q.type) && QDEFS[q.type]);
-}
-
-function isYellowHardenConstraint(q){
-  return !!(q && q.type === '_yellow_harden' && q.boundary_geojson);
-}
-
-function isYellowKeepConstraint(q){
-  return !!(q && q.type === '_yellow_keep' && q.boundary_geojson);
-}
-
-function classifyStopConstraint(region, q, measureScope=null){
-  const def = QDEFS[q.type];
-  if(!def || !region) return {kind:'none', kept:region, excluded:null};
-  let effectiveQ = q;
-  if(q.type === 'measure' && !q._constraint_union){
-    const union = buildMeasureConstraintUnion(q, measureScope);
-    if(union) effectiveQ = {...q, _constraint_union:union};
-  }
-  const kept = def.applyToZone(region, effectiveQ);
-  if(!kept) return {kind:'hard', kept:null, excluded:region};
-  const excluded = exactDiff(region, kept);
-  if(!excluded) return {kind:'none', kept:region, excluded:null};
-  return {kind:'soft', kept, excluded};
-}
-
-function deriveStopRegionStateFromConstraints(list){
-  const baseEntries = buildStopBaseRegionEntries();
-  if(!baseEntries.length) return null;
-
-  const byStop = {};
-  const greenFeatures = [];
-  const yellowFeatures = [];
-  const measureScope = baseEntries.reduce((acc, entry) => unionGeo(acc, entry.baseRegion), null);
-  let hardUnion = null;
-  let greenUnion = null;
-  let yellowUnion = null;
-
-  baseEntries.forEach(({id, stop, baseRegion}) => {
-    let hardRegion = baseRegion;
-    let yellowRegion = null;
-
-    for(const q of list){
-      if(!hardRegion) continue;
-      if(isYellowHardenConstraint(q)){
-        hardRegion = exactDiff(hardRegion, q.boundary_geojson);
-        if(yellowRegion) yellowRegion = hardRegion ? exactIsect(hardRegion, yellowRegion) : null;
-        continue;
-      }
-      if(isYellowKeepConstraint(q)){
-        if(yellowRegion) yellowRegion = exactDiff(yellowRegion, q.boundary_geojson);
-        continue;
-      }
-      if(!isZoneConstraint(q)) continue;
-      const result = classifyStopConstraint(hardRegion, q, measureScope);
-      if(result.kind === 'hard'){
-        hardRegion = null;
-        yellowRegion = null;
-        break;
-      }
-      if(result.kind === 'soft' && yellowRegion && result.kept){
-        yellowRegion = exactDiff(yellowRegion, result.kept);
-      }
-      if(result.kind === 'soft' && result.excluded){
-        yellowRegion = unionGeo(yellowRegion, result.excluded);
-      }
-    }
-
-    if(!hardRegion){
-      byStop[id] = {stop, inPlay:false, hardRegion:null, greenRegion:null, yellowRegion:null, hasGreen:false, hasYellow:false};
-      return;
-    }
-
-    if(yellowRegion) yellowRegion = exactIsect(hardRegion, yellowRegion);
-    const greenRegion = yellowRegion ? exactDiff(hardRegion, yellowRegion) : hardRegion;
-
-    hardUnion = unionGeo(hardUnion, hardRegion);
-    if(greenRegion) greenUnion = unionGeo(greenUnion, greenRegion);
-    if(yellowRegion) yellowUnion = unionGeo(yellowUnion, yellowRegion);
-
-    if(greenRegion) greenFeatures.push(...geometryToPolygonFeatures(greenRegion, {regionKind:'green', stopId:id}));
-    if(yellowRegion) yellowFeatures.push(...geometryToPolygonFeatures(yellowRegion, {regionKind:'yellow', stopId:id, menuLabel:'Make red'}));
-
-    byStop[id] = {
-      stop,
-      inPlay:true,
-      hardRegion,
-      greenRegion: greenRegion || null,
-      yellowRegion: yellowRegion || null,
-      hasGreen: !!greenRegion,
-      hasYellow: !!yellowRegion,
-    };
-  });
-
-  return {byStop, hardUnion, greenUnion, yellowUnion, greenFeatures, yellowFeatures};
-}
-
-function syncZoneStateFromConstraints(){
-  stopRegionState = deriveStopRegionStateFromConstraints(constraints);
-  if(!stopRegionState?.hardUnion){
-    validZone = null;
-    return false;
-  }
-  validZone = stopRegionState.hardUnion;
-  return true;
+  if(!a || !b || isEmptyPolygonFeature(a) || isEmptyPolygonFeature(b))return null;
+  return turf.intersect(a,b) || null;
 }
 
 function buildTentacleRegions(question, zone=null){
@@ -376,13 +369,13 @@ function buildTentacleRegions(question, zone=null){
   const scope = zone ? exactIsect(zone, circle) : circle;
   const options = getTentacleOptionsInReach(question);
   if(!scope || options.length < 2){
-    return {circle, scope, regions:[]};
+    return {circle, scope, regions:[],failed:options.length<2};
   }
   try{
     const bbox = expandBboxMiles(turf.bbox(circle), 0.25);
     const points = turf.featureCollection(options.map((opt, i)=>turf.point([opt.lng, opt.lat], {id:opt.id, name:opt.name, index:i})));
     const cells = turf.voronoi(points, {bbox});
-    if(!cells?.features?.length) return {circle, scope, regions:[]};
+    if(!cells?.features?.length || cells.features.some(cell=>!cell)) return {circle, scope, regions:[],failed:true};
     const regions = [];
     options.forEach((opt, i) => {
       const cell = cells.features[i];
@@ -393,7 +386,7 @@ function buildTentacleRegions(question, zone=null){
     });
     return {circle, scope, regions};
   }catch(e){
-    return {circle, scope, regions:[]};
+    return {circle, scope, regions:[],failed:true};
   }
 }
 
@@ -417,13 +410,16 @@ function saveGame(){
   if(setupOverlay && !setupOverlay.classList.contains('hidden')) return;
   try{
     const save = {
-      v: 1,
+      v: 3,
+      ...cityMetadata(),
+      transit_feed_version: preloadedData.mbta?.feedVersion || null,
       ts: Date.now(),
       gameMode,
       hideRadiusMi,
       hiderStation: hiderStation || null,
       validZone: cloneGeo(validZone),
-      constraints: constraints.map(cloneForStorage),
+      softZone: softZone ? cloneGeo(softZone) : null,
+      constraints: normalizeConstraintList(constraints).map(cloneForStorage),
       outgoingQuestions: cloneForStorage(outgoingQuestions),
       buildState: typeof getSerializableBuildState === 'function' ? getSerializableBuildState() : null,
     };
@@ -443,19 +439,22 @@ function scheduleSaveGame(delay=120){
 
 function loadSave(){
   try{
-    const raw = localStorage.getItem(SAVE_KEY);
+    const raw = localStorage.getItem(SAVE_KEY) || (LEGACY_SAVE_KEY && localStorage.getItem(LEGACY_SAVE_KEY));
     if(!raw) return null;
     const save = JSON.parse(raw);
-    if(!save.v || !save.constraints || !save.validZone) return null;
+    if(!save.v || !save.constraints || !save.validZone || cityCompatibilityError(save)) return null;
     return save;
   }catch(e){ return null; }
 }
 
 function clearSave(){
   outgoingQuestions = {};
+  softZone = null;
+  stopRegionState = null;
   clearTimeout(_saveGameTimer);
   _saveGameTimer = null;
   localStorage.removeItem(SAVE_KEY);
+  if(LEGACY_SAVE_KEY) localStorage.removeItem(LEGACY_SAVE_KEY);
 }
 
 async function fetchOptionalJSON(path, label){
@@ -489,7 +488,71 @@ async function loadElevationData(){
   return preloadedData.elevation;
 }
 
+function validElevationNumber(value){
+  return typeof value === 'number' && Number.isFinite(value) && value > -30000;
+}
+
+function elevationGridCell(data, lat, lng){
+  const ys=data?.latitudes, xs=data?.longitudes;
+  if(!Number.isFinite(lat)||!Number.isFinite(lng)||!Array.isArray(ys)||!Array.isArray(xs)||ys.length<2||xs.length<2 ||
+     lat<ys[0]||lat>ys[ys.length-1]||lng<xs[0]||lng>xs[xs.length-1]) return null;
+  const row=Math.min(ys.length-2,ys.findIndex(y=>y>lat)-1 < 0 ? ys.length-2 : ys.findIndex(y=>y>lat)-1);
+  const col=Math.min(xs.length-2,xs.findIndex(x=>x>lng)-1 < 0 ? xs.length-2 : xs.findIndex(x=>x>lng)-1);
+  const values=[data.values?.[row]?.[col],data.values?.[row]?.[col+1],data.values?.[row+1]?.[col],data.values?.[row+1]?.[col+1]];
+  if(!values.every(validElevationNumber)||xs[col+1]<=xs[col]||ys[row+1]<=ys[row]) return null;
+  return {row,col,values,x:(lng-xs[col])/(xs[col+1]-xs[col]),y:(lat-ys[row])/(ys[row+1]-ys[row])};
+}
+
+function interpolateGridElevation(data, lat, lng){
+  const cell=elevationGridCell(data,lat,lng);
+  if(!cell) return null;
+  const {x,y,values:[sw,se,nw,ne]}=cell;
+  // Same southwest-to-northeast diagonal as the contour calculation.
+  return x>=y ? sw+(se-sw)*x+(ne-se)*y : sw+(ne-nw)*x+(nw-sw)*y;
+}
+
+// Clip each terrain triangle against a horizontal elevation plane. This models the
+// sampled grid, not exact continuous terrain or floors inside buildings.
+function buildTriangulatedElevationFeature(data, thresholdFt, zoneBbox){
+  const ys=data.latitudes,xs=data.longitudes,polys=[];
+  function clippedTriangle(vertices){
+    const out=[];
+    for(let i=0;i<3;i++){
+      const a=vertices[i],b=vertices[(i+1)%3],insideA=a[2]>=thresholdFt,insideB=b[2]>=thresholdFt;
+      if(insideA)out.push(a.slice(0,2));
+      if(insideA!==insideB){const t=(thresholdFt-a[2])/(b[2]-a[2]);out.push([a[0]+t*(b[0]-a[0]),a[1]+t*(b[1]-a[1])]);}
+    }
+    if(out.length>=3){out.push(out[0]);polys.push([out]);}
+  }
+  for(let row=0;row<ys.length-1;row++){
+    if(ys[row+1]<zoneBbox[1]||ys[row]>zoneBbox[3])continue;
+    let runStart=null;
+    function flush(col){if(runStart!==null){polys.push([[[xs[runStart],ys[row]],[xs[col],ys[row]],[xs[col],ys[row+1]],[xs[runStart],ys[row+1]],[xs[runStart],ys[row]]]]);runStart=null;}}
+    for(let col=0;col<xs.length-1;col++){
+      if(xs[col+1]<zoneBbox[0]||xs[col]>zoneBbox[2]){flush(col);continue;}
+      const values=[data.values?.[row]?.[col],data.values?.[row]?.[col+1],data.values?.[row+1]?.[col],data.values?.[row+1]?.[col+1]];
+      // Fail closed on damaged data instead of treating null/NODATA as sea level.
+      if(!values.every(validElevationNumber))throw new Error('Incomplete elevation grid');
+      if(values.every(v=>v>=thresholdFt)){if(runStart===null)runStart=col;continue;}
+      flush(col);
+      if(values.every(v=>v<thresholdFt))continue;
+      const sw=[xs[col],ys[row],values[0]],se=[xs[col+1],ys[row],values[1]],nw=[xs[col],ys[row+1],values[2]],ne=[xs[col+1],ys[row+1],values[3]];
+      clippedTriangle([sw,se,ne]);clippedTriangle([sw,ne,nw]);
+    }
+    flush(xs.length-1);
+  }
+  // An empty MultiPolygon represents a valid empty higher-than region.
+  return {type:'Feature',properties:{approximate:true,interpolation:'triangulated-linear'},geometry:{type:'MultiPolygon',coordinates:polys}};
+}
+
 async function fetchPointElevation(lat, lng){
+  if(!Number.isFinite(lat)||!Number.isFinite(lng)) throw new Error('Invalid elevation location');
+  const grid=preloadedData.elevation || await loadElevationData();
+  if(grid?.pointLookup==='local-grid'){
+    const feet=interpolateGridElevation(grid,lat,lng);
+    if(feet===null)throw new Error('Location is outside the available elevation grid');
+    return {feet,meters:feet*.3048,resolution:null,approximation:grid.approximation};
+  }
   const key = `${Number(lat).toFixed(5)},${Number(lng).toFixed(5)}`;
   if(elevationPointCache.has(key)) return elevationPointCache.get(key);
   const url = `https://epqs.nationalmap.gov/v1/json?x=${lng}&y=${lat}&units=Feet&wkid=4326&includeDate=false`;
@@ -499,8 +562,9 @@ async function fetchPointElevation(lat, lng){
       return res.json();
     })
     .then(data => {
-      const feet = Number(data?.value);
-      if(!Number.isFinite(feet)) throw new Error('Invalid elevation response');
+      const raw=data?.value;
+      const feet = typeof raw==='number' || (typeof raw==='string' && raw.trim()!=='') ? Number(raw) : NaN;
+      if(!validElevationNumber(feet)) throw new Error('Invalid elevation response');
       return {
         feet,
         meters: feet * 0.3048,
@@ -543,7 +607,7 @@ function matchingValuesEqual(cat, a, b){
     const na = normalizeNeighborhoodName(a);
     const nb = normalizeNeighborhoodName(b);
     if(!na || !nb) return false;
-    return na === nb || na.includes(nb) || nb.includes(na);
+    return na === nb;
   }
   return normKey(a) === normKey(b);
 }
@@ -570,8 +634,22 @@ function findFirstArray(obj, keys){
   return keys.map(k => obj[k]).find(v => Array.isArray(v)) || null;
 }
 
+// Source IDs distinguish identically named places. Legacy snapshots use their exact coordinates.
+function placeIdentity(place){
+  return Object.fromEntries(['osmId','id','parentId'].filter(key=>place?.[key]!=null).map(key=>[key,String(place[key])]));
+}
+function samePlace(a,b){
+  if(!a || !b) return false;
+  for(const key of ['osmId','parentId','id']){
+    if(a[key]!=null && b[key]!=null) return String(a[key])===String(b[key]);
+  }
+  return Number.isFinite(Number(a.lat)) && Number.isFinite(Number(a.lng??a.lon)) &&
+    Math.abs(Number(a.lat)-Number(b.lat))<1e-7 && Math.abs(Number(a.lng??a.lon)-Number(b.lng??b.lon))<1e-7;
+}
+
 function normalizePlaces(items, fallbackName='Place'){
   return (items || []).map(item => ({
+    ...placeIdentity(item),
     name: item.name || fallbackName,
     lat: Number(item.lat),
     lng: Number(item.lng ?? item.lon),
@@ -619,6 +697,8 @@ function featureToDisplayLines(feature){
 
 function getBoundaryDataset(cat){
   const data = preloadedData.boundaries || {};
+  if(cat === 'ward') return findFirstArray(data, ['wards']);
+  if(cat === 'community_area') return findFirstArray(data, ['communityAreas']);
   if(cat === 'county') return findFirstArray(data, ['counties']);
   if(cat === 'city') return findFirstArray(data, ['cities', 'towns', 'municipalities']);
   if(cat === 'neighborhood') return findFirstArray(data, ['neighborhoods']);
@@ -660,219 +740,9 @@ function lookupLinearPoiFeatures(keys){
   return Array.isArray(items) ? items : [];
 }
 
-function isValidBbox(value){
-  return Array.isArray(value) &&
-    value.length === 4 &&
-    value.every(Number.isFinite);
-}
-
-function bboxOverlaps(a, b){
-  return !!(
-    isValidBbox(a) &&
-    isValidBbox(b) &&
-    a[0] <= b[2] &&
-    a[2] >= b[0] &&
-    a[1] <= b[3] &&
-    a[3] >= b[1]
-  );
-}
-
-function featureBBox(item){
-  const bbox = item?.bbox;
-  if(isValidBbox(bbox)) return bbox.map(Number);
-  const feature = coerceFeature(item, item?.name);
-  if(!feature) return null;
-  try{
-    const resolved = turf.bbox(feature);
-    return isValidBbox(resolved) ? resolved : null;
-  }catch(e){
-    return null;
-  }
-}
-
-function indexedLinearFeatureQuery(features, index, bbox){
-  if(!Array.isArray(features) || !features.length || !isValidBbox(bbox)) return [];
-  if(!index?.cells || !isValidBbox(index?.bbox) || !Number.isFinite(index?.cellSize) || index.cellSize <= 0){
-    return features.filter(item => bboxOverlaps(featureBBox(item), bbox));
-  }
-  const [west, south] = index.bbox;
-  const cellSize = Number(index.cellSize);
-  const minX = Math.floor((bbox[0] - west) / cellSize);
-  const maxX = Math.floor((bbox[2] - west) / cellSize);
-  const minY = Math.floor((bbox[1] - south) / cellSize);
-  const maxY = Math.floor((bbox[3] - south) / cellSize);
-  const seen = new Set();
-  const out = [];
-  for(let x = minX; x <= maxX; x++){
-    for(let y = minY; y <= maxY; y++){
-      const ids = index.cells[`${x}:${y}`];
-      if(!Array.isArray(ids)) continue;
-      ids.forEach(id => {
-        if(seen.has(id)) return;
-        const item = features[id];
-        if(!item || !bboxOverlaps(featureBBox(item), bbox)) return;
-        seen.add(id);
-        out.push(item);
-      });
-    }
-  }
-  return out;
-}
-
-function getWaterLineFeaturesInBbox(bbox){
-  const features = getNamedLinearFeatures('A Body of Water');
-  if(!features.length || !isValidBbox(bbox)) return features;
-  const index = preloadedData.pois?.bodiesOfWaterLineIndex || null;
-  const candidates = indexedLinearFeatureQuery(features, index, bbox);
-  if(candidates.length) return candidates;
-  return features.filter(item => bboxOverlaps(featureBBox(item), bbox));
-}
-
-function getWaterLineFeaturesNearCenter(center, radiiMiles = [1.5, 3, 6, 12, 24, 40]){
-  if(!center) return getNamedLinearFeatures('A Body of Water');
-  const features = getNamedLinearFeatures('A Body of Water');
-  if(!features.length) return [];
-  for(const miles of radiiMiles){
-    const bbox = expandBboxMiles([center.lng, center.lat, center.lng, center.lat], miles);
-    const candidates = getWaterLineFeaturesInBbox(bbox);
-    if(candidates.length) return candidates;
-  }
-  return features;
-}
-
-function getWaterLineFeaturesForZone(zone, extraMiles = 0){
-  const features = getNamedLinearFeatures('A Body of Water');
-  if(!features.length) return [];
-  if(!zone) return features;
-  try{
-    const bbox = expandBboxMiles(turf.bbox(zone), Number(extraMiles) + 0.75);
-    const candidates = getWaterLineFeaturesInBbox(bbox);
-    return candidates.length ? candidates : features;
-  }catch(e){
-    return features;
-  }
-}
-
-function rejectMeasureWorkerPending(message){
-  for(const {reject} of measureWorkerState.pending.values()){
-    reject(new Error(message));
-  }
-  measureWorkerState.pending.clear();
-}
-
-function getMeasureWorker(){
-  if(typeof Worker === 'undefined') return null;
-  if(measureWorkerState.worker) return measureWorkerState.worker;
-  try{
-    const workerUrl = new URL('assets/js/app/measure-worker.js', window.location.href);
-    const worker = new Worker(workerUrl);
-    worker.onmessage = (event) => {
-      const {id, result, error} = event.data || {};
-      if(!measureWorkerState.pending.has(id)) return;
-      const {resolve, reject} = measureWorkerState.pending.get(id);
-      measureWorkerState.pending.delete(id);
-      if(error){
-        reject(new Error(error));
-        return;
-      }
-      resolve(result);
-    };
-    worker.onerror = () => {
-      rejectMeasureWorkerPending('Measure worker failed');
-      measureWorkerState.worker = null;
-    };
-    measureWorkerState.worker = worker;
-    return worker;
-  }catch(e){
-    console.warn('Measure worker unavailable:', e);
-    return null;
-  }
-}
-
-function solveLinearMeasureLocally(options = {}){
-  const center = options.center && Number.isFinite(Number(options.center.lat)) && Number.isFinite(Number(options.center.lng))
-    ? {lat:Number(options.center.lat), lng:Number(options.center.lng)}
-    : null;
-  const lineFeatures = (options.lineFeatures || [])
-    .map(item => {
-      const feature = coerceFeature(item, item?.name);
-      if(!feature) return null;
-      return {
-        name: item?.name || feature.properties?.name || options.categoryLabel || 'Line',
-        geometry: feature.geometry,
-        bbox: featureBBox(item),
-      };
-    })
-    .filter(Boolean);
-  if(!center || !lineFeatures.length) return null;
-
-  const point = turf.point([center.lng, center.lat]);
-  let best = null;
-  lineFeatures.forEach(item => {
-    try{
-      const snapped = turf.nearestPointOnLine(coerceFeature(item, item.name), point, {units:'miles'});
-      const dist = snapped?.properties?.dist;
-      if(!Number.isFinite(dist) || (best && dist >= best.dist)) return;
-      const [lng, lat] = snapped.geometry.coordinates;
-      best = {name:item.name, lat, lng, dist};
-    }catch(e){}
-  });
-  if(!best) return null;
-
-  let union = null;
-  const seekerDist = Number.isFinite(Number(options.seekerDist)) ? Number(options.seekerDist) : best.dist;
-  if(options.buildConstraintUnion && Number.isFinite(seekerDist)){
-    union = buildMeasureConstraintUnion({
-      mode: 'distance',
-      seeker_dist: seekerDist,
-      category: options.categoryLabel || '',
-      category_label: options.categoryLabel || '',
-      linear_features: lineFeatures,
-    }, options.zone || null);
-  }
-
-  return {best, union};
-}
-
-async function solveLinearMeasureWithWorker(options = {}){
-  const lineFeatures = (options.lineFeatures || [])
-    .map(item => {
-      const feature = coerceFeature(item, item?.name);
-      if(!feature) return null;
-      return {
-        name: item?.name || feature.properties?.name || options.categoryLabel || 'Line',
-        geometry: feature.geometry,
-        bbox: featureBBox(item),
-      };
-    })
-    .filter(Boolean);
-  if(!lineFeatures.length) return null;
-
-  const worker = getMeasureWorker();
-  if(!worker) return solveLinearMeasureLocally({...options, lineFeatures});
-
-  return await new Promise((resolve, reject) => {
-    const id = `mw_${measureWorkerState.nextId++}`;
-    measureWorkerState.pending.set(id, {resolve, reject});
-    worker.postMessage({
-      id,
-      type: 'solveLinearMeasure',
-      payload: {
-        center: options.center || null,
-        zone: options.zone || null,
-        seekerDist: Number.isFinite(Number(options.seekerDist)) ? Number(options.seekerDist) : null,
-        categoryLabel: options.categoryLabel || '',
-        buildConstraintUnion: !!options.buildConstraintUnion,
-        lineFeatures,
-      },
-    });
-  }).catch(err => {
-    console.warn('Measure worker fallback:', err);
-    return solveLinearMeasureLocally({...options, lineFeatures});
-  });
-}
-
 function getNamedPoiCollection(label){
+  const spec=categorySpec('nearest',label);
+  if(spec?.dataKey)return lookupPoiCollection([spec.dataKey]);
   const keyMap = {
     'Park': ['parks'],
     'A Park': ['parks'],
@@ -897,7 +767,7 @@ function getNamedPoiCollection(label){
     'Starbucks': ['starbucks'],
     'CVS': ['cvs'],
     "McDonald's": ['mcdonalds', 'mcDonalds'],
-    'Hospitals': ['medicalSites', 'medical_sites', 'hospitals'],
+    'Hospitals': ACTIVE_CITY.id === 'chicago' ? ['hospitals'] : ['medicalSites', 'medical_sites', 'hospitals'],
     'Libraries': ['libraries'],
     'Parks': ['parks'],
     'Gas station': ['gasStations', 'gas_stations'],
@@ -910,9 +780,12 @@ function getNamedPoiCollection(label){
 }
 
 function getNamedLinearCollection(label){
+  const spec=categorySpec('measure',label);
+  if(spec?.mode==='linear' && spec.dataKey)return lookupLinearPoiCollection([spec.dataKey],spec.id);
   const keyMap = {
+    'Lake Michigan shoreline': ['coastlineLines'],
+    'A Body of Water': ACTIVE_CITY.id === 'chicago' ? ['bodiesOfWaterLines'] : [],
     'An Amtrak Line': ['amtrakLines', 'amtrak_lines'],
-    'A Body of Water': ['bodiesOfWaterLines', 'bodies_of_water_lines', 'waterLines'],
     'Sea Level': ['coastlineLines', 'coastline_lines'],
     'A Coastline': ['coastlineLines', 'coastline_lines'],
   };
@@ -921,9 +794,12 @@ function getNamedLinearCollection(label){
 }
 
 function getNamedLinearFeatures(label){
+  const spec=categorySpec('measure',label);
+  if(spec?.mode==='linear' && spec.dataKey)return lookupLinearPoiFeatures([spec.dataKey]);
   const keyMap = {
+    'Lake Michigan shoreline': ['coastlineLines'],
+    'A Body of Water': ACTIVE_CITY.id === 'chicago' ? ['bodiesOfWaterLines'] : [],
     'An Amtrak Line': ['amtrakLines', 'amtrak_lines'],
-    'A Body of Water': ['bodiesOfWaterLines', 'bodies_of_water_lines', 'waterLines'],
     'Sea Level': ['coastlineLines', 'coastline_lines'],
     'A Coastline': ['coastlineLines', 'coastline_lines'],
   };
@@ -938,6 +814,7 @@ function getPreloadedBorderPoints(type){
 }
 
 async function getCategoryInstances(catObj, center, radiusM){
+  if(adaptivePointConfig(catObj.id)) return normalizePlaces(await loadPointDistanceData(catObj.id),catObj.label);
   if(catObj.instances){
     try{
       const items = normalizePlaces(await catObj.instances(center, radiusM), catObj.label);
@@ -948,7 +825,7 @@ async function getCategoryInstances(catObj, center, radiusM){
   }
   if(catObj.overpass){
     const items = await overpassSearch(catObj.overpass(center, radiusM), center, radiusM);
-    return items.map(it=>({name:it.name || catObj.label, lat:it.lat, lng:it.lon || it.lng}));
+    return normalizePlaces(items,catObj.label);
   }
   return [];
 }
@@ -959,7 +836,7 @@ function checkForResume(){
   clearTimeout(_saveGameTimer);
   _saveGameTimer = null;
   // Don't prompt if the game hasn't really started (only setup constraint)
-  const realConstraints = save.constraints.filter(c=>!['_setup'].includes(c.type));
+  const realConstraints = normalizeConstraintList(save.constraints).filter(c=>!['_setup'].includes(c.type));
   if(!realConstraints.length) return;
 
   const km2 = (turf.area(save.validZone)/1e6).toFixed(1);
@@ -976,17 +853,33 @@ function checkForResume(){
   document.getElementById('resume-overlay').classList.remove('hidden');
 }
 
-function resumeGame(){
-  const save = loadSave();
+async function resumeGame(){
+  let save = loadSave();
+  let migration = null;
   if(!save){ discardAndNew(); return; }
+  if(!mbdataReady){ toast(`Wait for ${ACTIVE_CITY.networkLabel} station data before resuming.`); return; }
+  try{
+    const questions = [...(save.constraints || []), ...Object.values(save.outgoingQuestions || {}), save.buildState?.currentBuiltQuestion];
+    const build = save.buildState;
+    const buildType = getActiveBuildQType(build?.qtype, build?.qparams);
+    if(QUESTION_CONTRACTS[buildType] && build?.qparams){
+      questions.push(questionFromBuildParams(buildType, build.qparams));
+    }
+    for(const question of questions) await ensureQuestionDataReady(question);
+    migration = await migrateSavedQuestionContexts(save);
+    save = migration.save;
+    validateSavedCityQuestions(save);
+  }catch(e){ toast(e.message); return; }
   clearTimeout(_saveGameTimer);
   _saveGameTimer = null;
 
   hideRadiusMi = save.hideRadiusMi || 0.25;
   gameMode = save.gameMode || 'seeker';
   hiderStation = save.hiderStation || null;
-  validZone = save.validZone;
-  constraints = save.constraints;
+  validZone = cloneGeo(save.validZone);
+  softZone = save.softZone ? cloneGeo(save.softZone) : null;
+  stopRegionState = null;
+  constraints = normalizeConstraintList(save.constraints);
   outgoingQuestions = save.outgoingQuestions || {};
 
   // Dismiss resume overlay and setup overlay
@@ -997,10 +890,8 @@ function resumeGame(){
 
   // Wait for MBTA data then restore
   const restore = () => {
-    syncZoneStateFromConstraints();
     applyHideRadiusVisuals();
-    renderZone();
-    renderLog();
+    recomputeZoneFromConstraints();
     applyGameMode();
     // Restore hider station pin if saved
     if(hiderStation){
@@ -1009,10 +900,13 @@ function resumeGame(){
       renderHiderStationBadge();
     }
     const km2 = (turf.area(validZone)/1e6).toFixed(1);
-    toast(`Game resumed — ${km2} km² in play`);
+    toast(migration?.answeredCount
+      ? `Game resumed — ${km2} km² in play. Border distances were corrected; review ${migration.answeredCount} previous border answer${migration.answeredCount===1?'':'s'} because their old distances were inaccurate.`
+      : `Game resumed — ${km2} km² in play`, migration?.answeredCount ? 12000 : 3200);
     if(save.buildState && typeof restoreSerializableBuildState === 'function'){
       restoreSerializableBuildState(save.buildState);
     }
+    if(migration?.count) saveGame();
     if(gameMode !== 'hider'){
       document.getElementById('panel').classList.remove('collapsed');
       setTimeout(()=>document.getElementById('panel').classList.add('collapsed'), 2000);
@@ -1028,6 +922,7 @@ function discardAndNew(){
   hiderStation = null;
   if(_hiderLocMarker){ _hiderLocMarker.remove(); _hiderLocMarker = null; }
   document.getElementById('resume-overlay').classList.add('hidden');
+  if(typeof onGameSessionReady === 'function') onGameSessionReady();
 }
 
 function timeSince(ts){
@@ -1046,12 +941,164 @@ function applyHideRadiusVisuals(){
 // ══════════════════════════════════════════════════════
 //  QUESTION DEFINITIONS
 // ══════════════════════════════════════════════════════
+// One contract owns transport fields, editor aliases, presets and input validation.
+// Resolvers remain type-specific because their geographic data requirements differ.
+const QUESTION_CONTRACTS = {
+  radar:{packet:['center','radius_miles'], inputs:{center:'point',radius_miles:'positive'}, answers:['yes','no'],
+    fields:{center:'center',radius_miles:'radius_miles'}, presets:['radius_miles'], hydrate:q=>buildStoredRadarQuestion(q)},
+  thermo:{packet:['center','thermo_dest','travel_miles'], inputs:{center:'point',thermo_dest:'point',travel_miles:'positive'}, answers:['closer','further'],
+    fields:{center:'center',thermo_dest:'thermo_dest',travel_miles:'travel_miles'},presets:['travel_miles'],hydrate:q=>buildStoredThermoQuestion(q)},
+  measure:{packet:['center','mode','category','category_id','category_label','linear_filter_version','point_filter_version','point_dataset'],inputs:{center:'point'},
+    requiredData:q=>(q.mode==='elevation' || isSeaLevelMeasure(q)) ? ['elevation'] :
+      adaptivePointConfig(q) ? ['point-distance'] : adaptiveLinearConfig(q) ? ['pois'] : [],
+    defaults:{mode:'distance'}, answers:q=>q.mode==='elevation'?['higher','lower']:['closer','further'],
+    fields:{center:'center',category:'measure_cat',category_label:'measure_cat_label',mode:'measure_mode',seeker_nearest:'measure_seeker_nearest',seeker_dist:'measure_seeker_dist',seeker_elevation_ft:'measure_seeker_elevation_ft',seeker_elevation_m:'measure_seeker_elevation_m',all_instances:'measure_all_instances',linear_features:'measure_linear_features'},
+    editorDefaults:{measure_seeker_nearest:null,measure_seeker_dist:null,measure_seeker_elevation_ft:null,measure_seeker_elevation_m:null,measure_all_instances:[],measure_linear_features:[]},
+    presets:['category','category_label'], presetFields:{category:'_mcat',category_label:'_mcatlabel'},
+    deriveEditor:q=>({measure_instance_count:q.point_dataset?preloadedData[q.point_dataset.dataset]?.[q.point_dataset.key]?.length:q.all_instances?.length}),
+    migrateContext:async q=>categorySpec('measure',q)?.boundaryKey && !q.linear_features?.length
+      && q.center && Number.isFinite(q.seeker_dist) ? await rebuildMeasureQuestion(q) : null,
+    hydrate:async q=>buildStoredMeasureQuestion(q)||await rebuildMeasureQuestion(q)},
+  tentacles:{packet:['center','radius_miles','category','category_id','category_label','options'],inputs:{center:'point',radius_miles:'positive'}, defaults:{radius_miles:1},
+    answers:q=>['no',...getTentacleOptionsInReach(q).map(option=>option.id)],
+    normalize:q=>({...q,category:q.category||q.category_label||null,category_label:q.category_label||q.category||null}),
+    packetValues:{options:q=>getTentacleDisplayOptions(q).map(({id,name,lat,lng})=>({id,name,lat,lng}))},
+    fields:{center:'center',radius_miles:'radius_miles',category:'_tcat',category_label:['_tcatlabel','tentacles_cat_label'],options:'tentacle_options'},editorDefaults:{tentacle_options:[]},presets:['radius_miles','category','category_label'],hydrate:q=>buildStoredTentaclesQuestion(q)},
+  matching:{packet:['center','category','category_id','category_label','answer_opts'],inputs:{center:'point'},answers:['Yes','No'],
+    packetExtra:q=>({...legacyConstraintMetadata(q),...(q.category==='line'?{seeker_val:q.seeker_val,line_id:q.line_id||null,hide_radius_miles:q.hide_radius_miles??hideRadiusMi,service_snapshot:q.service_snapshot||null}:{})}),
+    fields:{center:'center',category:'matching_cat',category_label:'matching_cat_label',seeker_val:['matching_seeker_val','matching_line_label'],line_id:'matching_line_id',service_snapshot:'matching_service_snapshot',hide_radius_miles:'matching_hide_radius_miles',boundary_geojson:['matching_boundary','_matching_boundary_simplified']},
+    editorDefaults:{_matching_mode:'matching',matching_line_id:null,matching_line_label:null,matching_service_snapshot:null,matching_boundary:null,_matching_boundary_simplified:null},
+    deriveEditor:q=>({matching_hide_radius_miles:q.hide_radius_miles??hideRadiusMi}),presets:['category','category_label','line_id','seeker_val','hide_radius_miles'],
+    hydrate:async q=>buildStoredMatchingQuestion(q)||await rebuildMatchingQuestion(q)},
+  nearest:{packet:['center','category','category_id','category_label'],inputs:{center:'point'},answers:['Yes','No'],
+    fields:{center:'center',category:'nearest_cat',category_label:'nearest_cat_label',seeker_poi:'nearest_seeker_poi',all_pois:'nearest_all_pois',voronoi_geojson:'nearest_voronoi'},
+    editorDefaults:{_matching_mode:'nearest',nearest_all_pois:[],nearest_voronoi:null},presets:['category','category_label'],hydrate:async q=>buildStoredNearestQuestion(q)||await rebuildNearestQuestion(q)},
+  photo:{packet:['prompt'],fields:{prompt:'photo_prompt'},defaults:{prompt:''},presets:['prompt'],hydrate:q=>buildStoredPhotoQuestion(q)},
+};
+// Entry points await declared dependencies before accepting or reducing a question.
+// A missing dataset is a failed operation, never evidence that its clue keeps everything.
+const QUESTION_DATA_LOADERS = {
+  elevation:async()=>{
+    const grid = await loadElevationData();
+    if(!Array.isArray(grid?.latitudes) || grid.latitudes.length < 2 ||
+       !Array.isArray(grid?.longitudes) || grid.longitudes.length < 2 ||
+       !Array.isArray(grid?.values) || !grid.values.some(row=>Array.isArray(row) && row.some(validElevationNumber))){
+      throw new Error('Elevation geography could not be loaded. Retry when the dataset is available.');
+    }
+  },
+  'point-distance':async question=>{ await loadPointDistanceData(question); },
+  pois:async()=>{
+    if(!await loadPoiData()) throw new Error('Distance geography could not be loaded. Retry when the dataset is available.');
+  },
+};
+async function ensureQuestionDataReady(question){
+  const contract = QUESTION_CONTRACTS[question?.type];
+  if(!contract?.requiredData) return;
+  const normalized = contractQuestion(question, contract);
+  const dependencies = typeof contract.requiredData === 'function'
+    ? contract.requiredData(normalized) : contract.requiredData;
+  for(const dependency of new Set(dependencies)){
+    const load = QUESTION_DATA_LOADERS[dependency];
+    if(!load) throw new Error(`Unknown question dataset: ${dependency}`);
+    await load(normalized);
+  }
+}
+
+// Migrations are declared per question contract and prepared without mutating live
+// state. Keep historical answers; their original location cannot be reconstructed.
+async function migrateQuestionContext(question){
+  const migrate = QUESTION_CONTRACTS[question?.type]?.migrateContext;
+  if(!migrate) return {question,migrated:false};
+  const rebuilt = await migrate(question);
+  if(!rebuilt) return {question,migrated:false};
+  return {question:{...question,...rebuilt},migrated:true};
+}
+function migrateLegacyManualConstraint(question){
+  if(question?.type === '_yellow_harden' && question.boundary_geojson){
+    return {...question,type:'custom_boundary',mode:'exclude'};
+  }
+  if(['_yellow_keep','_yellow_harden'].includes(question?.type)){
+    throw new Error('This older game contains manual temporary-region overrides that need review under the current catchment rules. The saved game has not been replaced.');
+  }
+  return {...question};
+}
+async function migrateSavedQuestionContexts(saved){
+  const save=cloneForStorage(saved);
+  let count=0,answeredCount=0;
+  const migrate=async question=>{
+    const result=await migrateQuestionContext(question);
+    if(result.migrated){count++;if(question.answer!=null)answeredCount++;}
+    return result.question;
+  };
+  save.constraints=await Promise.all((save.constraints||[]).map(migrateLegacyManualConstraint).map(migrate));
+  for(const [id,question] of Object.entries(save.outgoingQuestions||{}))save.outgoingQuestions[id]=await migrate(question);
+  const build=save.buildState;
+  if(build){
+    if(build.currentBuiltQuestion)build.currentBuiltQuestion=await migrate(build.currentBuiltQuestion);
+    const type=getActiveBuildQType(build.qtype,build.qparams);
+    if(QUESTION_CONTRACTS[type] && build.qparams){
+      const original=questionFromBuildParams(type,build.qparams);
+      const result=await migrateQuestionContext({...original,id:build.currentBuiltQuestion?.id || '_restored_build'});
+      if(result.migrated){
+        count++;
+        build.qparams={...build.qparams,...contractBuildParams(result.question)};
+      }
+    }
+  }
+  return {save,count,answeredCount};
+}
+
+function contractQuestion(q, contract){
+  const value={...contract.defaults,...q};
+  // Undefined fields from older packets must not mask contract defaults.
+  for(const [key,fallback] of Object.entries(contract.defaults||{}))if(value[key]==null)value[key]=fallback;
+  const normalized=contract.normalize?contract.normalize(value):value;
+  const category=typeof resolveCategory==='function'?resolveCategory(q.type,q.category_id||q.category||q.category_label):null;
+  if(category){normalized.category=category.id;normalized.category_id=category.id;normalized.category_label=category.label;}
+  return normalized;
+}
+function questionContractPacket(question){
+  const contract=QUESTION_CONTRACTS[question.type];
+  if(!contract)return cloneForStorage(question);
+  const q=contractQuestion(question,contract), packet={id:q.id,type:q.type};
+  for(const field of contract.packet){
+    const value=contract.packetValues?.[field]?contract.packetValues[field](q):q[field];
+    if(value!==undefined)packet[field]=cloneForStorage(value);
+  }
+  return {...packet,...cloneForStorage(contract.packetExtra?.(q)||{})};
+}
+function contractBuildParams(question,{preset=false}={}){
+  const base={radius_miles:1,travel_miles:0.5}, contract=QUESTION_CONTRACTS[question.type];
+  if(!contract)return base;
+  const q=contractQuestion(question,contract), result={...base,...cloneForStorage(contract.editorDefaults||{})};
+  const fields=preset?contract.presets:Object.keys(contract.fields);
+  for(const field of fields){
+    if(q[field]===undefined)continue;
+    for(const target of [].concat(contract.fields[field]||[]))result[target]=cloneForStorage(q[field]);
+    if(preset)for(const target of [].concat(contract.presetFields?.[field]||[]))result[target]=cloneForStorage(q[field]);
+  }
+  Object.assign(result,contract.deriveEditor?.(q)||{});
+  return result;
+}
+// Reverse the same aliases used by restoration rather than maintaining another field list.
+function questionFromBuildParams(type, params){
+  const contract=QUESTION_CONTRACTS[type], question={type};
+  for(const [field,aliases] of Object.entries(contract.fields)){
+    const keys=[].concat(aliases);
+    // Explicit values on any alias take precedence over defaults on another alias.
+    // A default null on the primary field must not hide a supplied legacy alias.
+    const source=keys.some(alias=>params[alias]!==undefined)?params:(contract.editorDefaults||{});
+    for(const alias of keys)if(source[alias]!==undefined){question[field]=cloneForStorage(source[alias]);break;}
+  }
+  return contractQuestion(question,contract);
+}
+
 const QDEFS = {
   radar:{
     label:'Radar', colorTag:'tag-radar',
     pickSteps:[{key:'center', label:'Tap map — set your location'}],
     isReady:p=>p.center&&p.radius_miles,
-    toJSON:p=>({type:'radar',center:p.center,radius_miles:p.radius_miles}),
+    toJSON:p=>questionFromBuildParams('radar',p),
     applyToZone:(zone,q)=>q.answer==='yes'?safeIsect(zone,makeCircle(q.center,q.radius_miles,'miles')):safeDiff(zone,makeCircle(q.center,q.radius_miles,'miles')),
     describe:q=>`<b>${q.answer==='yes'?'WITHIN':'OUTSIDE'}</b> ${q.radius_miles}mi radar`
   },
@@ -1059,7 +1106,7 @@ const QDEFS = {
     label:'Thermometer', colorTag:'tag-thermo',
     pickSteps:[{key:'center', label:'Tap map — your current position'}],
     isReady:p=>p.center&&p.travel_miles&&p.thermo_dest,
-    toJSON:p=>({type:'thermo',center:p.center,travel_miles:p.travel_miles,thermo_dest:p.thermo_dest}),
+    toJSON:p=>questionFromBuildParams('thermo',p),
     applyToZone:(zone,q)=>{
       if(!q.center || !q.thermo_dest) return zone;
       const half = thermoHalf(q.center, q.thermo_dest, q.answer==='closer' ? 'b' : 'a');
@@ -1076,17 +1123,11 @@ const QDEFS = {
         : p.measure_seeker_dist!=null
     ),
     toJSON:p=>({
-      type:'measure',
-      center:p.center,
-      mode:p.measure_mode || 'distance',
-      category:p.measure_cat,
-      category_label:p.measure_cat_label,
-      seeker_nearest:p.measure_seeker_nearest,   // {lat,lng,name} — seeker's nearest instance
-      seeker_dist:p.measure_seeker_dist,          // seeker's distance to their nearest
-      seeker_elevation_ft:p.measure_seeker_elevation_ft ?? null,
-      seeker_elevation_m:p.measure_seeker_elevation_m ?? null,
-      all_instances:p.measure_all_instances||[],  // all known instances for zone geometry
-      linear_features:p.measure_linear_features||[],
+      ...questionFromBuildParams('measure',p),
+      all_instances:adaptivePointConfig(p.measure_cat || p.measure_cat_label) ? [] : p.measure_all_instances||[],  // all known instances for zone geometry
+      linear_features:measureFilterConfig(p.measure_cat) ? [] : (p.measure_linear_features||[]),
+      ...(measureFilterConfig(p.measure_cat || p.measure_cat_label)?.mode==='adaptive-linear' ? {linear_filter_version:measureFilterConfig(p.measure_cat || p.measure_cat_label).version} : {}),
+      ...pointDistanceMetadata(p.measure_cat || p.measure_cat_label),
       question:(p.measure_mode === 'elevation')
         ? `Are you at a higher or lower elevation than me? I am ${p.measure_seeker_elevation_ft.toFixed(0)} ft above sea level.`
         : `Compared to me, are you closer to or further from your nearest ${p.measure_cat_label}? I am ${p.measure_seeker_dist.toFixed(2)} mi from mine.`,
@@ -1094,27 +1135,34 @@ const QDEFS = {
     }),
     applyToZone:(zone,q)=>{
       try{
-        const isLinear = ['An Amtrak Line','A Coastline','A Body of Water'].includes(q.category_label || q.category);
-        const union = q._constraint_union || buildMeasureConstraintUnion(q, isLinear ? null : zone);
+        if(adaptiveLinearConfig(q)){
+          const filter = buildAdaptiveLinearConstraint(q, zone);
+          const excluded = q.answer === 'closer' ? filter.excludeForCloser : filter.excludeForFurther;
+          return excluded ? (turf.difference(zone, excluded) || {type:'Feature',properties:{},geometry:{type:'MultiPolygon',coordinates:[]}}) : zone;
+        }
+        // Always use this reduction scope; old caches may cover a smaller pre-undo zone.
+        const union = buildMeasureConstraintUnion(q, zone);
         if(!union) return zone;
+        if(q.mode==='elevation' && preloadedData.elevation?.interpolation==='triangulated-linear'){
+          const empty={type:'Feature',properties:{},geometry:{type:'MultiPolygon',coordinates:[]}};
+          if(!zone?.geometry?.coordinates?.length)return empty;
+          if(!union.geometry.coordinates.length)return q.answer==='higher' ? empty : zone;
+          return (q.answer==='higher' ? turf.intersect(zone,union) : turf.difference(zone,union)) || empty;
+        }
         if(q.answer==='closer' || q.answer==='higher') return safeIsect(zone, union);
         return safeDiff(zone, union);
       }catch(e){ return zone; }
     },
     describe:q=>(q.mode === 'elevation')
       ? `<b>${q.answer==='higher'?'HIGHER':'LOWER'}</b> than seeker (${Number(q.seeker_elevation_ft).toFixed(0)} ft above sea level)`
-      : `<b>${q.answer==='closer'?'CLOSER':'FURTHER'}</b> than seeker (${q.seeker_dist?.toFixed(2)}mi) from nearest ${q.category_label}`
+      : `<b>${q.answer==='closer'?'CLOSER':'FURTHER'}</b> than seeker (${q.seeker_dist?.toFixed(2)}mi) from nearest ${q.category_label}${adaptiveLinearConfig(q) ? ' · uncertain map cells retained' : ''}`
   },
   tentacles:{
     label:'Tentacles', colorTag:'tag-tentacles',
     pickSteps:[{key:'center', label:'Tap map — your location'}],
     isReady:p=>p.center&&p.tentacle_options&&p.tentacle_options.length>=2,
     toJSON:p=>({
-      type:'tentacles',
-      center:p.center,
-      radius_miles:p.radius_miles||1,
-      category:p._tcatlabel || p._tcat || p.tentacles_cat_label || null,
-      category_label:p._tcatlabel || p._tcat || p.tentacles_cat_label || null,
+      ...questionFromBuildParams('tentacles',p),
       options:getTentacleOptionsInReach({
         center:p.center,
         radius_miles:p.radius_miles||1,
@@ -1122,13 +1170,15 @@ const QDEFS = {
       }),
     }),
     applyToZone:(zone,q)=>{
-      const {circle, scope, regions} = buildTentacleRegions(q, zone);
-      if(q.answer==='no') return safeDiff(zone,circle);
-      const option = findTentacleOption(q, q.answer);
-      const match = option
-        ? regions.find(item => item.option.id === option.id)
-        : null;
-      return match?.region || scope || zone;
+      try{
+        if(q.answer==='no')return safeDiff(zone,makeCircle(q.center,q.radius_miles || 1,'miles'));
+        const option=findTentacleOption(q,q.answer);
+        if(!option)return zone;
+        const {scope,regions,failed}=buildTentacleRegions(q,zone);
+        if(failed)return zone;
+        if(!scope)return emptyPolygonFeature();
+        return regions.find(item=>item.option.id===option.id)?.region || emptyPolygonFeature();
+      }catch(e){return zone;}
     },
     describe:q=>q.answer==='no'
       ? `<b>NOT WITHIN</b> ${q.radius_miles||1}mi of seeker`
@@ -1136,14 +1186,14 @@ const QDEFS = {
   },
   matching:{
     label:'Matching', colorTag:'tag-matching',
+    constraintScope:q=>q.category === 'line' ? 'station' : 'location',
+    hasSpatialContext:q=>!!q.boundary_geojson,
+    matchesStation:(station,q)=>stationMatchesQuestionLine(station,q) === (q.answer === 'Yes'),
     pickSteps:[{key:'center', label:'Tap map — your location'}],
     isReady:p=>p.center&&p.matching_cat&&p.matching_seeker_val,
     toJSON:p=>({
-      type:'matching',
-      center:p.center,
-      category:p.matching_cat,
-      category_label:p.matching_cat_label,
-      seeker_val:p.matching_seeker_val,
+      ...questionFromBuildParams('matching',p),
+      service_snapshot:p.matching_service_snapshot || null,
       line_id:p.matching_cat === 'line' ? (p.matching_line_id || null) : null,
       hide_radius_miles:p.matching_cat === 'line' ? (p.matching_hide_radius_miles ?? hideRadiusMi) : null,
       boundary_geojson: p._matching_boundary_simplified || p.matching_boundary || null,
@@ -1160,24 +1210,18 @@ const QDEFS = {
         const result = q.answer==='Yes'
           ? safeIsect(zone, q.boundary_geojson)
           : safeDiff(zone, q.boundary_geojson);
-        if(result && turf.area(result) > 1000) return result;
-        return null;
+        return result;
       } catch(e){ return zone; }
     },
     describe:q=>`<b>${q.answer==='Yes'?'SAME':'DIFFERENT'}</b> ${q.category_label} (seeker: ${q.seeker_val})`
   },
   nearest:{
     label:'Nearest', colorTag:'tag-nearest',
+    hasSpatialContext:q=>!!q.voronoi_geojson,
     pickSteps:[{key:'center', label:'Tap map — your location'}],
     isReady:p=>p.center&&p.nearest_cat&&p.nearest_seeker_poi,
     toJSON:p=>({
-      type:'nearest',
-      center:p.center,
-      category:p.nearest_cat,
-      category_label:p.nearest_cat_label,
-      seeker_poi:p.nearest_seeker_poi,
-      all_pois:p.nearest_all_pois||[],
-      voronoi_geojson:p.nearest_voronoi||null,
+      ...questionFromBuildParams('nearest',p),
       question:`Is the nearest ${p.nearest_cat_label} to you the same as mine? Mine is "${p.nearest_seeker_poi.name}".`,
       answer_opts:['Yes','No']
     }),
@@ -1190,22 +1234,23 @@ const QDEFS = {
         const result = q.answer==='Yes'
           ? safeIsect(zone, q.voronoi_geojson)
           : safeDiff(zone, q.voronoi_geojson);
-        if(result && turf.area(result) > 1000) return result;
-        return null;
+        return result;
       }catch(e){ return zone; }
     },
     describe:q=>`Nearest ${q.category_label}: <b>${q.answer==='Yes'?'SAME':'DIFFERENT'}</b> (seeker's: ${q.seeker_poi?.name})`
   },
   photo:{
+    affectsZone:false,
     label:'Photo', colorTag:'tag-photo',
     pickSteps:[],
     isReady:p=>p.photo_prompt&&p.photo_prompt.trim(),
-    toJSON:p=>({type:'photo',prompt:p.photo_prompt}),
+    toJSON:p=>questionFromBuildParams('photo',p),
     applyToZone:(zone)=>zone,
     describe:q=>`📸 ${q.prompt}`
   },
   custom_boundary:{
     label:'Boundary', colorTag:'tag-nearest',
+    constraintScope:'fixed',
     pickSteps:[],
     isReady:p=>Array.isArray(p.custom_boundary_points) && p.custom_boundary_points.length >= 3 && !!p.custom_boundary_mode,
     toJSON:p=>({
@@ -1219,7 +1264,9 @@ const QDEFS = {
         ? safeIsect(zone, q.boundary_geojson)
         : safeDiff(zone, q.boundary_geojson);
     },
-    describe:q=>`<b>${q.mode==='include'?'INCLUDE':'EXCLUDE'}</b> custom boundary`
+    describe:q=>q._label
+      ? `<b>${String(q._label).toUpperCase()}</b>`
+      : `<b>${q.mode==='include'?'INCLUDE':'EXCLUDE'}</b> custom boundary`
   }
 };
 
@@ -1238,8 +1285,8 @@ function fmt(p){return`${p.lat.toFixed(3)},${p.lng.toFixed(3)}`;}
 function toPt(p){return turf.point([p.lng,p.lat]);}
 function turfDist(a,b){return turf.distance(toPt(a),toPt(b),{units:'miles'});}
 function makeCircle(c,r,u){return turf.circle([c.lng,c.lat],r,{units:u,steps:72});}
-function safeIsect(z,o){try{return turf.intersect(z,o)||null;}catch(e){return z;}}
-function safeDiff(z,o){try{return turf.difference(z,o)||null;}catch(e){return z;}}
+function safeIsect(z,o){if(!z || !o)return z;try{return exactIsect(z,o) || emptyPolygonFeature();}catch(e){return z;}}
+function safeDiff(z,o){try{return exactDiff(z,o) || emptyPolygonFeature();}catch(e){return z;}}
 
 function compassHalf(ref,dir){
   const D=14,la=ref.lat,lo=ref.lng;
@@ -1339,7 +1386,7 @@ function clipFeatureToZone(feature, zone, miles){
 }
 
 function simplifyMeasureFeature(feature, q){
-  if(!feature) return feature;
+  if(!feature || ACTIVE_CITY.id === 'chicago') return feature;
   const isCoast = /coast|sea level/i.test(q?.category_label || q?.category || '');
   if(!isCoast) return feature;
   try{
@@ -1351,13 +1398,14 @@ function simplifyMeasureFeature(feature, q){
 
 function buildElevationConstraintFeature(q, zone=null){
   const data = preloadedData.elevation;
-  const thresholdFt = Number(q?.seeker_elevation_ft);
+  const thresholdFt = q?.seeker_elevation_ft;
   const latitudes = data?.latitudes;
   const longitudes = data?.longitudes;
   const values = data?.values;
   if(!Number.isFinite(thresholdFt) || !Array.isArray(latitudes) || latitudes.length < 2 || !Array.isArray(longitudes) || longitudes.length < 2 || !Array.isArray(values)) return null;
 
   const zoneBbox = zone ? turf.bbox(zone) : [data.bbox?.west ?? longitudes[0], data.bbox?.south ?? latitudes[0], data.bbox?.east ?? longitudes[longitudes.length - 1], data.bbox?.north ?? latitudes[latitudes.length - 1]];
+  if(data.interpolation==='triangulated-linear')return buildTriangulatedElevationFeature(data,thresholdFt,zoneBbox);
   const polys = [];
 
   for(let row = 0; row < latitudes.length - 1; row++){
@@ -1370,11 +1418,11 @@ function buildElevationConstraintFeature(q, zone=null){
       if(east < zoneBbox[0] || west > zoneBbox[2]) continue;
 
       const cellValues = [
-        Number(values?.[row]?.[col]),
-        Number(values?.[row]?.[col + 1]),
-        Number(values?.[row + 1]?.[col]),
-        Number(values?.[row + 1]?.[col + 1]),
-      ].filter(Number.isFinite);
+        values?.[row]?.[col],
+        values?.[row]?.[col + 1],
+        values?.[row + 1]?.[col],
+        values?.[row + 1]?.[col + 1],
+      ].filter(validElevationNumber);
       if(cellValues.length < 3) continue;
       const avgFt = cellValues.reduce((sum, value) => sum + value, 0) / cellValues.length;
       if(avgFt < thresholdFt) continue;
@@ -1389,16 +1437,94 @@ function buildElevationConstraintFeature(q, zone=null){
     }
   }
 
-  if(!polys.length) return null;
+  if(!polys.length) return emptyPolygonFeature();
   return turf.multiPolygon(polys);
+}
+
+function adaptiveLinearConfig(question){
+  if(question?.type !== 'measure') return null;
+  const config = measureFilterConfig(question.category_id || question.category || question.category_label);
+  return ['adaptive-linear','adaptive-point'].includes(config?.mode) ? config : null;
+}
+
+function adaptivePointConfig(questionOrLabel){
+  const question=typeof questionOrLabel==='string'?{type:'measure',category:questionOrLabel}:questionOrLabel;
+  const config=adaptiveLinearConfig(question);
+  return config?.mode==='adaptive-point'?config:null;
+}
+
+function pointDatasetReference(config){
+  const source=preloadedData[config.dataset];
+  const versions=config.versionPaths.map(path=>path.split('.').reduce((value,key)=>value?.[key],source));
+  if(versions.some(value=>typeof value!=='string'||!value)) throw new Error('Point dataset version is unavailable');
+  return {dataset:config.dataset,key:config.dataKey,version:versions.join(':')};
+}
+
+function pointDistanceMetadata(label){
+  const config=adaptivePointConfig(label);
+  return config?{point_filter_version:config.version,point_dataset:pointDatasetReference(config)}:{};
+}
+
+async function loadPointDistanceData(questionOrLabel){
+  const config=adaptivePointConfig(questionOrLabel);
+  if(!config) return null;
+  if(config.dataset==='pois') await loadPoiData();
+  else if(!preloadedData[config.dataset]){
+    const response=await fetch(ACTIVE_CITY.dataFiles[config.dataset]);
+    if(!response.ok) throw new Error('Local point dataset could not be loaded');
+    preloadedData[config.dataset]=await response.json();
+  }
+  const points=preloadedData[config.dataset]?.[config.dataKey];
+  if(!Array.isArray(points)||!points.length) throw new Error('Local point dataset is unavailable');
+  pointDatasetReference(config);
+  return points;
+}
+
+const pointFilterFeatures=new WeakMap();
+function localPointFeatures(config){
+  const points=preloadedData[config.dataset]?.[config.dataKey];
+  if(!Array.isArray(points)||!points.length) throw new Error('Local point dataset is unavailable');
+  if(!pointFilterFeatures.has(points)) pointFilterFeatures.set(points,points.map(point=>
+    ({type:'Feature',properties:{},geometry:{type:'Point',coordinates:[Number(point.lng??point.lon),Number(point.lat)]}})));
+  return pointFilterFeatures.get(points);
+}
+
+function validateAdaptiveLinearQuestion(question){
+  const config = adaptiveLinearConfig(question);
+  if(config?.mode==='adaptive-point'){
+    // Existing unversioned questions use the complete local source with their original distance threshold.
+    if(config.acceptLegacyQuestions && !question.point_filter_version && !question.point_dataset) return;
+    if(question.point_filter_version!==config.version || !question.point_dataset){
+      throw new Error('This point-distance question uses an old map-filter version. Rebuild the question.');
+    }
+    if(preloadedData[config.dataset] && ['dataset','key','version'].some(key=>question.point_dataset[key]!==pointDatasetReference(config)[key])){
+      throw new Error('This point-distance question uses a different local dataset. Use matching datasets to play.');
+    }
+    return;
+  }
+  if(config?.acceptLegacyQuestions && !question.linear_filter_version && !question.point_filter_version)return;
+  if(config && question.linear_filter_version !== config.version){
+    throw new Error('This distance question uses a different map-filter version. Rebuild the question.');
+  }
+}
+
+function buildAdaptiveLinearConstraint(question, zone){
+  validateAdaptiveLinearQuestion(question);
+  const config = adaptiveLinearConfig(question);
+  if(!config || typeof LinearDistanceFilter === 'undefined') throw new Error('Distance filter is unavailable');
+  const features = config.mode==='adaptive-point' ? localPointFeatures(config) : preloadedData.pois?.[config.dataKey] || question.linear_features;
+  return LinearDistanceFilter.build(features, question.seeker_dist, zone);
 }
 
 function buildMeasureConstraintUnion(q, zone=null){
   if(!q) return null;
+  // Adaptive filters have two certified exclusion regions, not one approximate buffer.
+  if(adaptiveLinearConfig(q)) return null;
   try{
     if(q.mode === 'elevation'){
       const feature = buildElevationConstraintFeature(q, zone);
       if(!feature) return null;
+      if(preloadedData.elevation?.interpolation==='triangulated-linear') return feature;
       try{
         return turf.simplify(feature, {tolerance:0.0008, highQuality:false}) || feature;
       }catch(e){
@@ -1407,16 +1533,14 @@ function buildMeasureConstraintUnion(q, zone=null){
     }
 
     if(!Number.isFinite(q.seeker_dist)) return null;
-    const isLinear = ['An Amtrak Line','A Coastline','A Body of Water'].includes(q.category_label || q.category);
     let union = null;
     if(q.linear_features?.length){
-      const clipZone = q._linear_clip_zone || INIT_POLY;
       const buffered = q.linear_features
         .map(item => coerceFeature(item, item.name))
         .filter(Boolean)
         .map(feature => {
           try{
-            const clipped = clipFeatureToZone(feature, clipZone, q.seeker_dist);
+            const clipped = clipFeatureToZone(feature, zone, q.seeker_dist);
             const simplified = simplifyMeasureFeature(clipped, q);
             return turf.buffer(simplified, q.seeker_dist, {units:'miles'});
           }catch(e){ return null; }
@@ -1426,8 +1550,6 @@ function buildMeasureConstraintUnion(q, zone=null){
       for(let i=1;i<buffered.length;i++){
         try{ union = turf.union(union, buffered[i]) || union; }catch(e){}
       }
-    } else if(isLinear){
-      return null;
     } else if(q.all_instances?.length){
       const circles = q.all_instances.map(p=>makeCircle(p, q.seeker_dist, 'miles'));
       union = circles[0] || null;
@@ -1436,6 +1558,7 @@ function buildMeasureConstraintUnion(q, zone=null){
       }
     }
     if(!union) return null;
+    if(ACTIVE_CITY.id === 'chicago') return union;
     try{
       return turf.simplify(union, {tolerance:0.0008, highQuality:false}) || union;
     }catch(e){

@@ -3,7 +3,22 @@
 let _pendingResultAction = null;
 
 function isLatLngLike(value){
-  return Number.isFinite(Number(value?.lat)) && Number.isFinite(Number(value?.lng));
+  const valid = n => n != null && n !== '' && Number.isFinite(Number(n));
+  return valid(value?.lat) && valid(value?.lng) && Math.abs(Number(value.lat)) <= 90 && Math.abs(Number(value.lng)) <= 180;
+}
+
+function validateQuestionInputs(question){
+  const contract=QUESTION_CONTRACTS[question?.type];
+  if(!contract)return;
+  const q=contractQuestion(question,contract);
+  for(const [field,rule] of Object.entries(contract.inputs||{})){
+    if(rule==='point'&&!isLatLngLike(q[field]))throw new Error('Question needs valid latitude and longitude');
+    if(rule==='positive'&&(q[field]==null||q[field]===''||!Number.isFinite(Number(q[field]))||Number(q[field])<=0)){
+      throw new Error(field==='radius_miles'?'Question radius must be a positive number':'Thermometer needs a valid destination and positive travel distance');
+    }
+  }
+  const answers=typeof contract.answers==='function'?contract.answers(q):contract.answers;
+  if(q.answer!=null&&answers&&!answers.includes(q.answer))throw new Error('Question has an invalid answer');
 }
 
 function normalizeLatLng(value){
@@ -12,12 +27,12 @@ function normalizeLatLng(value){
 }
 
 function normalizeMatchingBoundaryForCenter(boundary, center){
-  if(!boundary || !center) return boundary || null;
+  if(!boundary || !center || isChicagoGame()) return boundary || null;
   try{
     const pt = turf.point([center.lng, center.lat]);
     let normalized = boundary;
     if(!turf.booleanPointInPolygon(pt, normalized)){
-      const bbox = turf.bboxPolygon([-72.5, 41.5, -70.0, 43.0]);
+      const bbox = cloneGeo(INIT_POLY);
       const flipped = turf.difference(bbox, normalized);
       if(flipped && turf.booleanPointInPolygon(pt, flipped)){
         normalized = flipped;
@@ -62,7 +77,7 @@ async function buildStoredTentaclesQuestion(payload){
         .filter(Boolean)
     : [];
   if(options.length < 2){
-    const categoryLabel = String(payload.category_label || payload.category || '').trim();
+    const categoryLabel = String(payload.category_id || payload.category || payload.category_label || '').trim();
     if(!categoryLabel) throw new Error('Tentacles question is missing category');
     options = await resolveTentacleQuestionOptions(categoryLabel, center, radius);
   }
@@ -91,15 +106,14 @@ function buildStoredPhotoQuestion(payload){
 function buildStoredMatchingQuestion(payload){
   buildStoredQuestionBase(payload, 'matching');
   const center = normalizeLatLng(payload.center);
-  const category = payload.category || payload.category_label;
+  const category = resolveCategory('matching',payload)?.id || payload.category || payload.category_label;
   const categoryLabel = payload.category_label || category;
   if(!center || !category) throw new Error('Matching question is missing center or category');
-  if(!payload.boundary_geojson) return null;
-  if(!payload.seeker_val) return null;
+  if(!payload.boundary_geojson || !payload.seeker_val) return null;
   const boundary = category === 'line'
     ? (payload.boundary_geojson || null)
     : normalizeMatchingBoundaryForCenter(payload.boundary_geojson || null, center);
-  return {
+  const question = {
     id:payload.id,
     ...QDEFS.matching.toJSON({
       center,
@@ -107,29 +121,34 @@ function buildStoredMatchingQuestion(payload){
       matching_cat_label:categoryLabel,
       matching_seeker_val:payload.seeker_val || 'Unknown',
       matching_line_id:payload.line_id || null,
+      matching_service_snapshot:payload.service_snapshot || null,
       matching_hide_radius_miles:Number(payload.hide_radius_miles || hideRadiusMi),
       matching_boundary:boundary,
       _matching_boundary_simplified:boundary,
     }),
   };
+  return typeof decorateConstraintQuestion === 'function'
+    ? decorateConstraintQuestion(question)
+    : question;
 }
 
 async function rebuildMatchingQuestion(payload){
   buildStoredQuestionBase(payload, 'matching');
   const center = normalizeLatLng(payload.center);
-  const category = payload.category || payload.category_label;
-  const catObj = MATCHING_CATS.find(c => c.cat === category);
+  const category = resolveCategory('matching',payload)?.id || payload.category || payload.category_label;
+  const catObj = resolveCategory('matching',category);
   if(!center || !catObj) throw new Error('Unknown matching category');
   if(category === 'line' && !payload.line_id) throw new Error('Line matching question is missing line id');
   const result = await catObj.resolve(center, {
     lineId: payload.line_id || null,
+    serviceSnapshot: payload.service_snapshot || null,
     hideRadiusMiles: Number(payload.hide_radius_miles || hideRadiusMi),
   });
   if(!result?.val) throw new Error(`Could not resolve ${payload.category_label || catObj.label}`);
   const boundary = category === 'line'
     ? (result.boundary || null)
     : normalizeMatchingBoundaryForCenter(result.boundary || null, center);
-  return {
+  const question = {
     id:payload.id,
     ...QDEFS.matching.toJSON({
       center,
@@ -137,11 +156,15 @@ async function rebuildMatchingQuestion(payload){
       matching_cat_label:payload.category_label || catObj.label,
       matching_seeker_val:result.val,
       matching_line_id:payload.line_id || result.line_id || null,
+      matching_service_snapshot:payload.service_snapshot || result.service_snapshot || null,
       matching_hide_radius_miles:Number(payload.hide_radius_miles || hideRadiusMi),
       matching_boundary:boundary,
       _matching_boundary_simplified:boundary,
     }),
   };
+  return typeof decorateConstraintQuestion === 'function'
+    ? decorateConstraintQuestion(question)
+    : question;
 }
 
 function buildStoredNearestQuestion(payload){
@@ -153,7 +176,7 @@ function buildStoredNearestQuestion(payload){
     ? payload.all_pois
         .map(poi => {
           const point = normalizeLatLng(poi);
-          return point ? {name:String(poi?.name || categoryLabel || 'POI'), ...point} : null;
+          return point ? {...placeIdentity(poi),name:String(poi?.name || categoryLabel || 'POI'), ...point} : null;
         })
         .filter(Boolean)
     : [];
@@ -162,9 +185,9 @@ function buildStoredNearestQuestion(payload){
     id:payload.id,
     ...QDEFS.nearest.toJSON({
       center,
-      nearest_cat:categoryLabel,
+      nearest_cat:payload.category_id || payload.category || categoryLabel,
       nearest_cat_label:categoryLabel,
-      nearest_seeker_poi:{name:String(payload.seeker_poi?.name || categoryLabel), ...seekerPoiPoint},
+      nearest_seeker_poi:{...placeIdentity(payload.seeker_poi),name:String(payload.seeker_poi?.name || categoryLabel), ...seekerPoiPoint},
       nearest_all_pois:allPois,
       nearest_voronoi:payload.voronoi_geojson || null,
     }),
@@ -175,7 +198,7 @@ async function rebuildNearestQuestion(payload){
   buildStoredQuestionBase(payload, 'nearest');
   const center = normalizeLatLng(payload.center);
   const categoryLabel = payload.category_label || payload.category;
-  const catObj = NEAREST_CATS.find(c => c.label === categoryLabel);
+  const catObj = resolveCategory('nearest',payload.category_id || payload.category || categoryLabel);
   if(!center || !catObj) throw new Error('Unknown nearest category');
   const pois = await getCategoryInstances(catObj, center, 35000);
   if(!pois.length) throw new Error(`No ${categoryLabel} found nearby`);
@@ -185,7 +208,7 @@ async function rebuildNearestQuestion(payload){
   if(pois.length >= 2){
     try{
       const fc = turf.featureCollection(pois.map(p=>turf.point([p.lng,p.lat])));
-      const cells = turf.voronoi(fc, {bbox:[-72,41.5,-70,43]});
+      const cells = turf.voronoi(fc, {bbox:[W,S,E,N]});
       if(cells?.features?.length){
         const nearestPt = turf.point([nearest.lng, nearest.lat]);
         const seekerPt = turf.point([center.lng, center.lat]);
@@ -204,7 +227,7 @@ async function rebuildNearestQuestion(payload){
     id:payload.id,
     ...QDEFS.nearest.toJSON({
       center,
-      nearest_cat:catObj.label,
+      nearest_cat:catObj.id,
       nearest_cat_label:payload.category_label || catObj.label,
       nearest_seeker_poi:nearest,
       nearest_all_pois:pois.slice(0,20),
@@ -215,19 +238,22 @@ async function rebuildNearestQuestion(payload){
 
 function buildStoredMeasureQuestion(payload){
   buildStoredQuestionBase(payload, 'measure');
+  // Original border questions stored nearest-vertex distances. Rebuild imported
+  // questions from the current boundary segments rather than trusting that context.
+  if(categorySpec('measure',payload)?.boundaryKey) return null;
   const center = normalizeLatLng(payload.center);
   const categoryLabel = payload.category_label || payload.category;
-  const mode = payload.mode || (isSeaLevelMeasure(categoryLabel) ? 'elevation' : 'distance');
+  const mode = payload.mode || (isSeaLevelMeasure(payload) ? 'elevation' : 'distance');
   if(!center || !categoryLabel) throw new Error('Measure question is missing center or category');
   if(mode === 'elevation'){
-    const seekerFeet = Number(payload.seeker_elevation_ft);
-    if(!Number.isFinite(seekerFeet)) return null;
+    const seekerFeet = payload.seeker_elevation_ft;
+    if(!validElevationNumber(seekerFeet)) return null;
     return {
       id:payload.id,
       ...QDEFS.measure.toJSON({
         center,
         measure_mode:'elevation',
-        measure_cat:categoryLabel,
+        measure_cat:payload.category_id || payload.category || categoryLabel,
         measure_cat_label:categoryLabel,
         measure_seeker_elevation_ft:seekerFeet,
         measure_seeker_elevation_m:Number(payload.seeker_elevation_m) || (seekerFeet * 0.3048),
@@ -254,7 +280,7 @@ function buildStoredMeasureQuestion(payload){
     ...QDEFS.measure.toJSON({
       center,
       measure_mode:'distance',
-      measure_cat:categoryLabel,
+      measure_cat:payload.category_id || payload.category || categoryLabel,
       measure_cat_label:categoryLabel,
       measure_seeker_nearest:seekerNearest,
       measure_seeker_dist:seekerDist,
@@ -267,93 +293,32 @@ function buildStoredMeasureQuestion(payload){
 async function rebuildMeasureQuestion(payload){
   buildStoredQuestionBase(payload, 'measure');
   const center = normalizeLatLng(payload.center);
-  const categoryLabel = payload.category_label || payload.category;
-  const catObj = MEASURE_CATS.find(c => c.label === categoryLabel);
-  if(!center || !catObj) throw new Error('Unknown measure category');
-
-  if(isSeaLevelMeasure(categoryLabel) || payload.mode === 'elevation'){
-    const grid = await loadElevationData();
-    if(!grid?.values?.length) throw new Error('No elevation grid data available');
-    const elevation = await fetchPointElevation(center.lat, center.lng);
-    return {
-      id:payload.id,
-      ...QDEFS.measure.toJSON({
-        center,
-        measure_mode:'elevation',
-        measure_cat:catObj.label,
-        measure_cat_label:payload.category_label || catObj.label,
-        measure_seeker_elevation_ft:elevation.feet,
-        measure_seeker_elevation_m:elevation.meters,
-      }),
-    };
-  }
-
-  if(['An Amtrak Line','A Coastline','A Body of Water'].includes(catObj.label)){
-    const resolved = await resolveLinearMeasureCategory(catObj, center, {
-      zone: validZone,
-      buildConstraintUnion: true,
-    });
-    if(!resolved?.best || !resolved.lineFeatures?.length) throw new Error(`Could not resolve ${catObj.label}`);
-    const {best, lineFeatures, union} = resolved;
-
-    return {
-      id:payload.id,
-      ...QDEFS.measure.toJSON({
-        center,
-        measure_mode:'distance',
-        measure_cat:catObj.label,
-        measure_cat_label:payload.category_label || catObj.label,
-        measure_seeker_nearest:{lat:best.lat,lng:best.lng,name:best.name},
-        measure_seeker_dist:best.dist,
-        measure_all_instances:[{lat:best.lat,lng:best.lng,name:best.name}],
-        measure_linear_features:lineFeatures.map(item => ({
-          name:item.name,
-          bbox:item.bbox || null,
-          geometry:item.geometry,
-        })),
-      }),
-      _constraint_union: union || null,
-    };
-  }
-
-  const instances = await getCategoryInstances(catObj, center, 35000);
-  if(!instances.length) throw new Error(`No ${catObj.label} found nearby`);
-  instances.sort((a,b)=>turfDist(center,a)-turfDist(center,b));
-  const nearest = instances[0];
-  return {
-    id:payload.id,
-    ...QDEFS.measure.toJSON({
-      center,
-      measure_mode:'distance',
-      measure_cat:catObj.label,
-      measure_cat_label:payload.category_label || catObj.label,
-      measure_seeker_nearest:nearest,
-      measure_seeker_dist:turfDist(center, nearest),
-      measure_all_instances:instances.slice(0,200),
-      measure_linear_features:[],
-    }),
-  };
+  if(!center) throw new Error('Unknown measure center');
+  const result = await resolveMeasurement(payload, center);
+  return {id:payload.id,...QDEFS.measure.toJSON(measurementBuildParams(result))};
 }
 
-async function hydrateOutgoingQuestion(payload){
+async function hydrateOutgoingQuestionContent(payload){
   if(!payload || typeof payload !== 'object') throw new Error('JSON must be an object');
   if(payload.answer) throw new Error('Paste the original question JSON, not the answer');
+  validateQuestionInputs(payload);
   if(payload.type === 'veto' || payload.type === 'randomize_card') throw new Error('Card results are not loadable questions');
   if(!payload.type) throw new Error('Question is missing a type');
 
-  switch(payload.type){
-    case 'radar': return buildStoredRadarQuestion(payload);
-    case 'thermo': return buildStoredThermoQuestion(payload);
-    case 'tentacles': return await buildStoredTentaclesQuestion(payload);
-    case 'photo': return buildStoredPhotoQuestion(payload);
-    case 'matching': return buildStoredMatchingQuestion(payload) || await rebuildMatchingQuestion(payload);
-    case 'nearest': return buildStoredNearestQuestion(payload) || await rebuildNearestQuestion(payload);
-    case 'measure': return buildStoredMeasureQuestion(payload) || await rebuildMeasureQuestion(payload);
-    default:
-      throw new Error(`Unsupported question type: ${payload.type}`);
-  }
+  const contract = QUESTION_CONTRACTS[payload.type];
+  if(!contract) throw new Error(`Unsupported question type: ${payload.type}`);
+  return await contract.hydrate(contractQuestion(payload, contract));
 }
 
+async function hydrateOutgoingQuestion(payload){
+  const error = cityCompatibilityError(payload);
+  if(error) throw new Error(error);
+  await ensureQuestionDataReady(payload);
+  validateQuestionForCity(payload);
+  return normalizeConstraintEntry(stampCityPayload(await hydrateOutgoingQuestionContent(payload)));
+}
+
+let seekerLoadRevision = 0;
 async function loadQuestionFromRaw(raw, onSuccess){
   let payload;
   try{
@@ -363,13 +328,18 @@ async function loadQuestionFromRaw(raw, onSuccess){
     return;
   }
 
+  const revision = ++seekerLoadRevision;
+  const buildIsCurrent = beginBuildLookup();
+  const isCurrent = () => revision === seekerLoadRevision && buildIsCurrent();
   try{
     toast('Loading question context...', 3200);
     const question = await hydrateOutgoingQuestion(payload);
+    if(!isCurrent()) return;
     rememberOutgoingQuestion(question);
     saveGame();
     onSuccess(question);
   }catch(e){
+    if(!isCurrent()) return;
     toast(`Could not load question: ${e.message}`);
   }
 }
@@ -385,136 +355,12 @@ function loadQuestionInline(){
 }
 
 function questionToBuildParams(question){
-  const base = {radius_miles:1, travel_miles:0.5};
-  switch(question.type){
-    case 'radar':
-      return {
-        ...base,
-        center:question.center,
-        radius_miles:question.radius_miles,
-      };
-    case 'thermo':
-      return {
-        ...base,
-        center:question.center,
-        travel_miles:question.travel_miles,
-        thermo_dest:question.thermo_dest,
-      };
-    case 'measure':
-      return {
-        ...base,
-        center:question.center,
-        measure_cat:question.category,
-        measure_cat_label:question.category_label,
-        measure_mode:question.mode || 'distance',
-        measure_seeker_nearest:question.seeker_nearest || null,
-        measure_seeker_dist:question.seeker_dist ?? null,
-        measure_seeker_elevation_ft:question.seeker_elevation_ft ?? null,
-        measure_seeker_elevation_m:question.seeker_elevation_m ?? null,
-        measure_all_instances:question.all_instances || [],
-        measure_linear_features:question.linear_features || [],
-        measure_constraint_union:question._constraint_union || null,
-      };
-    case 'tentacles':
-      return {
-        ...base,
-        center:question.center,
-        radius_miles:question.radius_miles || 1,
-        _tcat:question.category_label || question.category || null,
-        _tcatlabel:question.category_label || question.category || null,
-        tentacles_cat_label:question.category_label || question.category || null,
-        tentacle_options:question.options || [],
-      };
-    case 'matching':
-      return {
-        ...base,
-        _matching_mode:'matching',
-        center:question.center,
-        matching_cat:question.category,
-        matching_cat_label:question.category_label,
-        matching_seeker_val:question.seeker_val,
-        matching_line_id:question.line_id || null,
-        matching_line_label:question.seeker_val || null,
-        matching_hide_radius_miles:question.hide_radius_miles ?? hideRadiusMi,
-        matching_boundary:question.boundary_geojson || null,
-        _matching_boundary_simplified:question.boundary_geojson || null,
-      };
-    case 'nearest':
-      return {
-        ...base,
-        _matching_mode:'nearest',
-        center:question.center,
-        nearest_cat:question.category_label || question.category,
-        nearest_cat_label:question.category_label || question.category,
-        nearest_seeker_poi:question.seeker_poi,
-        nearest_all_pois:question.all_pois || [],
-        nearest_voronoi:question.voronoi_geojson || null,
-      };
-    case 'photo':
-      return {
-        ...base,
-        photo_prompt:question.prompt || '',
-      };
-    default:
-      return base;
-  }
+  return contractBuildParams(question);
 }
 
 function presetToBuildParams(preset){
-  const base = {radius_miles:1, travel_miles:0.5};
-  switch(preset?.build_qtype){
-    case 'radar':
-      return {
-        ...base,
-        radius_miles:preset.radius_miles,
-      };
-    case 'thermo':
-      return {
-        ...base,
-        travel_miles:preset.travel_miles,
-      };
-    case 'measure':
-      return {
-        ...base,
-        _mcat:preset.category_label,
-        _mcatlabel:preset.category_label,
-        measure_cat:preset.category,
-        measure_cat_label:preset.category_label,
-      };
-    case 'tentacles':
-      return {
-        ...base,
-        radius_miles:preset.radius_miles || 1,
-        _tcat:preset.category_label,
-        _tcatlabel:preset.category_label,
-        tentacles_cat_label:preset.category_label,
-      };
-    case 'matching':
-      if(preset.mode === 'nearest'){
-        return {
-          ...base,
-          _matching_mode:'nearest',
-          nearest_cat:preset.category,
-          nearest_cat_label:preset.category_label,
-        };
-      }
-      return {
-        ...base,
-        _matching_mode:'matching',
-        matching_cat:preset.category,
-        matching_cat_label:preset.category_label,
-        matching_line_id:preset.line_id || null,
-        matching_line_label:preset.seeker_val || null,
-        matching_hide_radius_miles:preset.hide_radius_miles ?? hideRadiusMi,
-      };
-    case 'photo':
-      return {
-        ...base,
-        photo_prompt:preset.prompt || '',
-      };
-    default:
-      return base;
-  }
+  const type=preset?.build_qtype==='matching'&&preset.mode==='nearest'?'nearest':preset?.build_qtype;
+  return contractBuildParams({...preset,type},{preset:true});
 }
 
 function syncLoadedQuestionHighlights(question){
@@ -523,8 +369,8 @@ function syncLoadedQuestionHighlights(question){
     return;
   }
   if(question.type === 'measure'){
-    if(question.category_label === 'A County Border') highlightBoundary('county');
-    else if(question.category_label === 'A City Border') highlightBoundary('city');
+    const boundaryKey=resolveCategory('measure',question)?.boundaryKey;
+    if(boundaryKey) highlightBoundary(boundaryKey);
     else clearBoundaryHighlight();
     return;
   }
@@ -532,6 +378,7 @@ function syncLoadedQuestionHighlights(question){
 }
 
 function setLoadQuestionPanelOpen(open){
+  if(!open) ++seekerLoadRevision;
   const panel = document.getElementById('load-question-panel');
   const btn = document.getElementById('load-question-toggle');
   if(!panel || !btn) return;
@@ -548,7 +395,7 @@ function toggleLoadQuestionPanel(){
 function loadQuestionIntoBuild(question){
   qtype = question.type === 'nearest' ? 'matching' : question.type;
   qparams = questionToBuildParams(question);
-  currentBuiltQuestion = deepClone(question);
+  currentBuiltQuestion = cloneForStorage(question);
   pickStepDefs = QDEFS[qtype]?.pickSteps || [];
   pickStep = pickStepDefs.length ? pickStepDefs.length : -1;
   _simulActive = null;
@@ -609,8 +456,8 @@ function syncRestoredBuildUi(){
     if(currentBuiltQuestion) syncLoadedQuestionHighlights(currentBuiltQuestion);
     else if(qtype === 'matching' && qparams.matching_cat) highlightBoundary(qparams.matching_cat);
     else if(qtype === 'measure'){
-      if(qparams.measure_cat_label === 'A County Border' || qparams.measure_cat === 'A County Border') highlightBoundary('county');
-      else if(qparams.measure_cat_label === 'A City Border' || qparams.measure_cat === 'A City Border') highlightBoundary('city');
+      const boundaryKey=resolveCategory('measure',qparams.measure_cat || qparams.measure_cat_label)?.boundaryKey;
+      if(boundaryKey) highlightBoundary(boundaryKey);
       else clearBoundaryHighlight();
     } else {
       clearBoundaryHighlight();
@@ -663,21 +510,14 @@ function restoreSerializableBuildState(state){
 
 function resolveAnsweredQuestion(payload){
   if(payload.type === 'veto' || payload.type === 'randomize_card') return payload;
-  if(!payload?.answer){ return null; }
-  if(payload.type){
-    const def = QDEFS[payload.type];
-    const extraKeys = Object.keys(payload).filter(k => !['id','type','answer','answer_label'].includes(k));
-    if(def && extraKeys.length) return payload;
+  if(!payload?.answer) return null;
+  const base = payload.id && ((currentBuiltQuestion?.id === payload.id)
+    ? cloneForStorage(currentBuiltQuestion) : getOutgoingQuestion(payload.id));
+  if(base){
+    if(payload.type && payload.type !== base.type) return null;
+    return {...base, ...payload};
   }
-  if(!payload.id) return null;
-  const base = (currentBuiltQuestion && currentBuiltQuestion.id === payload.id)
-    ? deepClone(currentBuiltQuestion)
-    : getOutgoingQuestion(payload.id);
-  if(!base) return null;
-  const extras = {...payload};
-  delete extras.id;
-  delete extras.answer;
-  return {...base, answer: payload.answer, ...extras};
+  return QDEFS[payload.type] ? payload : null;
 }
 
 function applyAnswerObject(q, onSuccess){
@@ -727,20 +567,10 @@ function applyAnswerObject(q, onSuccess){
   const def = QDEFS[q.type];
   if(!def){ toast(`Unknown type: "${q.type}"`); return; }
   try{
-    const prevZone = validZone ? cloneGeo(validZone) : null;
-    const prevStopRegionState = stopRegionState ? cloneForStorage(stopRegionState) : null;
-    constraints.push(q);
-    if(!syncZoneStateFromConstraints()){
-      constraints.pop();
-      validZone = prevZone;
-      stopRegionState = prevStopRegionState;
-      toast('Zone empty - contradiction?');
+    if(!applyConstraintIncrementally(q)){
       return;
     }
     forgetOutgoingQuestion(q.id);
-    renderZone();
-    renderLog();
-    saveGame();
     onSuccess();
     toast('Zone updated ✓');
   }catch(e){
@@ -754,22 +584,41 @@ function applyAnswer(){
   applyAnswerFromRaw(raw, ()=>{ document.getElementById('json-in').value=''; switchTab('log'); });
 }
 
-function applyAnswerFromRaw(raw, onSuccess){
+let answerLoadRevision = 0;
+async function applyAnswerFromRaw(raw, onSuccess){
   let payload;
+  try{ payload = JSON.parse(raw); }
+  catch(e){ toast('Invalid JSON - check format'); return; }
+  const compatibilityError = cityCompatibilityError(payload);
+  if(compatibilityError){ toast(compatibilityError); return; }
+  const candidate = resolveAnsweredQuestion(payload);
+  if(!candidate){
+    toast('Original question data not found on this device or answer is missing');
+    return;
+  }
+  const revision = ++answerLoadRevision;
+  const previousConstraints = constraints.slice(), previousRadius = hideRadiusMi;
+  const isCurrent = () => revision === answerLoadRevision && hideRadiusMi === previousRadius &&
+    constraints.length === previousConstraints.length && constraints.every((q,i)=>q===previousConstraints[i]);
   try{
-    payload = JSON.parse(raw);
-  }catch(e){
-    toast('Invalid JSON - check format');
-    return;
-  }
-  const q = resolveAnsweredQuestion(payload);
-  if(!q){
-    toast(payload?.id
-      ? 'Original question data not found on this device'
-      : 'Invalid answer JSON - missing question context');
-    return;
-  }
-  applyAnswerObject(q, onSuccess);
+    let question = candidate;
+    if(QUESTION_CONTRACTS[candidate.type]){
+      // Every answer entry point needs the same canonical context as an imported
+      // question. Compact packets cannot be applied as geometry-free clues.
+      const original = {...candidate};
+      delete original.answer;
+      question = {...await hydrateOutgoingQuestion(original),answer:candidate.answer};
+      if(candidate.answer_label != null)question.answer_label=candidate.answer_label;
+    }
+    if(!isCurrent())return;
+    validateQuestionForCity(question);
+    validateQuestionInputs(question);
+    const def=QDEFS[question.type];
+    if(def?.hasSpatialContext && getQuestionConstraintScope(question)==='location' && !def.hasSpatialContext(question)){
+      throw new Error('Question geography could not be reconstructed');
+    }
+    applyAnswerObject(question, onSuccess);
+  }catch(e){ if(isCurrent())toast(`Could not apply answer: ${e.message}`); }
 }
 
 function showResult(emoji, title, sub, qboxHTML, autoSelectType=null){
@@ -837,172 +686,22 @@ function renderLog(){
       const def = QDEFS[q._qtype];
       return `<div class="citem"><span class="ctag" style="background:rgba(160,96,255,0.2);color:var(--purple)">RANDOM</span><div class="cdesc"><b>Randomize card played</b> - preloaded question: <b>${q._preset_label || (def ? def.label : q._qtype)}</b></div>${delBtn}</div>`;
     }
-    if(q.type === '_yellow_harden'){
-      return `<div class="citem"><span class="ctag" style="background:rgba(232,64,64,0.15);color:var(--accent)">HARD</span><div class="cdesc"><b>${q._label || 'Yellow region made red'}</b></div>${delBtn}</div>`;
-    }
-    if(q.type === '_yellow_keep'){
-      return `<div class="citem"><span class="ctag" style="background:rgba(24,176,80,0.15);color:var(--green)">GREEN</span><div class="cdesc"><b>${q._label || 'Future-possible region made green'}</b></div>${delBtn}</div>`;
-    }
     const def = QDEFS[q.type];
-    return `<div class="citem"><span class="ctag ${def ? def.colorTag : 'tag-radar'}">${def ? def.label : q.type}</span><div class="cdesc">${def ? def.describe(q) : JSON.stringify(q)}</div>${delBtn}</div>`;
+    const effectTag = getQuestionConstraintScope(q) === 'location'
+      ? `<span class="ctag" style="background:rgba(240,160,48,0.2);color:var(--gold)">LOCATION</span>`
+      : '';
+    return `<div class="citem">${effectTag}<span class="ctag ${def ? def.colorTag : 'tag-radar'}">${def ? def.label : q.type}</span><div class="cdesc">${def ? def.describe(q) : JSON.stringify(q)}</div>${delBtn}</div>`;
   }).join('');
-}
-
-function compactPoint(p){
-  const point = normalizeLatLng(p);
-  return point ? point : null;
-}
-
-function compactConstraintForExport(q){
-  if(!q || typeof q !== 'object') return q;
-  const id = q.id || null;
-  if(q.type === '_setup'){
-    return {
-      type:'_setup',
-      answer:q.answer || 'applied',
-      hide_radius_miles:hideRadiusMi,
-      _label:q._label || `Hide radius: ${hideRadiusMi} mi from any station`,
-    };
-  }
-  if(q.type === '_veto' || q.type === '_randomize_card'){
-    return cloneForStorage(q);
-  }
-  if(q.type === '_yellow_harden' || q.type === '_yellow_keep'){
-    const selected = Array.isArray(q.selected_yellow) ? q.selected_yellow.map(item => ({
-      stop_id:item.stop_id,
-      region_index:Number.isInteger(item.region_index) ? item.region_index : null,
-      ...(item.geometry_key ? {geometry_key:item.geometry_key} : {}),
-    })).filter(item => item.stop_id) : [];
-    const compact = {
-      type:q.type,
-      selected_yellow:selected,
-      _label:q._label || (q.type === '_yellow_keep' ? 'Future-possible region made green' : 'Yellow region made red'),
-    };
-    if(!selected.length && q.boundary_geojson) compact.boundary_geojson = cloneForStorage(q.boundary_geojson);
-    return compact;
-  }
-  if(q.type === 'radar'){
-    return {id, type:q.type, answer:q.answer, answer_label:q.answer_label, center:compactPoint(q.center), radius_miles:q.radius_miles};
-  }
-  if(q.type === 'thermo'){
-    return {id, type:q.type, answer:q.answer, answer_label:q.answer_label, center:compactPoint(q.center), thermo_dest:compactPoint(q.thermo_dest), travel_miles:q.travel_miles};
-  }
-  if(q.type === 'tentacles'){
-    return {
-      id, type:q.type, answer:q.answer, answer_label:q.answer_label,
-      center:compactPoint(q.center),
-      radius_miles:q.radius_miles || 1,
-      category:q.category || null,
-      category_label:q.category_label || q.category || null,
-      options:(Array.isArray(q.options) ? q.options : []).map((opt, i) => {
-        const point = compactPoint(opt);
-        return point ? {id:opt.id || buildTentacleOptionId(opt, i), name:opt.name || `Option ${i + 1}`, ...point} : null;
-      }).filter(Boolean),
-    };
-  }
-  if(q.type === 'matching'){
-    return {
-      id, type:q.type, answer:q.answer, answer_label:q.answer_label,
-      center:compactPoint(q.center),
-      category:q.category,
-      category_label:q.category_label,
-      seeker_val:q.seeker_val,
-      line_id:q.line_id || null,
-      hide_radius_miles:q.hide_radius_miles ?? hideRadiusMi,
-    };
-  }
-  if(q.type === 'nearest'){
-    return {
-      id, type:q.type, answer:q.answer, answer_label:q.answer_label,
-      center:compactPoint(q.center),
-      category:q.category,
-      category_label:q.category_label,
-    };
-  }
-  if(q.type === 'measure'){
-    return {
-      id, type:q.type, answer:q.answer, answer_label:q.answer_label,
-      center:compactPoint(q.center),
-      mode:q.mode || 'distance',
-      category:q.category,
-      category_label:q.category_label,
-    };
-  }
-  if(q.type === 'photo'){
-    return {id, type:q.type, answer:q.answer, answer_label:q.answer_label, prompt:q.prompt};
-  }
-  if(q.type === 'custom_boundary'){
-    const points = Array.isArray(q.points) ? q.points.map(compactPoint).filter(Boolean) : [];
-    const compact = {type:'custom_boundary', mode:q.mode, points};
-    if(!points.length && q.boundary_geojson) compact.boundary_geojson = cloneForStorage(q.boundary_geojson);
-    return compact;
-  }
-  return cloneForStorage(q);
-}
-
-async function hydrateCompactLogConstraint(raw, index, prefix){
-  const q = cloneForStorage(raw);
-  if(!q || typeof q !== 'object') return q;
-  if(q.type === '_setup'){
-    if(Number.isFinite(Number(q.hide_radius_miles))) hideRadiusMi = Number(q.hide_radius_miles);
-    return {type:'_setup', answer:q.answer || 'applied', _label:q._label || `Hide radius: ${hideRadiusMi} mi from any station`};
-  }
-  if(q.type === '_yellow_harden' || q.type === '_yellow_keep'){
-    if(q.boundary_geojson) return q;
-    const selected = Array.isArray(q.selected_yellow) ? q.selected_yellow : [];
-    const state = deriveStopRegionStateFromConstraints(prefix);
-    const yellowFeatures = state?.yellowFeatures || [];
-    const features = selected.map(sel => {
-      const sameStop = yellowFeatures.filter(feature => feature?.properties?.stopId === sel.stop_id);
-      if(Number.isInteger(sel.region_index) && sameStop[sel.region_index]) return sameStop[sel.region_index];
-      return sameStop.find(feature => yellowFeatureKey(feature) === sel.geometry_key) || sameStop[0] || null;
-    }).filter(Boolean);
-    const boundary = buildYellowHardenBoundary(features);
-    if(!boundary) throw new Error('Could not rebuild future-possible selection');
-    return {...q, boundary_geojson:boundary};
-  }
-  if(q.type === 'custom_boundary'){
-    if(!q.boundary_geojson && Array.isArray(q.points) && q.points.length >= 3){
-      q.boundary_geojson = buildCustomBoundaryFeature(q.points);
-    }
-    return q;
-  }
-  if(!QDEFS[q.type]) return q;
-  const payload = {...q, id:q.id || `log_${index}`};
-  let full = null;
-  switch(q.type){
-    case 'radar': full = buildStoredRadarQuestion(payload); break;
-    case 'thermo': full = buildStoredThermoQuestion(payload); break;
-    case 'tentacles': full = await buildStoredTentaclesQuestion(payload); break;
-    case 'photo': full = buildStoredPhotoQuestion(payload); break;
-    case 'matching': full = buildStoredMatchingQuestion(payload) || await rebuildMatchingQuestion(payload); break;
-    case 'nearest': full = buildStoredNearestQuestion(payload) || await rebuildNearestQuestion(payload); break;
-    case 'measure': full = buildStoredMeasureQuestion(payload) || await rebuildMeasureQuestion(payload); break;
-    default: full = q;
-  }
-  return {...full, answer:q.answer, answer_label:q.answer_label};
-}
-
-async function hydrateImportedQuestionLog(importedConstraints, version){
-  if(version !== 2) return cloneForStorage(importedConstraints);
-  const hydrated = [];
-  for(let i=0; i<importedConstraints.length; i++){
-    const q = await hydrateCompactLogConstraint(importedConstraints[i], i, hydrated);
-    hydrated.push(q);
-  }
-  return hydrated;
 }
 
 function exportQuestionLog(){
   const payload = {
-    kind:'jetlag_mbta_question_log',
-    version:2,
+    kind:'jetlag_question_log',
+    version:4,
+    ...cityMetadata(),
+    hide_radius_miles:hideRadiusMi,
     exported_at:new Date().toISOString(),
-    game:{
-      hide_radius_miles:hideRadiusMi,
-      serializer:'compact-log-v2',
-    },
-    constraints: constraints.map(compactConstraintForExport),
+    constraints: cloneForStorage(constraints),
   };
   const text = JSON.stringify(payload);
   const input = document.getElementById('log-transfer-json');
@@ -1012,72 +711,92 @@ function exportQuestionLog(){
     .catch(()=>toast('Question log exported (copy manually)'));
 }
 
-async function importQuestionLog(){
-  const input = document.getElementById('log-transfer-json');
-  const raw = (input?.value || '').trim();
-  if(!raw){
-    toast('Paste an exported question log first');
-    return;
-  }
-  let parsed;
-  try{
-    parsed = JSON.parse(raw);
-  }catch(e){
-    toast('Invalid JSON - check format');
-    return;
-  }
-
-  const importedConstraints = Array.isArray(parsed)
-    ? parsed
-    : (Array.isArray(parsed?.constraints) ? parsed.constraints : null);
-  if(!importedConstraints){
-    toast('Invalid question log payload');
-    return;
-  }
-  if(!importedConstraints.every(item => item && typeof item === 'object' && typeof item.type === 'string')){
-    toast('Question log entries are malformed');
-    return;
-  }
-
-  const shouldImport = window.confirm('Importing this question log will replace your current questions and answers. Continue?');
-  if(!shouldImport) return;
-
-  const previousConstraints = constraints;
-  const previousHideRadiusMi = hideRadiusMi;
-  const previousValidZone = validZone;
-  const previousStopRegionState = stopRegionState;
-
-  try{
-    if(Number.isFinite(Number(parsed?.game?.hide_radius_miles))){
-      hideRadiusMi = Number(parsed.game.hide_radius_miles);
+function importedLogRadius(parsed, entries){
+  let radius = parsed?.hide_radius_miles ?? parsed?.game?.hide_radius_miles;
+  if(radius == null){
+    const setup = entries.find(q=>q.type === '_setup');
+    radius = setup?.hide_radius_miles;
+    // Versions 1–3 stored the radius only in the setup description.
+    if(radius == null && setup?._label){
+      const match = /^Hide radius: ([\d.]+) (ft|mi) from any station$/.exec(setup._label);
+      if(!match) throw new Error('Cannot read the hiding radius in this older log. Export it again from its original game.');
+      radius = Number(match[1]) / (match[2] === 'ft' ? 5280 : 1);
     }
-    const version = Array.isArray(parsed) ? 1 : parsed?.version;
-    const hydratedConstraints = await hydrateImportedQuestionLog(importedConstraints, version);
-    constraints = hydratedConstraints;
-  }catch(e){
-    console.error('Question log import failed', e);
-    hideRadiusMi = previousHideRadiusMi;
-    constraints = previousConstraints;
-    validZone = previousValidZone;
-    stopRegionState = previousStopRegionState;
-    toast(e?.message || 'Could not import log - question data could not be rebuilt');
-    return;
   }
+  if(radius == null) radius = hideRadiusMi; // Legacy logs without setup retain the current radius.
+  if(typeof radius !== 'number' || !Number.isFinite(radius) || radius <= 0 || radius > 100){
+    throw new Error('Question log has an invalid hiding radius');
+  }
+  return radius;
+}
 
-  if(recomputeZoneFromConstraints()){
-    scheduleSaveGame();
-    renderLog();
-    switchTab('log');
-    toast('Question log imported - previous log replaced');
-  }else{
-    hideRadiusMi = previousHideRadiusMi;
-    constraints = previousConstraints;
-    validZone = previousValidZone;
-    stopRegionState = previousStopRegionState;
-    renderZone();
-    renderLog();
-    toast('Could not import log - invalid setup data');
+async function prepareQuestionLog(parsed){
+  const compatibilityError = cityCompatibilityError(parsed);
+  if(compatibilityError) throw new Error(compatibilityError);
+  if(parsed?.version > 4) throw new Error('Question log uses a newer format');
+  const entries = Array.isArray(parsed) ? parsed : parsed?.constraints;
+  if(!Array.isArray(entries) || !entries.every(q=>q && typeof q === 'object' && typeof q.type === 'string')){
+    throw new Error('Question log entries are malformed');
   }
+  const radius = importedLogRadius(parsed, entries);
+  const hydrated = [];
+  for(const [index,rawEntry] of entries.entries()){
+    const entry=migrateLegacyManualConstraint(rawEntry);
+    if(entry.city_id || entry.dataset_version){
+      const error = cityCompatibilityError(entry);
+      if(error) throw new Error(error);
+    }
+    if(['_setup','_veto','_randomize_card'].includes(entry.type)){
+      hydrated.push(entry.type === '_setup' ? {...cloneForStorage(entry), hide_radius_miles:radius,
+        _label:`Hide radius: ${radius < 1 ? (radius*5280).toFixed(0)+' ft' : radius+' mi'} from any station`} : cloneForStorage(entry));
+      continue;
+    }
+    if(!QDEFS[entry.type]) throw new Error(`Unknown question type: ${entry.type}`);
+    if(entry.type === 'custom_boundary'){
+      if(!entry.boundary_geojson && entry.points?.length>=3)entry.boundary_geojson=buildCustomBoundaryFeature(entry.points);
+      if(!['include','exclude'].includes(entry.mode) || !entry.boundary_geojson || !Number.isFinite(turf.area(entry.boundary_geojson))){
+        throw new Error('Question log contains an invalid custom boundary');
+      }
+      hydrated.push(cloneForStorage(entry));
+      continue;
+    }
+    if(entry.answer == null) throw new Error('Question log contains an unanswered question');
+    validateQuestionInputs(entry);
+    const original = {...cityMetadata(), ...entry, id:entry.id || `legacy_log_${index}`};
+    delete original.answer;
+    // Hydration loads and checks referenced local datasets before any game mutation.
+    const question = await hydrateOutgoingQuestion(original);
+    hydrated.push({...question, answer:entry.answer,
+      ...(entry._label ? {_label:entry._label} : {})});
+  }
+  const nextConstraints = normalizeConstraintList(hydrated);
+  const previousRadius = hideRadiusMi;
+  let state;
+  try{
+    hideRadiusMi = radius;
+    const base = buildHideRadiusZone();
+    if(!base) throw new Error('Could not rebuild the imported hiding area');
+    state = deriveZoneStateFromConstraints(base, nextConstraints);
+    if(!state?.validZone) throw new Error('Could not rebuild the imported zone');
+  }finally{
+    hideRadiusMi = previousRadius;
+  }
+  return {constraints:nextConstraints, radius, zone:state.validZone};
+}
+
+async function importQuestionLog(){
+  const raw = (document.getElementById('log-transfer-json')?.value || '').trim();
+  if(!raw){ toast('Paste an exported question log first'); return; }
+  let parsed;
+  try{ parsed=JSON.parse(raw); }catch(e){ toast('Invalid JSON - check format'); return; }
+  let prepared;
+  try{ prepared=await prepareQuestionLog(parsed); }
+  catch(e){ toast(`Could not import log: ${e.message}`); return; }
+  if(!window.confirm('Importing this question log will replace your current questions, answers, and hiding radius. Continue?')) return;
+  hideRadiusMi = prepared.radius;
+  commitZoneState(prepared.zone, prepared.constraints);
+  switchTab('log');
+  toast('Question log imported - previous log replaced');
 }
 
 function recomputeZoneFromConstraints(){
@@ -1086,24 +805,63 @@ function recomputeZoneFromConstraints(){
     toast('Could not rebuild base zone');
     return false;
   }
-  drawHideRadiusVisuals();
-  if(!syncZoneStateFromConstraints()){
-    validZone = baseZone;
-    stopRegionState = deriveStopRegionStateFromConstraints(constraints);
-    if(!stopRegionState?.hardUnion){
-      return false;
-    }
+  constraints = normalizeConstraintList(constraints);
+  const nextState = deriveZoneStateFromConstraints(baseZone, constraints);
+  if(!nextState?.validZone){
+    toast('Could not rebuild zone state');
+    return false;
   }
+  stopRegionState = nextState.stopState || deriveStopRegionState(nextState.validZone, constraints);
+  validZone = stopRegionState?.hardUnion || nextState.validZone;
+  softZone = stopRegionState?.yellowUnion || nextState.softZone || null;
+  drawHideRadiusVisuals();
   renderZone();
   renderLog();
   saveGame();
   return true;
 }
 
+function commitZoneState(nextHardZone, nextConstraints, preparedState=null){
+  constraints = normalizeConstraintList(nextConstraints);
+  const next = preparedState || deriveZoneStateFromConstraints(buildHideRadiusZone(), constraints);
+  stopRegionState = next.stopState;
+  validZone = next.validZone;
+  softZone = stopRegionState?.yellowUnion || null;
+  drawHideRadiusVisuals();
+  renderZone();
+  renderLog();
+  saveGame();
+  return true;
+}
+
+function applyConstraintIncrementally(question){
+  const q = normalizeConstraintEntry(question);
+  const def = QDEFS[q?.type];
+  if(!def) return false;
+  const nextConstraints = [...constraints, q];
+  if(def.affectsZone === false){
+    constraints = nextConstraints;
+    clearZonePreview();
+    renderLog();
+    saveGame();
+    return true;
+  }
+  const next = deriveZoneStateFromConstraints(buildHideRadiusZone(), nextConstraints);
+  return commitZoneState(next.validZone, nextConstraints, next);
+}
+
 function deleteConstraintAt(index){
   if(index < 0 || index >= constraints.length) return;
   if(constraints[index]?.type === '_setup') return;
+  const affectsZone = QDEFS[constraints[index]?.type]?.affectsZone !== false;
   constraints.splice(index, 1);
+  if(!affectsZone){
+    clearZonePreview();
+    renderLog();
+    saveGame();
+    toast('Constraint removed');
+    return;
+  }
   if(recomputeZoneFromConstraints()){
     toast('Constraint removed and zone recomputed');
   }

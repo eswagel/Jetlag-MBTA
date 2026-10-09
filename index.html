@@ -3,25 +3,45 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <script>if(new URLSearchParams(location.search).get('play')==='1')document.documentElement.classList.add('session-document','session-loading');</script>
+  <style>
+    .session-document #setup-overlay { display:none !important; }
+    #game-loading { display:none; position:fixed; inset:0; z-index:6000; background:#080d12; color:#edf2f7; align-items:center; justify-content:center; text-align:center; font:14px monospace; }
+    .session-loading #game-loading, #game-loading.active { display:flex; }
+    #game-loading-retry[hidden] { display:none !important; }
+    #game-loading h1 { font-size:22px; margin:20px 0 12px; }
+    #game-loading p { color:#9baabd; line-height:1.7; }
+    .loading-pulse { width:48px; height:4px; margin:auto; border-radius:4px; background:#ef4040; animation:loading-pulse 1.2s ease-in-out infinite alternate; }
+    @keyframes loading-pulse { to { opacity:.25; transform:scaleX(.5); } }
+    @media(prefers-reduced-motion:reduce) { .loading-pulse { animation:none; } }
+  </style>
   <title>Jet Lag — MBTA Boston</title>
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 viewBox=%270 0 32 32%27%3E%3Crect width=%2732%27 height=%2732%27 rx=%276%27 fill=%27%23151f2e%27/%3E%3Cpath d=%27M8 6h16v17H8zM10 26l4-5m8 5l-4-5%27 fill=%27none%27 stroke=%27%23ef4040%27 stroke-width=%273%27/%3E%3C/svg%3E">
   <meta name="theme-color" content="#080d12">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link href="https://fonts.googleapis.com/css2?family=Space+Mono:wght@400;700&family=IBM+Plex+Mono:ital,wght@0,300;0,400;0,500;1,300&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/Turf.js/6.5.0/turf.min.js"></script>
-  <link rel="stylesheet" href="assets/css/app.css">
+  <link rel="stylesheet" href="https://unpkg.com/maplibre-gl@5.24.0/dist/maplibre-gl.css">
+  <link rel="stylesheet" href="assets/css/app.css?v=question-fixes-3">
 </head>
 <body>
+<div id="game-loading" role="status" aria-live="polite">
+  <div><div class="loading-pulse" aria-hidden="true"></div><h1 id="game-loading-title">Loading game…</h1>
+    <p id="game-loading-message">Preparing the map and station data.</p>
+    <button id="game-loading-retry" class="btn btn-sec" hidden onclick="SessionLoading.retry()">Reload</button>
+  </div>
+</div>
 
 <div id="setup-overlay">
   <div id="setup-card">
-    <div class="setup-eyebrow">Jet Lag: The Game · Boston</div>
-    <div class="setup-title">MBTA<br><span>Hide &amp; Seek</span></div>
-    <div class="setup-sub">The hider picks a secret location somewhere on the T network. Seekers eliminate zones by asking questions.</div>
+    <div class="setup-eyebrow" id="setup-eyebrow">Jet Lag: The Game · Boston</div>
+    <div class="setup-title"><span id="setup-network">MBTA</span><br><span>Hide &amp; Seek</span></div>
+    <div class="setup-sub" id="setup-description">The hider picks a secret location somewhere on the T network. Seekers eliminate zones by asking questions.</div>
 
+    <div id="city-picker"></div>
+    <p id="city-preview-note" class="city-preview-note" hidden></p>
     <div class="setup-section-label">Your role this game</div>
     <div class="mode-grid">
       <div class="mode-card seeker selected" data-mode="seeker" onclick="selectMode(this)">
@@ -70,8 +90,8 @@
       <div class="radius-opt" data-mi="1.0" onclick="selectRadius(this)">
         <div class="radius-radio"></div>
         <div class="radius-label">
-          <div class="radius-name">Anywhere near the T</div>
-          <div class="radius-desc">1 mile from any station — nearly all of Boston</div>
+          <div class="radius-name">Anywhere near rail</div>
+          <div class="radius-desc">Within 1 mile of any station</div>
         </div>
         <div class="radius-badge">1 mile</div>
       </div>
@@ -88,18 +108,21 @@
 <div id="map"></div>
 
 <div id="zone-key">
-  <div class="zk-item"><div class="zk-swatch zk-valid"></div><span>Still In Play</span></div>
-  <div class="zk-item"><div class="zk-swatch zk-temp"></div><span>Future Possible</span></div>
+  <div class="zk-item"><div class="zk-swatch zk-valid"></div><span>In Play</span></div>
+  <div class="zk-item"><div class="zk-swatch zk-temp"></div><span>Temporary</span></div>
   <div class="zk-item"><div class="zk-swatch zk-elim"></div><span>Eliminated</span></div>
   <span id="zone-area"></span>
 </div>
-<div id="yellow-review-bar"></div>
 
 <div id="legend">
-  <div class="leg-row"><div class="leg-line" style="background:#DA291C"></div>Red (Ashmont/Braintree)</div>
+  <div class="leg-row"><div class="leg-line" style="background:#DA291C"></div>Red · Ashmont</div>
+  <div class="leg-row"><div class="leg-line" style="background:#DA291C;opacity:0.6"></div>Red · Braintree</div>
   <div class="leg-row"><div class="leg-line" style="background:#ED8B00"></div>Orange</div>
   <div class="leg-row"><div class="leg-line" style="background:#003DA5"></div>Blue</div>
-  <div class="leg-row"><div class="leg-line" style="background:#00843D"></div>Green (B/C/D/E)</div>
+  <div class="leg-row"><div class="leg-line" style="background:#00843D"></div>Green B</div>
+  <div class="leg-row"><div class="leg-line" style="background:#00843D;opacity:0.78"></div>Green C</div>
+  <div class="leg-row"><div class="leg-line" style="background:#00843D;opacity:0.6"></div>Green D</div>
+  <div class="leg-row"><div class="leg-line" style="background:#00843D;opacity:0.45"></div>Green E</div>
   <div class="leg-row"><div class="leg-line" style="background:#DA291C;opacity:0.4;border-top:2px dashed #DA291C;background:none"></div>Mattapan</div>
   <div id="leg-status" class="leg-row" style="color:#f0a030;font-size:7px;margin-top:2px">⟳ Loading…</div>
 </div>
@@ -112,9 +135,8 @@
   <div id="msb-btns"></div>
   <div class="msb-divider"></div>
   <div id="msb-key" class="msb-key">
-    <span class="msb-key-item msb-key-item-keep"><span class="msb-swatch msb-swatch-keep"></span>keeps</span>
-    <span class="msb-key-item msb-key-item-cut"><span class="msb-swatch msb-swatch-cut"></span>cuts</span>
-    <span class="msb-key-item msb-key-item-future" tabindex="0" title="Future possible: ruled out by this answer for now, but its stop is not fully eliminated and could become possible after the hider moves." data-tooltip="Ruled out now, but the stop remains possible later."><span class="msb-swatch msb-swatch-future"></span>future possible</span>
+    <span class="msb-key-item" style="color:#72df93"><span class="msb-swatch msb-swatch-keep" style="background:rgba(24,176,80,0.42);border:1.5px solid #4fe07c"></span>keeps</span>
+    <span class="msb-key-item" style="color:#ff7a7a"><span class="msb-swatch msb-swatch-cut" style="background:rgba(232,64,64,0.42);border:1.5px solid #ff6b6b"></span>cuts</span>
   </div>
   <div class="msb-divider"></div>
   <div class="msb-area" id="msb-area">tap to preview</div>
@@ -125,7 +147,7 @@
 <div id="panel" class="collapsed">
   <div id="handle-row">
     <div class="handle-pill"></div>
-    <span class="title">Jet Lag · MBTA</span>
+    <span class="title" data-city-network-title>Jet Lag · MBTA</span>
     <div style="display:flex;align-items:center;gap:6px">
       <div id="mode-badge"></div>
       <span id="zone-stat">OPEN</span>
@@ -318,7 +340,7 @@
 <!-- ── RESUME GAME OVERLAY ── -->
 <div id="resume-overlay" class="modal-overlay hidden" style="z-index:4000">
   <div class="modal-card" style="max-width:360px">
-    <div class="modal-eyebrow">Jet Lag · MBTA</div>
+    <div class="modal-eyebrow" data-city-network-title>Jet Lag · MBTA</div>
     <div class="modal-title">Resume Game?</div>
     <div id="resume-summary" class="modal-body"></div>
     <button class="btn btn-red" style="margin-bottom:8px" onclick="resumeGame()">Resume →</button>
@@ -326,12 +348,21 @@
   </div>
 </div>
 
-<script src="assets/js/app/01-core.js"></script>
-<script src="assets/js/app/02-map.js"></script>
-<script src="assets/js/app/03-setup.js"></script>
-<script src="assets/js/app/04-build.js"></script>
-<script src="assets/js/app/05-hider.js"></script>
-<script src="assets/js/app/06-seeker.js"></script>
-<script src="assets/js/app/07-bootstrap.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/Turf.js/6.5.0/turf.min.js"></script>
+  <script src="https://unpkg.com/maplibre-gl@5.24.0/dist/maplibre-gl.js"></script>
+  <script src="https://unpkg.com/@maplibre/maplibre-gl-leaflet@0.1.4/leaflet-maplibre-gl.js"></script>
+<script src="assets/js/app/00-cities.js?v=question-fixes-3"></script>
+<script src="assets/js/app/00-city-picker.js?v=question-fixes-3"></script>
+<script src="assets/js/app/chicago-service.js?v=question-fixes-3"></script>
+<script src="assets/js/app/linear-distance-filter.js?v=question-fixes-3"></script>
+<script src="assets/js/app/01-core.js?v=question-fixes-3"></script>
+<script src="assets/js/app/02-map.js?v=question-fixes-3"></script>
+<script src="assets/js/app/03-setup.js?v=question-fixes-3"></script>
+<script src="assets/js/app/04-build.js?v=question-fixes-3"></script>
+<script src="assets/js/app/05-hider.js?v=question-fixes-3"></script>
+<script src="assets/js/app/06-seeker.js?v=question-fixes-3"></script>
+<script src="assets/js/app/04-city-questions.js?v=question-fixes-3"></script>
+<script src="assets/js/app/07-bootstrap.js?v=question-fixes-3"></script>
 </body>
 </html>

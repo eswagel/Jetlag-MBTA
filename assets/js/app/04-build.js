@@ -7,7 +7,7 @@ function _clearClicks(){ _clicks.length=0; }
 // ── Category data ──
 // ── Matching categories — "Are we in the same ___?" ──
 // resolve(latLng) returns { val: string, boundary: GeoJSON polygon | null }
-const MATCHING_CATS = [
+const MATCHING_CATS = configureQuestionCategories('matching', [
   {
     icon:'🚇', label:'T Line', cat:'line',
     resolve: async (_c, opts={}) => {
@@ -88,7 +88,7 @@ const MATCHING_CATS = [
       return { val, boundary };
     }
   },
-];
+]);
 
 const PHOTO_PROMPTS = [
   {icon:'TREE', text:'A Tree'},
@@ -100,7 +100,7 @@ const PHOTO_PROMPTS = [
 ];
 
 // ── Nearest categories — "Is the nearest ___ to me the same as to you?" ──
-const NEAREST_CATS = [
+const NEAREST_CATS = configureQuestionCategories('nearest', [
   { icon:'🌳', label:'Park',             instances: async()=>{ await loadPoiData(); return getNamedPoiCollection('Park'); }, overpass:(c,r)=>`nwr["leisure"="park"]["name"](around:${r},${c.lat},${c.lng});` },
   { icon:'⛳', label:'Golf Course',      instances: async()=>{ await loadPoiData(); return getNamedPoiCollection('Golf Course'); }, overpass:(c,r)=>`nwr["leisure"="golf_course"](around:${r},${c.lat},${c.lng});` },
   { icon:'📚', label:'Library',          instances: async()=>{ await loadPoiData(); return getNamedPoiCollection('Library'); }, overpass:(c,r)=>`nwr["amenity"="library"](around:${r},${c.lat},${c.lng});` },
@@ -109,7 +109,7 @@ const NEAREST_CATS = [
   { icon:'🎬', label:'Movie Theater',   instances: async()=>{ await loadPoiData(); return getNamedPoiCollection('Movie Theater'); }, overpass:(c,r)=>`nwr["amenity"="cinema"](around:${r},${c.lat},${c.lng});` },
   { icon:'🦒', label:'Zoo / Aquarium',  instances: async()=>{ await loadPoiData(); return getNamedPoiCollection('Zoo / Aquarium'); }, overpass:(c,r)=>`nwr["tourism"~"^(zoo|aquarium)$"](around:${r},${c.lat},${c.lng});` },
   { icon:'🏳️', label:'Foreign Consulate', instances: async()=>{ await loadPoiData(); return getNamedPoiCollection('Foreign Consulate'); }, overpass:(c,r)=>`nwr["office"~"diplomatic|consulate"](around:${r},${c.lat},${c.lng});nwr["amenity"="embassy"](around:${r},${c.lat},${c.lng});` },
-];
+]);
 // osm_class: 'boundary', 'postcode', or null (any)
 // admin_level: OSM admin level (6=county, 8=municipality, 10=neighborhood) or null
 async function fetchNominatimBoundary(query, featureClass, adminLevel){
@@ -364,24 +364,25 @@ function renderMeasureParams(){
     h += `<div style="font-size:7.5px;letter-spacing:0.1em;text-transform:uppercase;color:var(--dim);margin:8px 0 5px">${grp}</div>`;
     h += '<div class="poi-presets">';
     cats.forEach(c=>{
-      h+=`<div class="poi-chip ${qparams._mcat===c.label?'on':''}" onclick="${_c(()=>selectMeasureCat(c))}">${c.icon} ${c.label}</div>`;
+      h+=`<div class="poi-chip ${resolveCategory('measure',qparams._mcat)?.id===c.id?'on':''}" onclick="${_c(()=>selectMeasureCat(c))}">${c.icon} ${c.label}${cityQuestionUnavailableReason({type:'measure',category:c.label}) ? ' · pending' : ''}</div>`;
     });
     h += '</div>';
   });
 
-  if(qparams._msearching) h+=`<div style="font-size:9px;color:var(--dim);margin-top:8px">${isSeaLevelMeasure(qparams.measure_cat_label) ? '⏳ Looking up elevation…' : '⏳ Finding nearest…'}</div>`;
+  if(qparams._msearching) h+=`<div style="font-size:9px;color:var(--dim);margin-top:8px">${isSeaLevelMeasure(qparams.measure_cat || qparams.measure_cat_label) ? '⏳ Looking up elevation…' : '⏳ Finding nearest…'}</div>`;
   else if(qparams.measure_mode === 'elevation' && Number.isFinite(qparams.measure_seeker_elevation_ft))
     h+=`<div class="found-result" style="margin-top:8px">
       ⛰️ <b>${qparams.measure_seeker_elevation_ft.toFixed(0)} ft above sea level</b><br>
       <span style="color:var(--dim)">${qparams.measure_seeker_elevation_m.toFixed(1)} m above sea level</span><br>
-      <span style="font-size:8px;color:var(--dim)">USGS point elevation estimate for your selected location</span>
+      <span style="font-size:8px;color:var(--dim)">${preloadedData.elevation?.pointLookup==='local-grid' ? 'USGS terrain estimate · '+(preloadedData.elevation.approximation || 'Approximate sampled terrain')+' Building floors are not represented.' : 'USGS point elevation estimate for your selected location'}</span>
     </div>`;
   else if(qparams.measure_seeker_nearest)
     h+=`<div class="found-result" style="margin-top:8px">
       📍 <b>${qparams.measure_seeker_nearest.name}</b><br>
       <span style="color:var(--dim)">${qparams.measure_seeker_dist.toFixed(2)} mi from you</span><br>
-      <span style="font-size:8px;color:var(--dim)">${qparams.measure_all_instances?.length||1} instances found for zone</span>
+      <span style="font-size:8px;color:var(--dim)">${qparams.measure_instance_count||qparams.measure_all_instances?.length||1} mapped feature${(qparams.measure_instance_count||qparams.measure_all_instances?.length||1)===1?'':'s'} used for zone</span>
     </div>`;
+  if(measureFilterConfig(qparams.measure_cat)) h+='<p style="font-size:9px;color:var(--dim);line-height:1.5">Distance answers use the nearest mapped feature. Uncertain map cells remain in play for either answer.</p>';
   return h;
 }
 
@@ -394,7 +395,7 @@ function renderTentaclesParams(){
   });
   let h='<div class="sec">Tentacle Type</div><div class="poi-presets">';
   TENTACLES_CATS.forEach(c=>{
-    h+=`<div class="poi-chip ${qparams._tcat===c.label?'on':''}" onclick="${_c(()=>selectTentacleCat(c))}">${c.icon} ${c.label}</div>`;
+    h+=`<div class="poi-chip ${resolveCategory('tentacles',qparams._tcat)?.id===c.id?'on':''}" onclick="${_c(()=>selectTentacleCat(c))}">${c.icon} ${c.label}</div>`;
   });
   h+='</div>';
   const radPresets=[{r:0.5,l:'½ mi'},{r:1,l:'1 mi'},{r:2,l:'2 mi'}];
@@ -404,13 +405,6 @@ function renderTentaclesParams(){
       setParam('radius_miles',p.r);
       updatePreview();
       renderBuildBody();
-      if(qparams._tcat && !qparams._tsearching){
-        const catObj = TENTACLES_CATS.find(c => c.label === qparams._tcat || c.label === qparams._tcatlabel || c.label === qparams.tentacles_cat_label);
-        if(catObj) selectTentacleCat(catObj);
-        else if(qparams.tentacle_options) tryGenerate();
-      } else if(qparams.tentacle_options){
-        tryGenerate();
-      }
     })}">${p.l}</div>`;
   });
   h+='</div>';
@@ -452,6 +446,16 @@ function renderMatchingParams(){
       </div>`;
     });
     h += '</div>';
+    const service = qparams.matching_service_snapshot;
+    if(service && ['scheduled-active','live-assisted-active'].includes(service.status)){
+      const live = service.status === 'live-assisted-active';
+      const label = live ? 'Live observations + saved timetable' : 'Saved timetable · live service unavailable';
+      const time = new Date(service.observedAt).toLocaleString(undefined,{timeZone:ACTIVE_CITY.timezone,month:'short',day:'numeric',hour:'numeric',minute:'2-digit'});
+      h += `<div class="found-result service-provenance" style="margin-top:8px">
+        <b>${label}</b><div>${service.stationIds.length} stations · ${escapePreviewOptionLabel(time)}</div>
+        <div>${live ? 'Unreported trips use scheduled service.' : 'Special stops and disruptions may differ from the timetable.'}</div>
+      </div>`;
+    }
   }
   else if(qparams.matching_seeker_val){
     const hasBoundary = !!qparams.matching_boundary;
@@ -467,7 +471,7 @@ function renderMatchingParams(){
   h += '<div class="sec" style="margin-top:14px;padding-top:14px;border-top:1px solid var(--border)">Is the nearest ___ to me the same as to you?</div>';
   h += '<div style="display:flex;flex-direction:column;gap:5px;margin-top:6px">';
   NEAREST_CATS.forEach(c=>{
-    const sel = qparams.nearest_cat === c.label;
+    const sel = resolveCategory('nearest',qparams.nearest_cat)?.id === c.id;
     h += `<div class="sitem${sel?' active-row':''}" style="${sel?'border-color:var(--teal);background:rgba(32,200,176,0.08)':''}"
       onclick="${_c(()=>selectNearestCat(c))}">
       <span style="font-size:16px;margin-right:10px;vertical-align:middle">${c.icon}</span>
@@ -492,11 +496,40 @@ function renderMatchingParams(){
   return h;
 }
 
+// User choices survive a point change; all computed values are disposable.
+// New derived fields are invalidated by default rather than needing a reset list.
+const PICK_INPUT_KEYS = ['radius_miles', '_customR', 'travel_miles',
+  '_matching_mode', 'matching_cat', 'matching_cat_label', 'matching_line_id',
+  'matching_line_label', 'nearest_cat', 'nearest_cat_label', 'measure_cat',
+  'measure_cat_label', '_mcat', '_mcatlabel', '_tcat', '_tcatlabel',
+  'tentacles_cat_label'];
+let buildLookupRevision = 0;
+function beginBuildLookup(){
+  const revision = ++buildLookupRevision;
+  const params = qparams;
+  return () => revision === buildLookupRevision && params === qparams;
+}
+function invalidatePickedLocation(changedKey=null){
+  invalidateBuildInputs({changedPoint:changedKey});
+}
+function invalidateBuildInputs({changedPoint=null, preservePoints=false}={}){
+  ++buildLookupRevision;
+  const otherPoints = preservePoints || changedPoint ? (QDEFS[qtype]?.pickSteps || []).map(step => step.key).filter(key => key !== changedPoint) : [];
+  qparams = Object.fromEntries([...PICK_INPUT_KEYS, ...otherPoints].filter(key => key in qparams).map(key => [key, qparams[key]]));
+  currentBuiltQuestion = null;
+  _tentacleSelection = null;
+  clearZonePreview();
+  clearPoiMarkers();
+  document.getElementById('json-out-section').style.display='none';
+  document.getElementById('map-simul-bar').classList.remove('visible');
+}
+
 async function selectMatchingCat(catObj){
   if(!qparams.center){ toast('Set your location first'); return; }
   if(catObj.cat === 'landmass' && !_landmassCache.ready){
     toast('⏳ Still loading landmasses — try again in a moment'); return;
   }
+  const isCurrent = beginBuildLookup();
   qparams._matching_mode = 'matching';
   qparams.matching_cat = catObj.cat;
   qparams.matching_cat_label = catObj.label;
@@ -506,7 +539,11 @@ async function selectMatchingCat(catObj){
     qparams.matching_hide_radius_miles = null;
   }
   qparams.matching_seeker_val = null;
+  qparams.matching_service_snapshot = null;
   qparams.matching_boundary = null;
+  qparams._matching_boundary_simplified = null;
+  currentBuiltQuestion = null;
+  clearZonePreview();
   qparams.nearest_cat = null;
   qparams.nearest_cat_label = null;
   qparams.nearest_seeker_poi = null;
@@ -525,9 +562,11 @@ async function selectMatchingCat(catObj){
       lineId: qparams.matching_line_id,
       hideRadiusMiles: hideRadiusMi,
     });
+    if(!isCurrent()) return;
     qparams._matching_searching = false;
     if(!result.val){ toast('Could not determine your '+catObj.label+' — try a different location'); renderBuildBody(); return; }
     qparams.matching_seeker_val = result.val;
+    qparams.matching_service_snapshot = result.service_snapshot || null;
     if(result.line_id){
       qparams.matching_line_id = result.line_id;
       qparams.matching_line_label = result.val;
@@ -535,11 +574,11 @@ async function selectMatchingCat(catObj){
     }
     // Normalize: ensure seeker's point is INSIDE the polygon, flip if not
     let boundary = result.boundary || null;
-    if(boundary && catObj.cat !== 'line'){
+    if(boundary && catObj.cat !== 'line' && !isChicagoGame()){
       try{
         const pt = turf.point([qparams.center.lng, qparams.center.lat]);
         if(!turf.booleanPointInPolygon(pt, boundary)){
-          const BBOX = turf.bboxPolygon([-72.5, 41.5, -70.0, 43.0]);
+          const BBOX = cloneGeo(INIT_POLY);
           const flipped = turf.difference(BBOX, boundary);
           if(flipped && turf.booleanPointInPolygon(pt, flipped)){
             boundary = flipped;
@@ -560,6 +599,7 @@ async function selectMatchingCat(catObj){
     renderBuildBody();
     tryGenerate();
   } catch(e){
+    if(!isCurrent()) return;
     qparams._matching_searching = false;
     toast('Lookup failed: '+e.message);
     renderBuildBody();
@@ -567,7 +607,7 @@ async function selectMatchingCat(catObj){
 }
 
 async function selectMatchingLine(lineId){
-  const catObj = MATCHING_CATS.find(c => c.cat === 'line');
+  const catObj = resolveCategory('matching','line');
   const line = GAME_LINES.find(gl => gl.id === lineId);
   if(!catObj || !line){ toast('Unknown line'); return; }
   qparams.matching_line_id = line.id;
@@ -577,13 +617,15 @@ async function selectMatchingLine(lineId){
 
 async function selectNearestCat(catObj){
   if(!qparams.center){ toast('Set your location first'); return; }
+  const isCurrent = beginBuildLookup();
   qparams._matching_mode = 'nearest';
   qparams.matching_cat = null;
   qparams.matching_cat_label = null;
   qparams.matching_seeker_val = null;
+  qparams.matching_service_snapshot = null;
   qparams.matching_boundary = null;
   qparams._matching_boundary_simplified = null;
-  qparams.nearest_cat = catObj.label;
+  qparams.nearest_cat = catObj.id;
   qparams.nearest_cat_label = catObj.label;
   qparams.nearest_seeker_poi = null;
   qparams.nearest_all_pois = null;
@@ -593,6 +635,7 @@ async function selectNearestCat(catObj){
   try{
     const radiusM = 35000;
     const pois = await getCategoryInstances(catObj, qparams.center, radiusM);
+    if(!isCurrent()) return;
     qparams._nearest_searching = false;
     if(!pois.length){ toast('No '+catObj.label+' found nearby'); renderBuildBody(); return; }
     pois.sort((a,b)=>turfDist(qparams.center,a)-turfDist(qparams.center,b));
@@ -602,7 +645,7 @@ async function selectNearestCat(catObj){
     if(pois.length >= 2){
       try{
         const fc = turf.featureCollection(pois.map(p=>turf.point([p.lng,p.lat])));
-        const cells = turf.voronoi(fc, {bbox:[-72,41.5,-70,43]});
+        const cells = turf.voronoi(fc, {bbox:[W,S,E,N]});
         if(cells && cells.features.length){
           // Find cell containing the nearest POI point
           const nearestPt = turf.point([pois[0].lng, pois[0].lat]);
@@ -630,7 +673,7 @@ async function selectNearestCat(catObj){
       }catch(e){ console.warn('Voronoi failed:',e); }
     }
     renderBuildBody(); tryGenerate();
-  }catch(e){ qparams._nearest_searching=false; toast('Search failed: '+e.message); renderBuildBody(); }
+  }catch(e){ if(!isCurrent()) return; qparams._nearest_searching=false; toast('Search failed: '+e.message); renderBuildBody(); }
 }
 
 function renderPhotoParams(){
@@ -675,7 +718,14 @@ function renderCustomBoundaryParams(){
 }
 
 // Helpers for param rendering
-function setParam(k,v){ qparams[k]=v; }
+function setParam(k,v){
+  if(qparams[k] === v) return;
+  // Parameter changes share point-change invalidation, retaining picked points.
+  // A pending lookup must never publish results for an earlier input snapshot.
+  invalidateBuildInputs({preservePoints:true});
+  qparams[k]=v;
+  maybeAutoResolveBuildQuestion();
+}
 function tryGenerate(){
   const activeType = getActiveBuildQType();
   if(qtype && QDEFS[activeType] && QDEFS[activeType].isReady(qparams)) generateJSON();
@@ -687,13 +737,13 @@ function maybeAutoResolveBuildQuestion(){
   if(qtype === 'matching'){
     if(qparams._matching_mode === 'nearest'){
       if(qparams.nearest_cat && !qparams.nearest_seeker_poi && !qparams._nearest_searching){
-        const catObj = NEAREST_CATS.find(c => c.label === qparams.nearest_cat || c.label === qparams.nearest_cat_label);
+        const catObj = resolveCategory('nearest',qparams.nearest_cat || qparams.nearest_cat_label);
         if(catObj) selectNearestCat(catObj);
       }
       return;
     }
     if(qparams.matching_cat && !qparams.matching_seeker_val && !qparams._matching_searching){
-      const catObj = MATCHING_CATS.find(c => c.cat === qparams.matching_cat);
+      const catObj = resolveCategory('matching',qparams.matching_cat);
       if(catObj) selectMatchingCat(catObj);
     }
     return;
@@ -704,7 +754,7 @@ function maybeAutoResolveBuildQuestion(){
       ? Number.isFinite(qparams.measure_seeker_elevation_ft)
       : qparams.measure_seeker_dist != null;
     if(qparams.measure_cat && !ready && !qparams._msearching){
-      const catObj = MEASURE_CATS.find(c => c.label === qparams.measure_cat || c.label === qparams.measure_cat_label);
+      const catObj = resolveCategory('measure',qparams.measure_cat || qparams.measure_cat_label);
       if(catObj) selectMeasureCat(catObj);
     }
     return;
@@ -712,13 +762,14 @@ function maybeAutoResolveBuildQuestion(){
 
   if(qtype === 'tentacles'){
     if(qparams._tcat && !(qparams.tentacle_options?.length) && !qparams._tsearching){
-      const catObj = TENTACLES_CATS.find(c => c.label === qparams._tcat || c.label === qparams.tentacles_cat_label);
+      const catObj = resolveCategory('tentacles',qparams._tcat || qparams.tentacles_cat_label);
       if(catObj) selectTentacleCat(catObj);
     }
   }
 }
 
 function startCustomBoundaryDraw(){
+  cancelPointPicking();
   qparams._drawingBoundary = true;
   qparams.custom_boundary_points = qparams.custom_boundary_points || [];
   showBanner('TAP THE MAP — add boundary vertices');
@@ -774,7 +825,7 @@ function syncCustomBoundaryPreview(){
       hint.className = 'simul-result-hint';
     }
     const msb = document.getElementById('msb-area');
-    if(msb) msb.innerHTML = 'green keeps · yellow future possible · red cuts';
+    if(msb) msb.innerHTML = 'green stays · red goes';
     return;
   }
   previewCustomBoundary(qparams.custom_boundary_mode);
@@ -845,21 +896,18 @@ async function loadAdminBoundaries(){
 }
 
 // Highlight boundaries relevant to the active question category
-function highlightBoundary(cat){
-  if(!boundaryHighlightLayer) return;
-  boundaryHighlightLayer.clearLayers();
-  boundaryHighlightLayer.remove();
-
-  let features = [];
-  if(cat === 'county' || cat === 'A County Border'){
-    features = _adminBoundaries.counties;
-  } else if(cat === 'city' || cat === 'A City Border'){
-    features = _adminBoundaries.towns;
-  }
-  if(!features.length) return;
-
-  boundaryHighlightLayer.clearLayers();
+function highlightBoundary(category){
+  if(!boundaryHighlightLayer)return;
+  boundaryHighlightLayer.clearLayers(); boundaryHighlightLayer.remove();
+  const spec=categorySpec('measure',category);
+  const key=spec?.boundaryKey || category;
+  const features=(getBoundaryDataset(key)||[]).map(item=>coerceFeature(item,item.name)).filter(Boolean);
+  if(!features.length)return;
   boundaryHighlightLayer.addData({type:'FeatureCollection',features});
+  boundaryHighlightLayer.setStyle(feature=>{
+    const selected=qparams.center && turf.booleanPointInPolygon(turf.point([qparams.center.lng,qparams.center.lat]),feature);
+    return selected?{color:'#d48b25',weight:2.5,opacity:0.95,fill:false}:{color:'#788b98',weight:0.8,opacity:0.35,fill:false};
+  });
   boundaryHighlightLayer.addTo(map);
 }
 
@@ -928,7 +976,7 @@ async function nearestBorderPoints(center, type, adminLevel){
   return pts;
 }
 
-const MEASURE_CATS = [
+const MEASURE_CATS = configureQuestionCategories('measure', [
   // TRANSIT
   { group:'Transit', icon:'🚆', label:'An Amtrak Line',
     instances: async (c) => {
@@ -1003,20 +1051,12 @@ const MEASURE_CATS = [
   { group:'Natural', icon:'💧', label:'A Body of Water',
     instances: async (c) => {
       await loadPoiData();
-      const preloadedLines = getNamedLinearCollection('A Body of Water');
-      if(preloadedLines.length) return preloadedLines;
+      const preloaded = getNamedPoiCollection('A Body of Water');
+      if(preloaded.length) return preloaded;
       const r = 35000;
-      const q = `[out:json][timeout:35];(
-        way["natural"~"^(water|bay)$"]["name"](around:${r},${c.lat},${c.lng});
-        relation["natural"~"^(water|bay)$"]["name"](around:${r},${c.lat},${c.lng});
-        way["waterway"~"^(river|canal)$"]["name"](around:${r},${c.lat},${c.lng});
-        way["waterway"="riverbank"]["name"](around:${r},${c.lat},${c.lng});
-        relation["waterway"="riverbank"]["name"](around:${r},${c.lat},${c.lng});
-      );out geom 500;`;
+      const q = `[out:json][timeout:25];(way["natural"~"^(water|bay)$"]["name"](around:${r},${c.lat},${c.lng});relation["natural"~"^(water|bay)$"]["name"](around:${r},${c.lat},${c.lng});way["waterway"="river"]["name"](around:${r},${c.lat},${c.lng}););out center 50;`;
       const data = await overpassRaw(q);
-      const lineFeatures = waterLineFeaturesFromOverpass(data, 'Water');
-      const points = lineFeatures.flatMap(item => pointsFromFeatureGeometry(coerceFeature(item, item.name), item.name));
-      return points.length ? points : getNamedPoiCollection('A Body of Water');
+      return (data.elements||[]).filter(e=>e.center||e.lat).map(e=>({lat:e.center?.lat||e.lat,lng:e.center?.lon||e.lon,name:e.tags?.name||'Water'}));
     }},
   { group:'Natural', icon:'🏖️', label:'A Coastline',
     instances: async (c) => {
@@ -1060,15 +1100,15 @@ const MEASURE_CATS = [
   { group:'Public Utilities', icon:'🏳️', label:'A Foreign Consulate',
     instances: async ()=>{ await loadPoiData(); return getNamedPoiCollection('A Foreign Consulate'); },
     overpass:(c,r)=>`nwr["office"~"diplomatic|consulate"](around:${r},${c.lat},${c.lng});nwr["amenity"="embassy"](around:${r},${c.lat},${c.lng});` },
-];
+]);
 
-const TENTACLES_CATS = [
+const TENTACLES_CATS = configureQuestionCategories('tentacles', [
   {icon:'🏥', label:'Hospitals',    overpass:(c,r)=>`nwr["amenity"~"hospital|clinic"](around:${r},${c.lat},${c.lng});`},
   {icon:'📚', label:'Libraries',    overpass:(c,r)=>`nwr["amenity"="library"](around:${r},${c.lat},${c.lng});`},
   {icon:'🏛️', label:'Museums',     overpass:(c,r)=>`nwr["tourism"="museum"](around:${r},${c.lat},${c.lng});`},
   {icon:'🎬', label:'Movie Theaters', overpass:(c,r)=>`nwr["amenity"="cinema"](around:${r},${c.lat},${c.lng});`},
   {icon:'☕', label:"Dunkin'",      overpass:(c,r)=>`nwr["name"~"Dunkin",i](around:${r},${c.lat},${c.lng});`},
-];
+]);
 
 // ── Overpass API search ──
 const RANDOMIZE_RADAR_PRESETS = [
@@ -1116,7 +1156,7 @@ function getRandomizeQuestionCatalog(){
       build_qtype:'measure',
       question_type:'measure',
       label:`Measure · ${cat.label}`,
-      category:cat.label,
+      category:cat.id,
       category_label:cat.label,
     });
   });
@@ -1126,7 +1166,7 @@ function getRandomizeQuestionCatalog(){
         build_qtype:'tentacles',
         question_type:'tentacles',
         label:`Tentacles · ${cat.label} · ${preset.label}`,
-        category:cat.label,
+        category:cat.id,
         category_label:cat.label,
         radius_miles:preset.radius_miles,
       });
@@ -1164,7 +1204,7 @@ function getRandomizeQuestionCatalog(){
       question_type:'nearest',
       mode:'nearest',
       label:`Nearest · ${cat.label}`,
-      category:cat.label,
+      category:cat.id,
       category_label:cat.label,
     });
   });
@@ -1216,7 +1256,8 @@ async function overpassSearch(overpassBody, near, radiusM=5000){
     name: e.tags.name,
     lat:  e.lat  ?? e.center?.lat,
     lng:  e.lon  ?? e.center?.lon,
-    id:   e.id
+    id:   e.id,
+    osmId: `${e.type}/${e.id}`
   })).filter(p=>p.lat&&p.lng);
   pts.sort((a,b)=>turfDist({lat:a.lat,lng:a.lng},near)-turfDist({lat:b.lat,lng:b.lng},near));
   return pts;
@@ -1380,25 +1421,25 @@ function hiderPin(){
     </div>`});
 }
 
-function amtrakLineColor(name){
-  if(/downeaster/i.test(name)) return '#4aa3ff';
-  if(/lake shore/i.test(name)) return '#a060ff';
-  return '#20c8b0';
+// Route presentation comes from source metadata; unknown routes never inherit
+// a Boston route identity. These defaults also support future cities.
+function linearRouteColor(properties={}){
+  return /^#[0-9a-f]{6}$/i.test(properties.color || '') ? properties.color : '#20c8b0';
 }
 
-function amtrakLineLabel(name){
-  if(/downeaster/i.test(name)) return 'Downeaster';
-  if(/lake shore/i.test(name)) return 'Lake Shore';
-  return 'NE Corridor';
+function amtrakLineColor(_name,properties={}){ return linearRouteColor(properties); }
+
+function amtrakLineLabel(name, properties={}){
+  return String(properties.shortName || name || 'Amtrak').replace(/^Amtrak\s+/i,'').trim() || 'Amtrak';
 }
 
 function measureNearestPopup(categoryLabel, nearestName){
-  const what = /line|coast|sea level|border|water/i.test(categoryLabel) ? 'nearest point' : 'nearest';
+  const what = /line|coast|sea level|border/i.test(categoryLabel) ? 'nearest point' : 'nearest';
   return `<div class="stop-popup"><div class="stop-popup-name">${nearestName}</div><div style="font-size:9px;color:#f0a030">★ Your ${what} on ${categoryLabel}</div></div>`;
 }
 
 function isSeaLevelMeasure(label){
-  return String(label || '').toLowerCase() === 'sea level';
+  return categorySpec('measure',label)?.mode === 'elevation';
 }
 
 function measureAnswerOptions(question){
@@ -1463,320 +1504,283 @@ function coastlineLineFeaturesFromOverpass(data, fallbackName='Coastline'){
   }];
 }
 
-
-function waterLineFeaturesFromOverpass(data, fallbackName='Water'){
-  const byName = new Map();
-  const addSegment = (name, segment) => {
-    if(!Array.isArray(segment) || segment.length < 2) return;
-    const line = simplifyLineCoords(segment, 0.00012);
-    if(line.length < 2) return;
-    const key = `${line[0][0].toFixed(4)},${line[0][1].toFixed(4)}|${line[line.length - 1][0].toFixed(4)},${line[line.length - 1][1].toFixed(4)}|${line.length}`;
-    const group = byName.get(name) || {name, seen:new Set(), coords:[]};
-    if(group.seen.has(key)) return;
-    group.seen.add(key);
-    group.coords.push(line);
-    byName.set(name, group);
-  };
-
-  (data?.elements || []).forEach(el => {
-    const name = el.tags?.name || fallbackName;
-    if(el.type === 'way' && Array.isArray(el.geometry) && el.geometry.length >= 2){
-      addSegment(name, el.geometry.map(p => [p.lon, p.lat]));
-      return;
-    }
-    if(el.type === 'relation' && Array.isArray(el.members)){
-      (el.members || []).forEach(member => {
-        if(member.type !== 'way' || !Array.isArray(member.geometry) || member.geometry.length < 2) return;
-        addSegment(name, member.geometry.map(p => [p.lon, p.lat]));
-      });
-    }
-  });
-
-  return [...byName.values()]
-    .filter(group => group.coords.length)
-    .map(group => ({
-      name: group.name,
-      bbox: featureBBox({
-        geometry: {type:'MultiLineString', coordinates:group.coords},
-      }),
-      geometry: {type:'MultiLineString', coordinates:group.coords},
-    }));
-}
-
-function normalizeMeasureLineFeatures(items){
-  return (items || [])
-    .map(item => {
-      const feature = coerceFeature(item, item?.name);
-      if(!feature) return null;
-      return {
-        name: item?.name || feature.properties?.name || 'Line',
-        bbox: featureBBox(item),
-        geometry: feature.geometry,
-      };
-    })
-    .filter(Boolean);
-}
-
-function mergeMeasureLineFeatures(primary, extra){
-  const merged = [];
-  const seen = new Set();
-  [...(primary || []), ...(extra || [])].forEach(item => {
-    if(!item?.geometry) return;
-    const bbox = featureBBox(item) || [];
-    const geom = item.geometry;
-    const key = `${item.name || ''}|${bbox.join(',')}|${geom.type}|${Array.isArray(geom.coordinates) ? geom.coordinates.length : 0}`;
-    if(seen.has(key)) return;
-    seen.add(key);
-    merged.push(item);
-  });
-  return merged;
-}
-
-async function getMeasureLinearFeatures(catObj, center, opts={}){
+async function getMeasureLinearFeatures(category, center){
+  const spec=categorySpec('measure',category);
+  if(!spec)return [];
+  if(spec.boundaryKey){
+    await loadBoundaryData();
+    return (getBoundaryDataset(spec.boundaryKey)||[]).flatMap(item=>featureToDisplayLines(coerceFeature(item,item.name)).map(feature=>({...feature,name:item.name})));
+  }
   await loadPoiData();
-  if(catObj.label === 'An Amtrak Line'){
-    return getNamedLinearFeatures(catObj.label);
-  }
-  if(catObj.label === 'A Body of Water'){
-    const preloaded = getNamedLinearFeatures(catObj.label);
-    if(preloaded.length){
-      if(opts.zone) return getWaterLineFeaturesForZone(opts.zone, opts.extraMiles || 0);
-      return getWaterLineFeaturesNearCenter(center);
-    }
-    const r = 35000;
-    const q = `[out:json][timeout:35];(
-      way["natural"~"^(water|bay)$"]["name"](around:${r},${center.lat},${center.lng});
-      relation["natural"~"^(water|bay)$"]["name"](around:${r},${center.lat},${center.lng});
-      way["waterway"~"^(river|canal)$"]["name"](around:${r},${center.lat},${center.lng});
-      way["waterway"="riverbank"]["name"](around:${r},${center.lat},${center.lng});
-      relation["waterway"="riverbank"]["name"](around:${r},${center.lat},${center.lng});
-    );out geom 500;`;
-    const data = await overpassRaw(q);
-    return waterLineFeaturesFromOverpass(data, 'Water');
-  }
-  if(catObj.label === 'A Coastline'){
-    const preloaded = getNamedLinearFeatures(catObj.label);
-    if(preloaded.length) return preloaded;
-    const r = 50000;
-    const q = `[out:json][timeout:25];way["natural"="coastline"](around:${r},${center.lat},${center.lng});out geom 300;`;
-    const data = await overpassRaw(q);
-    return coastlineLineFeaturesFromOverpass(data, 'Coastline');
-  }
-  return [];
+  const features=preloadedData.pois?.[measureFilterConfig(spec)?.dataKey || spec.dataKey] || [];
+  if(features.length || ACTIVE_CITY.localQuestionsOnly || spec.id!=='coastline')return features;
+  const query=`[out:json][timeout:25];way["natural"="coastline"](around:50000,${center.lat},${center.lng});out geom 300;`;
+  return coastlineLineFeaturesFromOverpass(await overpassRaw(query),'Coastline');
 }
 
-async function resolveLinearMeasureCategory(catObj, center, opts={}){
-  const nearestFeatures = normalizeMeasureLineFeatures(await getMeasureLinearFeatures(catObj, center, {purpose:'nearest'}));
-  if(!nearestFeatures.length) return null;
-
-  const nearestResult = await solveLinearMeasureWithWorker({
-    center,
-    categoryLabel: catObj.label,
-    lineFeatures: nearestFeatures,
-    buildConstraintUnion: false,
-  });
-  if(!nearestResult?.best) return null;
-
-  let lineFeatures = nearestFeatures;
-  let union = null;
-  if(opts.buildConstraintUnion && opts.zone && Number.isFinite(nearestResult.best.dist)){
-    let unionFeatures = nearestFeatures;
-    if(catObj.label === 'A Body of Water'){
-      const zoneFeatures = normalizeMeasureLineFeatures(await getMeasureLinearFeatures(catObj, center, {
-        purpose: 'union',
-        zone: opts.zone,
-        extraMiles: nearestResult.best.dist,
-      }));
-      unionFeatures = mergeMeasureLineFeatures(zoneFeatures, nearestFeatures);
+// Display-only corridor grouping: calculation geometry remains the original dataset.
+// Reuses the same shared-track graph as transit rendering, but paints each corridor once.
+function prepareGroupedLinearCorridors(items){
+  const definitions=[],lines=[],ids=new Map();
+  for(const item of items){
+    const feature=coerceFeature(item,item.name);
+    const geometry=feature?.geometry;
+    if(!['LineString','MultiLineString'].includes(geometry?.type))continue;
+    const name=item.name || feature.properties?.name || 'Route';
+    if(!ids.has(name)){
+      const id=String(ids.size);ids.set(name,id);
+      definitions.push({id,physicalLineId:id,label:name,color:linearRouteColor(feature.properties)});
     }
-    const unionResult = await solveLinearMeasureWithWorker({
-      center,
-      zone: opts.zone,
-      seekerDist: nearestResult.best.dist,
-      categoryLabel: catObj.label,
-      lineFeatures: unionFeatures,
-      buildConstraintUnion: true,
-    });
-    if(unionResult?.union) union = unionResult.union;
-    lineFeatures = unionFeatures;
+    const id=ids.get(name);
+    const paths=geometry.type==='LineString' ? [geometry.coordinates] : geometry.coordinates;
+    for(const coords of paths)lines.push({id,shapePath:coords.map(([lng,lat])=>[lat,lng])});
   }
-
-  return {
-    best: nearestResult.best,
-    lineFeatures,
-    union,
-  };
+  return prepareTransitCorridors(lines,definitions).map(corridor=>({
+    path:corridor.path,
+    names:[...new Set(corridor.lanes.map(lane=>lane.label))].sort(),
+    color:corridor.lanes[0]?.color || '#20c8b0',
+  }));
 }
 
-function renderAmtrakMeasureLines(center, nearestName){
-  const raw = Array.isArray(preloadedData.pois?.amtrakLines) ? preloadedData.pois.amtrakLines : [];
-  if(!raw.length) return;
-  const clipBox = [
-    T_BBOX.minLng - 0.08,
-    T_BBOX.minLat - 0.08,
-    T_BBOX.maxLng + 0.08,
-    T_BBOX.maxLat + 0.08,
-  ];
-  raw.forEach(item => {
-    const feature = coerceFeature(item, item.name);
-    if(!feature) return;
-    let displayFeature = feature;
-    try{
-      const clipped = turf.bboxClip(feature, clipBox);
-      if(clipped?.geometry?.coordinates?.length) displayFeature = clipped;
-    }catch(e){}
-    const name = item.name || feature.properties?.name || 'Amtrak';
-    const active = name === nearestName;
-    const color = amtrakLineColor(name);
-    const lineLayer = L.geoJSON(displayFeature, {
-      interactive: false,
-      style: {
-        color,
-        weight: active ? 5 : 3,
-        opacity: active ? 0.95 : 0.72,
+// Fixed label dimensions match CSS, so placement can guarantee screen-space separation.
+function layoutGroupedLineLabels(candidates, size, {width=180,height=28,gap=10,limit=8}={}){
+  const groups=[];
+  const sorted=[...candidates].sort((a,b)=>Number(b.active)-Number(a.active) || b.names.length-a.names.length || b.length-a.length);
+  for(const candidate of sorted){
+    const {x,y}=candidate.point;
+    if(x<width/2+gap || x>size.x-width/2-gap || y<height/2+gap || y>size.y-height/2-gap)continue;
+    const nearby=groups.find(group=>Math.abs(group.point.x-x)<width+gap && Math.abs(group.point.y-y)<height+gap);
+    if(nearby){
+      nearby.names=[...new Set([...nearby.names,...candidate.names])].sort();
+      nearby.active ||= candidate.active;
+      continue;
+    }
+    if(groups.length<limit)groups.push({...candidate,names:[...candidate.names],width,height});
+  }
+  return groups;
+}
+
+class GroupedLinearOverlay {
+  constructor(mapInstance, items, {nearestName=null,label='Rail',formatLabel=name=>name}={}){
+    this.map=mapInstance;this.label=label;this.nearestName=nearestName;this.formatLabel=formatLabel;
+    this.corridors=prepareGroupedLinearCorridors(items);
+    this.tracks=L.layerGroup().addTo(this.map);
+    this.labels=L.layerGroup().addTo(this.map);
+    this.redrawLabels=this.redrawLabels.bind(this);
+    for(const corridor of this.corridors){
+      const active=corridor.names.includes(nearestName);
+      const line=L.polyline(corridor.path,{color:corridor.color,weight:active?5:3,opacity:active?.95:.72});
+      line.bindPopup(this.routeList(corridor.names,'Routes on this track'));
+      this.tracks.addLayer(line);
+    }
+    // A native disclosure provides the entire source route list even where labels are suppressed.
+    const allNames=[...new Set(this.corridors.flatMap(corridor=>corridor.names))].sort();
+    this.legend=L.control({position:'topleft'});
+    this.legend.onAdd=()=>{
+      const details=document.createElement('details');details.className='grouped-line-legend';
+      const summary=document.createElement('summary');summary.textContent=`${label} · ${allNames.length} routes`;
+      details.append(summary,this.routeList(allNames,'Routes in this dataset'));
+      L.DomEvent.disableClickPropagation(details);L.DomEvent.disableScrollPropagation(details);
+      return details;
+    };
+    this.legend.addTo(this.map);
+    this.map.on('zoomend moveend resize',this.redrawLabels);
+    this.redrawLabels();
+  }
+  routeList(names,heading){
+    const box=document.createElement('div');box.className='grouped-line-route-list';
+    const title=document.createElement('strong');title.textContent=heading;box.append(title);
+    const list=document.createElement('ul');
+    for(const name of names){const li=document.createElement('li');li.textContent=name;list.append(li);}
+    box.append(list);return box;
+  }
+  redrawLabels(){
+    this.labels.clearLayers();
+    const size=this.map.getSize(), candidates=[];
+    for(const corridor of this.corridors){
+      const points=corridor.path.map(point=>this.map.latLngToContainerPoint(point));
+      let anchor=null,bestLength=0;
+      for(let i=1;i<points.length;i++){
+        const a=points[i-1],b=points[i];
+        // Clip to the viewport before choosing a midpoint, so long crossing segments qualify.
+        let lo=0,hi=1;const dx=b.x-a.x,dy=b.y-a.y;
+        for(const [p,q] of [[-dx,a.x],[dx,size.x-a.x],[-dy,a.y],[dy,size.y-a.y]]){
+          if(p===0){if(q<0){lo=1;hi=0;break;}continue;}
+          const t=q/p;if(p<0)lo=Math.max(lo,t);else hi=Math.min(hi,t);
+        }
+        if(lo>hi)continue;
+        const length=Math.hypot(dx,dy)*(hi-lo);
+        if(length>bestLength){bestLength=length;const t=(lo+hi)/2;anchor={x:a.x+t*dx,y:a.y+t*dy};}
       }
-    }).addTo(map);
-    pickedMarkers.push(lineLayer);
+      if(anchor)candidates.push({point:anchor,names:corridor.names,active:corridor.names.includes(this.nearestName),length:bestLength});
+    }
+    for(const group of layoutGroupedLineLabels(candidates,size)){
+      const button=document.createElement('button');button.type='button';
+      button.className=`measure-line-label grouped-line-label${group.active?' active':''}`;
+      button.textContent=group.names.length===1 ? this.formatLabel(group.names[0]) : `${this.label} · ${group.names.length} routes`;
+      button.title=group.names.join('\n');
+      button.setAttribute('aria-label',`Show routes in this area: ${group.names.join(', ')}`);
+      const point=this.map.containerPointToLatLng(group.point);
+      const marker=L.marker(point,{keyboard:false,icon:L.divIcon({className:'grouped-line-anchor',html:button,iconSize:[group.width,group.height],iconAnchor:[group.width/2,group.height/2]}),zIndexOffset:700});
+      marker.bindPopup(this.routeList(group.names,'Routes in this area'));
+      // A real button makes the disclosure available via keyboard as well as mouse/touch.
+      button.addEventListener('click',event=>{event.stopPropagation();marker.openPopup();});
+      this.labels.addLayer(marker);
+    }
+  }
+  remove(){
+    this.map.off('zoomend moveend resize',this.redrawLabels);
+    this.tracks.remove();this.labels.remove();this.legend.remove();
+  }
+}
 
-    const labelPts = pointsFromFeatureGeometry(displayFeature, name);
-    if(!labelPts.length) return;
-    labelPts.sort((a,b)=>turfDist(center,a)-turfDist(center,b));
-    const anchor = labelPts[0];
-    const label = L.tooltip({
-      permanent: true,
-      direction: 'center',
-      className: `measure-line-label${active ? ' active' : ''}`,
-      opacity: 1,
-      offset: [0,0],
-    })
-      .setLatLng([anchor.lat, anchor.lng])
-      .setContent(amtrakLineLabel(name))
-      .addTo(map);
-    pickedMarkers.push(label);
-  });
+function renderAmtrakMeasureLines(_center, nearestName){
+  const raw=preloadedData.pois?.amtrakLines;
+  if(!Array.isArray(raw)||!raw.length)return;
+  pickedMarkers.push(new GroupedLinearOverlay(map,raw,{nearestName,label:'Amtrak',formatLabel:amtrakLineLabel}));
+}
+
+// Screen-space thinning is presentation only: question/filter math keeps every POI.
+function layoutMeasurePointMarkers(items, project, size, {spacing=24,limit=80}={}){
+  const selected=[];
+  for(let rank=0;rank<items.length;rank++){
+    const item=items[rank],point=project(item);
+    if(!Number.isFinite(point.x)||!Number.isFinite(point.y)||point.x<0||point.y<0||point.x>size.x||point.y>size.y) continue;
+    if(selected.some(marker=>Math.hypot(marker.point.x-point.x,marker.point.y-point.y)<spacing)) continue;
+    selected.push({item,point,nearest:rank===0});
+    if(selected.length>=limit) break;
+  }
+  return selected;
+}
+
+class MeasurePointOverlay {
+  constructor(mapInstance,items){
+    this.map=mapInstance;this.items=items;
+    this.layer=L.layerGroup().addTo(this.map);
+    this.redraw=this.redraw.bind(this);
+    this.map.on('zoomend moveend resize',this.redraw);
+    this.redraw();
+  }
+  redraw(){
+    this.layer.clearLayers();
+    for(const entry of layoutMeasurePointMarkers(this.items,item=>this.map.latLngToContainerPoint([item.lat,item.lng]),this.map.getSize())){
+      const point=[entry.item.lat,entry.item.lng];
+      const marker=entry.nearest ? L.marker(point,{icon:tentaclePin(1,'#f0a030'),zIndexOffset:1500}) :
+        L.circleMarker(point,{radius:4,color:'#fff',weight:1,fillColor:'#4a7090',fillOpacity:.85});
+      const popup=document.createElement('div');popup.className='stop-popup';
+      const name=document.createElement('div');name.className='stop-popup-name';name.textContent=entry.item.name;popup.append(name);
+      if(entry.nearest){const note=document.createElement('div');note.textContent='★ Your nearest';popup.append(note);}
+      marker.bindPopup(popup,{offset:[0,-12],maxWidth:220});this.layer.addLayer(marker);
+    }
+  }
+  remove(){this.map.off('zoomend moveend resize',this.redraw);this.layer.remove();}
+}
+
+// All question entry points resolve the same source and metric. Display limits and
+// packet compression belong to callers, never to the calculation dataset.
+async function resolveMeasurement(categoryOrQuestion, center){
+  const input = typeof categoryOrQuestion === 'string' ? {category:categoryOrQuestion} : categoryOrQuestion;
+  const label = input.category_id || input.category || input.id || input.label || input.category_label;
+  const category = resolveCategory('measure',label);
+  if(!category) throw new Error(`Unknown measure category: ${label}`);
+  if(input.mode === 'elevation' || isSeaLevelMeasure(category)){
+    const grid = await loadElevationData();
+    if(!grid?.values?.length) throw new Error('No elevation grid data available');
+    const elevation = await fetchPointElevation(center.lat, center.lng);
+    return {category, center, mode:'elevation', value:{kind:'elevation', feet:elevation.feet, meters:elevation.meters}, nearest:null, instances:[], linearFeatures:[]};
+  }
+  if(isLinearMeasure(category)){
+    const linearFeatures = (await getMeasureLinearFeatures(category, center))
+      .map(item => ({name:item.name || item.properties?.name || category.label, feature:coerceFeature(item, item.name)}))
+      .filter(item => item.feature);
+    if(!linearFeatures.length) throw new Error(`No ${category.label} geometry found`);
+    const point = turf.point([center.lng, center.lat]);
+    let best = null;
+    for(const item of linearFeatures){
+      try{
+        const snapped = turf.nearestPointOnLine(item.feature, point, {units:'miles'});
+        const dist = snapped?.properties?.dist;
+        if(!Number.isFinite(dist) || (best && dist >= best.dist)) continue;
+        const [lng,lat] = snapped.geometry.coordinates;
+        best = {name:item.name,lat,lng,dist};
+      }catch(e){}
+    }
+    if(!best) throw new Error(`Could not resolve ${category.label}`);
+    const nearest = {name:best.name,lat:best.lat,lng:best.lng};
+    return {category,center,mode:'distance',value:{kind:'distance',name:best.name,dist:best.dist},nearest,instances:[nearest],linearFeatures};
+  }
+  const instances = [...await getCategoryInstances(category, center, 35000)]
+    .sort((a,b)=>turfDist(center,a)-turfDist(center,b));
+  if(!instances.length) throw new Error(`No ${category.label} found nearby`);
+  const nearest = instances[0];
+  return {category,center,mode:'distance',value:{kind:'distance',name:nearest.name,dist:turfDist(center,nearest)},nearest,instances,linearFeatures:[]};
+}
+
+function measurementBuildParams(result){
+  const {category,center,mode,value,nearest,instances,linearFeatures} = result;
+  return {
+    center,measure_cat:category.id,measure_cat_label:category.label,measure_mode:mode,
+    measure_seeker_nearest:nearest,
+    measure_seeker_dist:mode === 'distance' ? value.dist : null,
+    measure_seeker_elevation_ft:mode === 'elevation' ? value.feet : null,
+    measure_seeker_elevation_m:mode === 'elevation' ? value.meters : null,
+    measure_instance_count:instances.length,
+    measure_all_instances:adaptivePointConfig(category.id) ? [] : instances,
+    measure_linear_features:measureFilterConfig(category) ? [] : linearFeatures.map(item=>({name:item.name,geometry:item.feature.geometry})),
+  };
 }
 
 async function selectMeasureCat(catObj){
+  const unavailable = cityQuestionUnavailableReason({type:'measure',category:catObj.label});
+  if(unavailable){ toast(unavailable, 6000); return; }
   if(!qparams.center){toast('Set your location first');return;}
-  qparams._mcat=catObj.label; qparams._mcatlabel=catObj.label; qparams._msearching=true;
-  qparams.measure_cat=catObj.label; qparams.measure_cat_label=catObj.label;
+  const isCurrent = beginBuildLookup();
+  const center = {...qparams.center};
+  currentBuiltQuestion = null;
+  clearZonePreview();
+  qparams._mcat=catObj.id; qparams._mcatlabel=catObj.label; qparams._msearching=true;
+  qparams.measure_cat=catObj.id; qparams.measure_cat_label=catObj.label;
   qparams.measure_mode='distance';
-  qparams.measure_seeker_nearest=null; qparams.measure_seeker_dist=null; qparams.measure_seeker_elevation_ft=null; qparams.measure_seeker_elevation_m=null; qparams.measure_all_instances=null; qparams.measure_linear_features=null; qparams.measure_constraint_union=null;
-  if(catObj.label==='A County Border') highlightBoundary('county');
-  else if(catObj.label==='A City Border') highlightBoundary('city');
+  qparams.measure_seeker_nearest=null; qparams.measure_seeker_dist=null; qparams.measure_seeker_elevation_ft=null; qparams.measure_seeker_elevation_m=null; qparams.measure_all_instances=null; qparams.measure_instance_count=null; qparams.measure_linear_features=null;
+  if(catObj.boundaryKey) highlightBoundary(catObj.boundaryKey);
   else clearBoundaryHighlight();
   renderBuildBody();
   try{
-    if(isSeaLevelMeasure(catObj.label)){
-      const grid = await loadElevationData();
-      if(!grid?.values?.length){
-        toast('No elevation grid data available');
-        qparams._msearching=false;
-        renderBuildBody();
-        return;
-      }
-      const elevation = await fetchPointElevation(qparams.center.lat, qparams.center.lng);
-      qparams._msearching=false;
-      qparams.measure_mode='elevation';
-      qparams.measure_seeker_elevation_ft=elevation.feet;
-      qparams.measure_seeker_elevation_m=elevation.meters;
-      clearPoiMarkers();
-      renderBuildBody(); updatePreview(); tryGenerate();
-      return;
-    }
-
-    if(['An Amtrak Line','A Coastline','A Body of Water'].includes(catObj.label)){
-      const resolved = await resolveLinearMeasureCategory(catObj, qparams.center, {
-        zone: validZone,
-        buildConstraintUnion: true,
-      });
-      if(!resolved?.lineFeatures?.length || !resolved.best){
-        toast(`No ${catObj.label} geometry found`);
-        qparams._msearching=false;
-        renderBuildBody();
-        return;
-      }
-      const {best, lineFeatures, union} = resolved;
-
-      qparams._msearching=false;
-      qparams.measure_seeker_nearest={lat:best.lat,lng:best.lng,name:best.name};
-      qparams.measure_seeker_dist=best.dist;
-      qparams.measure_linear_features=lineFeatures.map(item => ({
-        name:item.name,
-        bbox:item.bbox || null,
-        geometry:item.geometry,
-      }));
-      qparams.measure_constraint_union=union || null;
-      qparams.measure_all_instances=[{lat:best.lat,lng:best.lng,name:best.name}];
-
-      clearPoiMarkers();
-      if(catObj.label === 'An Amtrak Line'){
-        renderAmtrakMeasureLines(qparams.center, best.name);
-      }
-      const m=L.marker([best.lat,best.lng],{icon:measurePin(),zIndexOffset:1500}).addTo(map);
-      m.bindPopup(measureNearestPopup(catObj.label, best.name),{offset:[0,-12],maxWidth:220});
-      pickedMarkers.push(m);
-      const bounds = L.latLngBounds([[best.lat,best.lng],[qparams.center.lat,qparams.center.lng]]).pad(0.3);
-      map.fitBounds(bounds);
-      renderBuildBody(); updatePreview(); tryGenerate();
-      return;
-    }
-
-    const instances = await getCategoryInstances(catObj, qparams.center, 35000);
-    if(!instances.length){toast('No '+catObj.label+' found nearby');qparams._msearching=false;renderBuildBody();return;}
-
-    // Find seeker's nearest
-    instances.sort((a,b)=>turfDist(qparams.center,a)-turfDist(qparams.center,b));
-    const nearest=instances[0];
-    const dist=turfDist(qparams.center,nearest);
-
-    qparams._msearching=false;
-    qparams.measure_seeker_nearest={lat:nearest.lat,lng:nearest.lng,name:nearest.name};
-    qparams.measure_seeker_dist=dist;
-    qparams.measure_all_instances=instances.slice(0,200); // cap for zone geometry
-
-    // Drop teardrop pins — gold #1 for nearest, teal for rest
+    const result = await resolveMeasurement(catObj, center);
+    if(!isCurrent()) return;
+    Object.assign(qparams,measurementBuildParams(result),{_msearching:false});
     clearPoiMarkers();
-    const POI_CATS_LINEAR = new Set(['An Amtrak Line','A County Border','A City Border','Sea Level','A Coastline','A Body of Water']);
-    const isLinear = POI_CATS_LINEAR.has(catObj.label);
-    if(isLinear){
-      if(catObj.label === 'An Amtrak Line'){
-        renderAmtrakMeasureLines(qparams.center, nearest.name);
+    if(result.nearest){
+      const nearest = result.nearest;
+      if(result.linearFeatures.length){
+        if(measureFilterConfig(catObj)) toast('Distances use mapped edges. Map filtering keeps uncertain boundary cells in play for either answer.', 7000);
+        if(catObj.id === 'amtrak') renderAmtrakMeasureLines(center, nearest.name);
+        const marker=L.marker([nearest.lat,nearest.lng],{icon:measurePin(),zIndexOffset:1500}).addTo(map);
+        marker.bindPopup(measureNearestPopup(catObj.label, nearest.name),{offset:[0,-12],maxWidth:220});
+        pickedMarkers.push(marker);
+      }else{
+        pickedMarkers.push(new MeasurePointOverlay(map,result.instances));
       }
-      // For linear/edge categories, show a single teal diamond at the nearest point
-      const m=L.marker([nearest.lat,nearest.lng],{icon:measurePin(),zIndexOffset:1500}).addTo(map);
-      m.bindPopup(measureNearestPopup(catObj.label, nearest.name),{offset:[0,-12],maxWidth:220});
-      pickedMarkers.push(m);
-    } else {
-      // For POI categories, show numbered teardrop pins
-      instances.slice(0,100).forEach((p,i)=>{
-        if(!p.lat||!p.lng) return;
-        const col = i===0 ? '#f0a030' : '#4a7090';
-        const m = L.marker([p.lat,p.lng],{icon:tentaclePin(i+1,col),zIndexOffset:1500+i})
-          .bindPopup(`<div class="stop-popup"><div class="stop-popup-name">${p.name}</div>${i===0?'<div style="font-size:9px;color:#f0a030;margin-top:2px">★ Your nearest</div>':''}</div>`,{offset:[0,-28],maxWidth:220})
-          .addTo(map);
-        pickedMarkers.push(m);
-      });
-    }
-    // Fit map to show nearest + seeker location
-    if(nearest.lat && nearest.lng){
-      const bounds = L.latLngBounds([[nearest.lat,nearest.lng],[qparams.center.lat,qparams.center.lng]]).pad(0.3);
-      map.fitBounds(bounds);
+      map.fitBounds(L.latLngBounds([[nearest.lat,nearest.lng],[center.lat,center.lng]]).pad(0.3));
     }
     renderBuildBody(); updatePreview(); tryGenerate();
-  }catch(e){qparams._msearching=false;toast('Search failed: '+e.message);renderBuildBody();}
+  }catch(e){if(!isCurrent()) return;qparams._msearching=false;toast('Search failed: '+e.message);renderBuildBody();}
 }
 
 async function selectTentacleCat(catObj){
   if(!qparams.center){toast('Set your location first');return;}
-  qparams._tcat=catObj.label; qparams._tcatlabel=catObj.label; qparams._tsearching=true;
+  const isCurrent = beginBuildLookup();
+  currentBuiltQuestion = null;
+  clearZonePreview();
+  qparams._tcat=catObj.id; qparams._tcatlabel=catObj.label; qparams._tsearching=true;
   _tentacleSelection = null;
   _simulActive = null;
   qparams.tentacle_options=null;
   clearPoiMarkers();
   renderBuildBody();
   try{
-    const opts = await resolveTentacleQuestionOptions(catObj.label, qparams.center, qparams.radius_miles || 1);
+    const opts = await resolveTentacleQuestionOptions(catObj.id, qparams.center, qparams.radius_miles || 1);
+    if(!isCurrent()) return;
     if(opts.length < 2){
       toast(`Found fewer than 2 ${catObj.label} nearby — try a larger radius`);
       qparams._tsearching=false; renderBuildBody(); return;
@@ -1790,17 +1794,17 @@ async function selectTentacleCat(catObj){
       id:currentBuiltQuestion?.id || null,
     }, true);
     renderBuildBody(); updatePreview(); tryGenerate();
-  }catch(e){qparams._tsearching=false;toast('Search failed: '+e.message);renderBuildBody();}
+  }catch(e){if(!isCurrent()) return;qparams._tsearching=false;toast('Search failed: '+e.message);renderBuildBody();}
 }
 
 async function resolveTentacleQuestionOptions(categoryLabel, center, radiusMiles=1){
-  const catObj = TENTACLES_CATS.find(c => c.label === categoryLabel);
+  const catObj = resolveCategory('tentacles',categoryLabel);
   if(!catObj) throw new Error(`Unknown tentacles category: ${categoryLabel}`);
   const reachMiles = Math.max(0, Number(radiusMiles || 1));
   const searchRadiusMiles = Math.round(reachMiles * 1.5 * 100) / 100; // search wider, but only keep true in-range options
   const searchRadiusM = Math.round(searchRadiusMiles * 1609.34);
   await loadPoiData();
-  const preloaded = getNamedPoiCollection(catObj.label);
+  const preloaded = getNamedPoiCollection(catObj.id);
   let items = preloaded;
   if(items.length){
     items = items
@@ -1820,8 +1824,8 @@ async function resolveTentacleQuestionOptions(categoryLabel, center, radiusMiles
 }
 
 function restartPick(){
-  QDEFS[qtype].pickSteps.forEach(s=>delete qparams[s.key]);
-  if(qtype === 'thermo') delete qparams.thermo_dest;
+  cancelPointPicking();
+  invalidatePickedLocation();
   clearMarkers();previewLayer.clearLayers();pickStep=0;
   document.getElementById('json-out-section').style.display='none';
   showBanner(pickStepDefs[0].label);
@@ -1844,10 +1848,7 @@ function updatePreview(){
         previewLayer.addData(thermoDividerLine(qparams.center, qparams.thermo_dest));
       }
     }
-    if(qtype==='measure'&&qparams.measure_mode!=='elevation'){
-      if(qparams.measure_constraint_union) previewLayer.addData(qparams.measure_constraint_union);
-      else if(qparams.measure_seeker_nearest&&qparams.measure_seeker_dist) previewLayer.addData(makeCircle(qparams.measure_seeker_nearest,qparams.measure_seeker_dist,'miles'));
-    }
+    if(qtype==='measure'&&qparams.measure_mode!=='elevation'&&qparams.measure_seeker_nearest&&qparams.measure_seeker_dist) previewLayer.addData(makeCircle(qparams.measure_seeker_nearest,qparams.measure_seeker_dist,'miles'));
     if(qtype==='tentacles'&&qparams.center&&qparams.radius_miles) previewLayer.addData(makeCircle(qparams.center,qparams.radius_miles,'miles'));
     if(qtype==='custom_boundary'&&qparams.custom_boundary_geojson) previewLayer.addData(qparams.custom_boundary_geojson);
   }catch(e){}
@@ -1857,70 +1858,13 @@ function updatePreview(){
   if(typeof scheduleSaveGame === 'function') scheduleSaveGame();
 }
 
+function buildQuestionPacketContent(question){
+  const q = decorateConstraintQuestion(question);
+  return q ? questionContractPacket(q) : null;
+}
+
 function buildQuestionPacket(question){
-  if(!question) return null;
-  if(question.type === 'radar'){
-    return {id:question.id, type:question.type, center:question.center, radius_miles:question.radius_miles};
-  }
-  if(question.type === 'thermo'){
-    return {
-      id:question.id,
-      type:question.type,
-      center:question.center,
-      thermo_dest:question.thermo_dest,
-      travel_miles:question.travel_miles,
-    };
-  }
-  if(question.type === 'measure'){
-    return {
-      id:question.id,
-      type:question.type,
-      center:question.center,
-      mode:question.mode || 'distance',
-      category:question.category,
-      category_label:question.category_label,
-    };
-  }
-  if(question.type === 'tentacles'){
-    const options = getTentacleDisplayOptions(question).map(opt => ({
-      id: opt.id,
-      name: opt.name,
-      lat: opt.lat,
-      lng: opt.lng,
-    }));
-    return {
-      id:question.id,
-      type:question.type,
-      center:question.center,
-      radius_miles:question.radius_miles || 1,
-      category:question.category || question.category_label || null,
-      category_label:question.category_label || question.category || null,
-      options,
-    };
-  }
-  if(question.type === 'matching'){
-    return {
-      id:question.id,
-      type:question.type,
-      center:question.center,
-      category:question.category,
-      category_label:question.category_label,
-      ...(question.category === 'line'
-        ? {
-            seeker_val:question.seeker_val,
-            line_id:question.line_id || null,
-            hide_radius_miles:question.hide_radius_miles ?? hideRadiusMi,
-          }
-        : {}),
-    };
-  }
-  if(question.type === 'nearest'){
-    return {id:question.id, type:question.type, center:question.center, category:question.category, category_label:question.category_label};
-  }
-  if(question.type === 'photo'){
-    return {id:question.id, type:question.type, prompt:question.prompt};
-  }
-  return cloneForStorage(question);
+  return stampCityPayload(buildQuestionPacketContent(question));
 }
 
 function generateJSON(){
@@ -1928,17 +1872,18 @@ function generateJSON(){
   const def=QDEFS[activeType];
   _tentacleSelection = null;
   if(currentBuiltQuestion?.id) forgetOutgoingQuestion(currentBuiltQuestion.id);
-  const fullQuestion=def.toJSON(qparams);
+  const fullQuestion=stampCityPayload(def.toJSON(qparams));
   fullQuestion.id='q'+Date.now().toString(36);
-  currentBuiltQuestion = {
+  currentBuiltQuestion = decorateConstraintQuestion({
     ...fullQuestion,
-    _constraint_union: fullQuestion.type === 'measure' ? qparams.measure_constraint_union || null : null,
-  };
+  });
   rememberOutgoingQuestion(currentBuiltQuestion);
   saveGame();
-  const json = buildQuestionPacket(currentBuiltQuestion);
+  const question = currentBuiltQuestion, params = qparams, revision = buildLookupRevision;
+  const json = buildQuestionPacket(question);
   // Yield to UI thread before heavy stringify (prevents freeze on mobile)
   setTimeout(()=>{
+    if(question !== currentBuiltQuestion || params !== qparams || revision !== buildLookupRevision) return;
     document.getElementById('json-out').value=JSON.stringify(json,null,2);
     document.getElementById('json-out-section').style.display='block';
     if(currentBuiltQuestion?.type === 'tentacles') renderTentacleOptionPins(currentBuiltQuestion);
@@ -1948,23 +1893,15 @@ function generateJSON(){
   },0);
 }
 
-function ensureMeasureConstraint(question){
-  if(!question || question.type !== 'measure' || question._constraint_union) return question;
-  const union = buildMeasureConstraintUnion(question, validZone);
-  if(!union) return question;
-  question._constraint_union = union;
-  if(currentBuiltQuestion && currentBuiltQuestion.id === question.id){
-    currentBuiltQuestion._constraint_union = union;
-  }
-  return question;
+function decorateConstraintQuestion(question){
+  return question ? normalizeConstraintEntry(cloneForStorage(question)) : question;
 }
 
 function shouldWarnSlowMeasure(question){
   return !!(
     question &&
     question.type === 'measure' &&
-    !question._constraint_union &&
-    /coast/i.test(question.category_label || question.category || '')
+    (adaptiveLinearConfig(question) || categorySpec('measure',question)?.id==='coastline')
   );
 }
 
@@ -1973,7 +1910,7 @@ function runSlowMeasureAction(question, work){
     work();
     return;
   }
-  toast('Coastline measure can take a bit the first time');
+  toast(adaptiveLinearConfig(question) ? 'Calculating distance regions; uncertain boundary cells stay in play.' : 'Coastline measure can take a bit the first time', 6000);
   setTimeout(work, 0);
 }
 
@@ -1992,23 +1929,6 @@ let _tentacleSelection = null; // {mode:'preview'|'apply', questionId:string}
 
 function getQuestionWithLocalContext(question){
   if(!question) return null;
-  if(question.type === 'measure' && !question._constraint_union){
-    const local = question.id
-      ? ((currentBuiltQuestion && currentBuiltQuestion.id === question.id)
-          ? currentBuiltQuestion
-          : getOutgoingQuestion(question.id))
-      : null;
-    if(local?.type === 'measure' && local._constraint_union){
-      return {...question, _constraint_union: local._constraint_union};
-    }
-    if(
-      currentBuiltQuestion?.type === 'measure' &&
-      currentBuiltQuestion.id === question.id &&
-      qparams.measure_constraint_union
-    ){
-      return {...question, _constraint_union: qparams.measure_constraint_union};
-    }
-  }
   if(question.type === 'tentacles' && (!Array.isArray(question.options) || question.options.length < 2) && question.id){
     const local = (currentBuiltQuestion && currentBuiltQuestion.id === question.id)
       ? currentBuiltQuestion
@@ -2103,6 +2023,17 @@ function renderDirectApplyBtns(json){
   const container = document.getElementById('direct-apply-btns');
   if(!container) return;
   const question = getQuestionWithLocalContext(json);
+  if(isSoftMatchingQuestion(question)){
+    container.innerHTML = `
+      <button class="simul-btn" style="--simul-col:#f0a030" onclick="${_c(()=>applyBuiltAnswer('Yes'))}">
+        <span class="s-icon">✅</span>Same · Apply Locally
+      </button>
+      <button class="simul-btn" style="--simul-col:#f0a030" onclick="${_c(()=>applyBuiltAnswer('No'))}">
+        <span class="s-icon">❌</span>Different · Apply Locally
+      </button>
+    `;
+    return;
+  }
   if(question?.type === 'tentacles'){
     const active = isTentacleSelectionActive(question);
     container.innerHTML = active
@@ -2153,6 +2084,10 @@ function setPreviewMapMode(active){
   }
 }
 
+function getPreviewCutLegend(question){
+  return 'green stays · yellow temporary · red goes';
+}
+
 function clearZonePreview(){
   if(tentaclePreviewLayer) tentaclePreviewLayer.clearLayers();
   simulLayer.clearLayers();
@@ -2160,15 +2095,64 @@ function clearZonePreview(){
   setPreviewMapMode(false);
 }
 
-function renderZonePreviewResult(result, label, color, shouldFit=true, answeredQuestion=null){
-  if(!result) return;
+function decoratePreviewFeatures(features, color, fillOpacity, dashArray=null){
+  return {
+    type:'FeatureCollection',
+    features:(features || []).map(feature => ({
+      ...cloneGeo(feature),
+      properties:{
+        ...(feature.properties || {}),
+        color,
+        strokeColor: color,
+        fillColor: color,
+        fillOpacity,
+        weight: 2,
+        opacity: 0.95,
+        dashArray,
+      },
+    })),
+  };
+}
+
+function derivePreviewZoneState(question){
+  const q = normalizeConstraintEntry(question);
+  const def = QDEFS[q?.type];
+  if(!q || !def) return null;
+  if(def.affectsZone === false){
+    return {question:q, hardZone:validZone, stopState:stopRegionState,
+      greenFeatures:stopRegionState?.greenFeatures || [], yellowFeatures:stopRegionState?.yellowFeatures || []};
+  }
+  const next = deriveZoneStateFromConstraints(buildHideRadiusZone(), [...constraints, q]);
+  const nextHardZone = next.validZone;
+  if(!nextHardZone) return null;
+  const nextStopState = next.stopState;
+  return {
+    question: q,
+    hardZone: nextHardZone,
+    stopState: nextStopState,
+    greenFeatures: nextStopState?.greenFeatures || [],
+    yellowFeatures: nextStopState?.yellowFeatures || [],
+  };
+}
+
+function renderZonePreviewState(previewState, label, shouldFit=true){
+  if(!previewState?.hardZone) return;
   const hint = document.getElementById('simul-hint');
-  const previewQuestion = answeredQuestion || getLivePreviewQuestion() || currentBuiltQuestion;
-  const previewState = previewQuestion ? deriveStopRegionStateFromConstraints([...constraints, previewQuestion]) : null;
-  const hard = previewState?.hardUnion || result;
-  const greenDisplay = previewState ? previewState.greenUnion : hard;
-  const yellowDisplay = previewState?.yellowUnion || null;
-  const eliminated = exactDiff(validZone, hard);
+  const previewQuestion = previewState.question || getLivePreviewQuestion() || currentBuiltQuestion;
+  if(QDEFS[previewQuestion?.type]?.affectsZone === false){
+    clearZonePreview();
+    if(hint){
+      hint.textContent = `${label}: map unchanged — this question does not eliminate locations.`;
+      hint.className = 'simul-result-hint visible';
+    }
+    const msb = document.getElementById('msb-area');
+    if(msb) msb.textContent = 'map unchanged';
+    document.getElementById('map-simul-bar')?.classList.add('visible');
+    return;
+  }
+  const redMask = exactDiff(stopRegionState?.survivingCatchments || validZone, previewState.stopState?.survivingCatchments || previewState.hardZone);
+  const greenFeatures = previewState.greenFeatures || [];
+  const yellowFeatures = previewState.yellowFeatures || [];
   setPreviewMapMode(true);
   if(tentaclePreviewLayer) tentaclePreviewLayer.clearLayers();
   simulLayer.clearLayers();
@@ -2177,50 +2161,41 @@ function renderZonePreviewResult(result, label, color, shouldFit=true, answeredQ
     color: '#4fe07c', weight: 3, fillColor: '#37c96b', fillOpacity: 0.30, interactive: false
   };
   simulMaskLayer.options.style = {
-    color: '#ff6b6b', weight: 2, fillColor: '#ff5a5a', fillOpacity: 0.30, interactive: false
+    color: '#ff6b6b',
+    weight: 2,
+    fillColor: '#ff5a5a',
+    fillOpacity: 0.30,
+    interactive: false
   };
-  if(greenDisplay) simulLayer.addData(greenDisplay);
-  if(yellowDisplay && tentaclePreviewLayer){
-    tentaclePreviewLayer.addData({
-      ...cloneGeo(yellowDisplay),
-      properties:{
-        ...(yellowDisplay.properties || {}),
-        color:'#f0a030',
-        strokeColor:'#f0a030',
-        fillColor:'#f0a030',
-        fillOpacity:0.24,
-        weight:2,
-        opacity:0.95,
-        dashArray:'6 4',
-      },
-    });
+  if(greenFeatures.length) simulLayer.addData(decoratePreviewFeatures(greenFeatures, '#37c96b', 0.26, '4 3'));
+  else if(!previewState.stopState && !yellowFeatures.length) simulLayer.addData(previewState.hardZone);
+  if(yellowFeatures.length && tentaclePreviewLayer){
+    tentaclePreviewLayer.addData(decoratePreviewFeatures(yellowFeatures, '#f0a030', 0.22, '6 4'));
   }
-  if(eliminated) simulMaskLayer.addData(eliminated);
+  if(redMask) simulMaskLayer.addData(redMask);
   if(shouldFit){
-    try{ map.fitBounds(L.geoJSON(hard).getBounds().pad(0.12)); }catch(e){}
+    try{ map.fitBounds(L.geoJSON(previewState.hardZone).getBounds().pad(0.12)); }catch(e){}
   }
-  const area = (turf.area(hard)/1e6).toFixed(1);
-  const pctRemain = validZone ? Math.round(turf.area(hard)/turf.area(validZone)*100) : '?';
-  const pctElim = typeof pctRemain === 'number' ? 100 - pctRemain : '?';
+  const area = (turf.area(previewState.hardZone)/1e6).toFixed(1);
   if(hint){
+    const detail = 'Green remains possible. Orange marks current exclusions within a possible station catchment. Red has no possible station.';
+    hint.innerHTML = `<b>${label}:</b> ${area} km² still in play<br><span style="font-size:8px;color:var(--dim)">${detail}</span>`;
     hint.className = 'simul-result-hint visible';
-    hint.innerHTML = `<b>${label}:</b> ${area} km² remain <span style="color:${color}">(${pctElim}% eliminated)</span><br><span style="font-size:8px;color:var(--dim)">Green keeps. Yellow is future possible. Red cuts.</span>`;
   }
   const msb = document.getElementById('msb-area');
-  if(msb) msb.innerHTML = `<b style="color:var(--green)">green</b> keeps · <b style="color:var(--gold)">yellow</b> future possible · <b style="color:#e84040">red</b> cuts`;
+  if(msb) msb.innerHTML = '<b style="color:var(--green)">green</b> stays · <b style="color:var(--gold)">yellow</b> temporary · <b style="color:#e84040">red</b> gone';
   if(previewQuestion?.type === 'tentacles') document.getElementById('map-simul-bar').classList.remove('visible');
   else document.getElementById('map-simul-bar').classList.add('visible');
 }
 
 function getLivePreviewQuestion(){
   const activeType = getActiveBuildQType();
-  if(currentBuiltQuestion && currentBuiltQuestion.type === activeType) return currentBuiltQuestion;
+  if(currentBuiltQuestion && currentBuiltQuestion.type === activeType) return decorateConstraintQuestion(currentBuiltQuestion);
   if(!qtype || !QDEFS[activeType] || !QDEFS[activeType].isReady(qparams)) return null;
   try{
-    return {
+    return decorateConstraintQuestion({
       ...QDEFS[activeType].toJSON(qparams),
-      _constraint_union: activeType === 'measure' ? qparams.measure_constraint_union || null : null,
-    };
+    });
   }catch(e){
     return null;
   }
@@ -2297,11 +2272,10 @@ function refreshActiveAnswerPreview(){
   if(!opt) return;
   if(!liveQ) return;
   try{
-    ensureMeasureConstraint(liveQ);
-    const q = {...liveQ, answer:_simulActive, answer_label: opt.label};
-    const result = def.applyToZone(validZone, q);
-    if(!result) return;
-    renderZonePreviewResult(result, `${opt.icon} ${opt.label}`, opt.color, false, q);
+    const q = decorateConstraintQuestion({...liveQ, answer:_simulActive, answer_label: opt.label});
+    const previewState = derivePreviewZoneState(q);
+    if(!previewState) return;
+    renderZonePreviewState(previewState, `${opt.icon} ${opt.label}`, false);
   }catch(e){}
 }
 
@@ -2336,7 +2310,7 @@ function renderSimulBtns(json){
     container.innerHTML='';
     msbBtns.innerHTML='';
     bar.classList.remove('visible');
-    if(msbArea) msbArea.innerHTML = 'green keeps · yellow future possible · red cuts';
+    if(msbArea) msbArea.innerHTML = getPreviewCutLegend(question);
     return;
   }
   if(question?.type === 'tentacles'){
@@ -2383,13 +2357,12 @@ function renderSimulBtns(json){
     if(mbtn) mbtn.classList.add('active');
     refreshActiveAnswerPreview();
   } else {
-    if(msbArea) msbArea.innerHTML = 'green keeps · yellow future possible · red cuts';
+    if(msbArea) msbArea.innerHTML = getPreviewCutLegend(question);
   }
 }
 
 function previewAnswer(val){
   const baseQuestion = getQuestionWithLocalContext(getLivePreviewQuestion() || currentBuiltQuestion);
-  const def = baseQuestion ? QDEFS[baseQuestion.type] : QDEFS[getActiveBuildQType()];
   const opts = getLocalApplyOptions(baseQuestion);
   const hint = document.getElementById('simul-hint');
   const msbArea = document.getElementById('msb-area');
@@ -2406,7 +2379,7 @@ function previewAnswer(val){
     }
     if(msbArea) msbArea.innerHTML = baseQuestion?.type === 'tentacles'
       ? 'tap a tentacle pin on the map'
-      : 'green keeps · yellow future possible · red cuts';
+      : getPreviewCutLegend(baseQuestion);
     return;
   }
 
@@ -2423,7 +2396,7 @@ function previewAnswer(val){
     }
     if(msbArea) msbArea.innerHTML = baseQuestion?.type === 'tentacles'
       ? 'tap a tentacle pin on the map'
-      : 'green keeps · yellow future possible · red cuts';
+      : getPreviewCutLegend(baseQuestion);
     return;
   }
 
@@ -2435,18 +2408,16 @@ function previewAnswer(val){
   if(mbtn) mbtn.classList.add('active');
 
   const opt = opts.find(o=>o.val===val);
-  const col = opt ? opt.color : '#20c8b0';
 
   try {
     const liveQ = getQuestionWithLocalContext(getLivePreviewQuestion());
     const baseQ = liveQ || getQuestionWithLocalContext(JSON.parse(document.getElementById('json-out').value));
     runSlowMeasureAction(baseQ, () => {
       try{
-        ensureMeasureConstraint(baseQ);
-        const q = opt ? {...baseQ, answer: val, answer_label: opt.label} : {...baseQ, answer: val};
-        const result = def.applyToZone(validZone, q);
-        if(!result){ toast('Nothing left in zone for this answer'); return; }
-        renderZonePreviewResult(result, opt ? `${opt.icon} ${opt.label}` : val, col, true, q);
+        const q = decorateConstraintQuestion(opt ? {...baseQ, answer: val, answer_label: opt.label} : {...baseQ, answer: val});
+        const previewState = derivePreviewZoneState(q);
+        if(!previewState){ toast('Nothing left in zone for this answer'); return; }
+        renderZonePreviewState(previewState, opt ? `${opt.icon} ${opt.label}` : val);
       }catch(e){
         toast('Preview error: '+e.message);
       }
@@ -2465,12 +2436,11 @@ function applyBuiltAnswer(val){
       ? currentBuiltQuestion
       : getOutgoingQuestion(parsed.id);
     const opt = getLocalApplyOptions(base || parsed).find(o => o.val === val);
-    const q = base
+    const q = decorateConstraintQuestion(base
       ? {...base, answer: val, ...(opt ? {answer_label: opt.label} : {})}
-      : {...parsed, answer: val, ...(opt ? {answer_label: opt.label} : {})};
+      : {...parsed, answer: val, ...(opt ? {answer_label: opt.label} : {})});
     runSlowMeasureAction(q, () => {
       try{
-        ensureMeasureConstraint(q);
         applyAnswerObject(q, ()=>{
           resetBuild();
           switchTab('log');
@@ -2492,9 +2462,9 @@ function previewCustomBoundary(mode){
   qparams._drawingBoundary = false;
   hideBanner();
   const q = {type:'custom_boundary', boundary_geojson: poly, mode};
-  const result = QDEFS.custom_boundary.applyToZone(validZone, q);
-  if(!result){ toast('Nothing left in zone for this boundary'); return; }
-  renderZonePreviewResult(result, mode === 'include' ? '✅ Include' : '❌ Exclude', mode === 'include' ? '#18b050' : '#e84040');
+  const previewState = derivePreviewZoneState(q);
+  if(!previewState){ toast('Nothing left in zone for this boundary'); return; }
+  renderZonePreviewState(previewState, mode === 'include' ? '✅ Include' : '❌ Exclude');
 }
 
 function applyCustomBoundary(){
@@ -2507,42 +2477,22 @@ function applyCustomBoundary(){
     type:'custom_boundary',
     boundary_geojson: poly,
     mode: qparams.custom_boundary_mode,
-    points: (qparams.custom_boundary_points || []).map(p => ({lat:p.lat, lng:p.lng})),
   };
-  const nz = QDEFS.custom_boundary.applyToZone(validZone, q);
-  if(!nz){ toast('Zone empty — contradiction?'); return; }
-  validZone = nz;
-  constraints.push(q);
-  syncZoneStateFromConstraints();
-  renderZone();
-  renderLog();
-  saveGame();
+  if(!applyConstraintIncrementally(q)) return;
   toast(`Custom boundary ${q.mode === 'include' ? 'included' : 'excluded'} ✓`);
   clearCustomBoundary();
   switchTab('log');
 }
 
 function copyQ(){
-  const out = document.getElementById('json-out');
-  let text = out.value;
-  try{
-    const parsed = JSON.parse(text);
-    const source = currentBuiltQuestion?.id && currentBuiltQuestion.id === parsed?.id
-      ? currentBuiltQuestion
-      : parsed;
-    const compact = buildQuestionPacket(source);
-    if(compact){
-      text = JSON.stringify(compact, null, 2);
-      out.value = text;
-    }
-  }catch(e){}
-  navigator.clipboard.writeText(text).then(()=>{
+  navigator.clipboard.writeText(document.getElementById('json-out').value).then(()=>{
     const fl=document.getElementById('cf');fl.classList.add('on');setTimeout(()=>fl.classList.remove('on'),2200);
     toast('Copied! Send to your friend.');
   }).catch(()=>toast('Tap the text area and copy manually'));
 }
 
 function resetBuild(){
+  cancelPointPicking();
   qtype=null;qparams={};pickStep=-1;pickStepDefs=[];
   currentBuiltQuestion = null;
   _tentacleSelection = null;

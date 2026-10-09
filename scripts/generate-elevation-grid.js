@@ -61,6 +61,16 @@ async function writePayload(payload){
 }
 
 async function main(){
+  const cityIndex=process.argv.indexOf('--city');
+  const city=cityIndex>=0 ? process.argv[cityIndex+1] : 'boston';
+  if(city!=='boston'){
+    if(!city || !/^[a-z0-9-]+$/.test(city)) throw new Error('Provide a valid city id');
+    const {spawnSync}=require('child_process');
+    const result=spawnSync(process.env.PYTHON || 'python3', [path.join(__dirname,'generate-raster-elevation.py'),'--city',city,...(process.argv.includes('--refresh')?['--refresh']:[])], {stdio:'inherit'});
+    if(result.error)throw result.error;
+    if(result.status!==0)throw new Error('Raster elevation generator failed (requires Python and Pillow)');
+    return;
+  }
   const latitudes = frange(BBOX.south, BBOX.north, LAT_STEP);
   const longitudes = frange(BBOX.west, BBOX.east, LNG_STEP);
   const existing = await loadExistingPayload();

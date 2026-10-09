@@ -2,17 +2,19 @@
 //  MAP INIT
 // ══════════════════════════════════════════════════════
 function initMap(){
-  map=L.map('map',{center:CENTER,zoom:12,zoomControl:false});
+  map=L.map('map',{center:CENTER,zoom:12,minZoom:1,maxZoom:19,zoomSnap:1,wheelPxPerZoomLevel:20,wheelDebounceTime:20,zoomControl:false,attributionControl:false});
+  L.control.attribution({position:'topleft'}).addTo(map);
 
-  L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png',{
-    attribution:'© OpenStreetMap contributors © CARTO',
-    subdomains:'abcd', maxZoom:19
+  // One light basemap for every city. Positron preserves Boston's original
+  // visual hierarchy; OpenFreeMap supplies OSM vector tiles without an API key.
+  L.maplibreGL({
+    style:'https://tiles.openfreemap.org/styles/positron',
+    attribution:'<a href="https://openfreemap.org/">OpenFreeMap</a> &copy; <a href="https://www.openmaptiles.org/">OpenMapTiles</a> Data from <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>',
+    pane:'tilePane',
+    interactive:false,
   }).addTo(map);
 
   L.control.zoom({position:'topleft'}).addTo(map);
-  map.createPane('yellowSelectPane');
-  map.getPane('yellowSelectPane').style.zIndex = 650;
-  map.getPane('yellowSelectPane').style.pointerEvents = 'auto';
 
   // ── Administrative boundary layers (below zone) ──
   countyLayer = L.geoJSON(null,{interactive:false,style:{
@@ -28,29 +30,7 @@ function initMap(){
 
   // Zone layers behind T lines
   maskLayer  =L.geoJSON(null,{interactive:false,style:{color:'transparent',weight:0,fillColor:'#cc1010',fillOpacity:0.42}}).addTo(map);
-  softLayer  =L.geoJSON(null,{interactive:false,style:{color:'#f0a030',weight:2,fillColor:'#f0a030',fillOpacity:0.24,dashArray:'6 4'}}).addTo(map);
-  yellowSelectLayer=L.geoJSON(null,{
-    pane:'yellowSelectPane',
-    interactive:true,
-    style:feature=>{
-      const selected = typeof isYellowFeatureSelected === 'function' && isYellowFeatureSelected(feature);
-      return {
-        color:selected ? '#ffe27a' : '#ffc04a',
-        weight:selected ? 4 : 2.5,
-        fillColor:selected ? '#ffcf5a' : '#f0a030',
-        fillOpacity:selected ? 0.38 : 0.22,
-        dashArray:selected ? null : '6 4',
-      };
-    },
-    onEachFeature:(feature, layer)=>{
-      layer.on('click', e=>{
-        L.DomEvent.stop(e);
-        if(typeof handleYellowSelectionFeatureClick === 'function'){
-          handleYellowSelectionFeatureClick(feature);
-        }
-      });
-    },
-  }).addTo(map);
+  softLayer  =L.geoJSON(null,{interactive:false,style:{color:'#f0a030',weight:2,fillColor:'#f0a030',fillOpacity:0.20,dashArray:'6 4'}}).addTo(map);
   borderLayer=L.geoJSON(null,{interactive:false,style:{color:'#18b050',weight:3,fillColor:'#18b050',fillOpacity:0.10,dashArray:'7 4'}}).addTo(map);
 
   radiusLayer = L.layerGroup().addTo(map);
@@ -96,6 +76,7 @@ function decodePolyline(str){
 //  MBTA API — load shapes + stops per game line
 // ══════════════════════════════════════════════════════
 async function loadMBTADataLegacy(){
+  if(ACTIVE_CITY.id !== 'boston') return loadMBTAData();
   const BASE = 'https://api-v3.mbta.com';
   const legStatus = document.getElementById('leg-status');
   const allStops = {};
@@ -183,7 +164,7 @@ async function loadMBTADataLegacy(){
           color: line.color,
           weight: line.weight,
           opacity: 1,
-          dashArray: line.id === 'Mattapan' ? '8 5' : null,
+          dashArray: line.dashArray || null,
           lineJoin:'round', lineCap:'round'
         }).bindTooltip(line.label, {sticky:true}).addTo(map);
       }
@@ -232,6 +213,7 @@ async function fetchMBTAJson(url){
 }
 
 async function fetchLiveMBTASnapshot(legStatus){
+  if(ACTIVE_CITY.id !== 'boston') throw new Error('MBTA service is only available in Boston');
   const BASE = 'https://api-v3.mbta.com';
   const ASHMONT_ONLY = new Set(['place-shmnl','place-fldcr','place-smmnl','place-asmnl']);
   const BRAINTREE_ONLY = new Set(['place-nqncy','place-wlsta','place-qnctr','place-qamnl','place-brntn']);
@@ -334,6 +316,22 @@ async function fetchLiveMBTASnapshot(legStatus){
 
 async function loadMBTAData(){
   const legStatus = document.getElementById('leg-status');
+  if(ACTIVE_CITY.id !== 'boston'){
+    const data = await fetchOptionalJSON(DATA_FILES.mbta, `${ACTIVE_CITY.networkLabel} snapshot`);
+    if(data?.lines?.some(line => line.stops?.length) && !cityCompatibilityError(data)){
+      preloadedData.mbta = data;
+      hydrateMBTAFromStatic(data, legStatus);
+      await loadLandmassData();
+    }else{
+      if(legStatus) legStatus.textContent = `⚠ ${ACTIVE_CITY.networkLabel} data unavailable`;
+      const status = document.getElementById('setup-status-text');
+      if(status) status.textContent = `${ACTIVE_CITY.name} station data is unavailable or incompatible. Reload after the dataset is installed.`;
+      document.getElementById('btn-start').disabled = true;
+      mbdataReady = false;
+      if(typeof SessionLoading !== 'undefined') SessionLoading.fail(`${ACTIVE_CITY.name} station data is unavailable. Please reload to try again.`);
+    }
+    return;
+  }
 
   try{
     const liveData = await fetchLiveMBTASnapshot(legStatus);
@@ -359,6 +357,153 @@ async function loadMBTAData(){
   if(legStatus) legStatus.textContent = '⚠ 0 stops — check MBTA data';
   const txt = document.getElementById('setup-status-text');
   if(txt) txt.textContent = '⚠ MBTA data failed to load';
+  if(typeof SessionLoading !== 'undefined') SessionLoading.fail('Station data could not be loaded. Please reload to try again.');
+}
+
+function transitSourceMetadata(line, definitions=GAME_LINES){
+  const definition=definitions.find(item=>item.id===line.id || item.displaySources?.some(source=>source.id===line.id));
+  return {
+    definition:definition || {id:line.id,physicalLineId:line.physicalLineId || line.id,label:line.label || line.id,color:line.color || '#888',weight:line.weight || 4},
+    source:definition?.displaySources?.find(source=>source.id===line.id) || line,
+  };
+}
+
+// Build a small geographic graph before projecting to pixels. Shared branch
+// geometry contributes one physical line per edge; different lines get lanes.
+// Snap tolerance absorbs GTFS sampling/parallel-track differences, not stations.
+function prepareTransitCorridors(lines, definitions=GAME_LINES){
+  const latitudes=lines.flatMap(line=>(line.shapePath || line.path || []).map(point=>point[0])).filter(Number.isFinite);
+  const referenceLatitude=latitudes.length ? latitudes.reduce((sum,lat)=>sum+lat,0)/latitudes.length : 0;
+  const scaleX = 111320 * Math.max(0.01,Math.cos(referenceLatitude * Math.PI / 180)), scaleY = 111320;
+  const tolerance = 18, cellSize = 40;
+  const nodes = [], buckets = new Map(), segments = [];
+  const cell = (x,y) => `${Math.floor(x/cellSize)},${Math.floor(y/cellSize)}`;
+  const nearby = (minX,minY,maxX,maxY) => {
+    const found = [];
+    for(let x=Math.floor(minX/cellSize); x<=Math.floor(maxX/cellSize); x++){
+      for(let y=Math.floor(minY/cellSize); y<=Math.floor(maxY/cellSize); y++){
+        found.push(...(buckets.get(`${x},${y}`) || []));
+      }
+    }
+    return found;
+  };
+  function nodeFor(latlng){
+    const x=latlng[1]*scaleX, y=latlng[0]*scaleY;
+    let best=null, distance=tolerance;
+    for(const node of nearby(x-tolerance,y-tolerance,x+tolerance,y+tolerance)){
+      const d=Math.hypot(x-node.x,y-node.y);
+      if(d<distance){best=node;distance=d;}
+    }
+    if(best) return best;
+    const node={id:nodes.length,x,y,latlng:[latlng[0],latlng[1]]};
+    nodes.push(node);const key=cell(x,y);
+    if(!buckets.has(key)) buckets.set(key,[]);
+    buckets.get(key).push(node);return node;
+  }
+  const metas = new Map();
+  for(const line of lines){
+    const {definition,source}=transitSourceMetadata(line,definitions);
+    const physicalLineId=definition.physicalLineId || definition.id;
+    const meta={...definition,physicalLineId,label:definition.displayLabel || definition.label || definition.id};
+    metas.set(physicalLineId,meta);
+    const path=(line.shapePath || line.path || []).filter(p=>p?.length>=2 && p.every(Number.isFinite)).map(nodeFor);
+    for(let i=1;i<path.length;i++){
+      if(path[i-1].id !== path[i].id) segments.push({a:path[i-1],b:path[i],physicalLineId,dashArray:source.dashArray || definition.dashArray || null,serviceVariant:source.serviceVariant || null});
+    }
+  }
+  const edges=new Map();
+  for(const segment of segments){
+    const {a,b}=segment,dx=b.x-a.x,dy=b.y-a.y,length2=dx*dx+dy*dy;
+    const interior=nearby(Math.min(a.x,b.x)-tolerance,Math.min(a.y,b.y)-tolerance,Math.max(a.x,b.x)+tolerance,Math.max(a.y,b.y)+tolerance)
+      .filter(n=>n!==a && n!==b)
+      .map(n=>({n,t:((n.x-a.x)*dx+(n.y-a.y)*dy)/length2}))
+      .filter(({n,t})=>t>0.001 && t<0.999 && Math.hypot(n.x-a.x-t*dx,n.y-a.y-t*dy)<tolerance)
+      .sort((u,v)=>u.t-v.t);
+    const points=[a,...interior.map(p=>p.n),b];
+    for(let i=1;i<points.length;i++){
+      const u=points[i-1],v=points[i];if(u.id===v.id)continue;
+      const key=[u.id,v.id].sort((a,b)=>a-b).join(':');
+      if(!edges.has(key))edges.set(key,{a:u,b:v,lines:new Map()});
+      const edge=edges.get(key),previous=edge.lines.get(segment.physicalLineId);
+      // The regular segment wins where a conditional variant uses the same track.
+      const dashArray=previous ? (previous.dashArray && segment.dashArray) : segment.dashArray;
+      edge.lines.set(segment.physicalLineId,{...metas.get(segment.physicalLineId),dashArray,serviceVariant:dashArray ? segment.serviceVariant : null});
+    }
+  }
+  // Join edges with the same lane roster to keep dashed patterns and corners continuous.
+  const groups=new Map();
+  for(const edge of edges.values()){
+    const lanes=[...edge.lines.values()].sort((a,b)=>a.physicalLineId.localeCompare(b.physicalLineId));
+    const key=lanes.map(l=>`${l.physicalLineId}:${l.dashArray || 'solid'}`).join('|');
+    if(!groups.has(key))groups.set(key,{lanes,edges:[]});
+    groups.get(key).edges.push(edge);
+  }
+  const corridors=[];
+  for(const group of groups.values()){
+    const adjacency=new Map();
+    group.edges.forEach((edge,index)=>{
+      edge.index=index;
+      for(const node of [edge.a,edge.b]){
+        if(!adjacency.has(node.id))adjacency.set(node.id,[]);
+        adjacency.get(node.id).push(edge);
+      }
+    });
+    const used=new Set();
+    function walk(first,start){
+      const path=[start.latlng];let edge=first,node=start;
+      while(edge && !used.has(edge.index)){
+        used.add(edge.index);node=edge.a.id===node.id ? edge.b : edge.a;path.push(node.latlng);
+        const neighbors=adjacency.get(node.id);
+        edge=neighbors.length===2 ? neighbors.find(e=>!used.has(e.index)) : null;
+      }
+      corridors.push({path,lanes:group.lanes});
+    }
+    for(const edge of group.edges){
+      if(used.has(edge.index))continue;
+      if(adjacency.get(edge.a.id).length!==2)walk(edge,edge.a);
+      else if(adjacency.get(edge.b.id).length!==2)walk(edge,edge.b);
+    }
+    for(const edge of group.edges)if(!used.has(edge.index))walk(edge,edge.a);
+  }
+  return corridors;
+}
+
+function offsetTransitPath(points, offset){
+  if(!offset || points.length<2)return points.map(p=>({x:p.x,y:p.y}));
+  const normals=[];
+  for(let i=1;i<points.length;i++){
+    const dx=points[i].x-points[i-1].x,dy=points[i].y-points[i-1].y,length=Math.hypot(dx,dy)||1;
+    normals.push({x:-dy/length,y:dx/length});
+  }
+  return points.map((point,i)=>{
+    const a=normals[Math.max(0,i-1)],b=normals[Math.min(normals.length-1,i)];
+    const x=a.x+b.x,y=a.y+b.y,denominator=x*b.x+y*b.y;
+    const factor=Math.abs(denominator)>0.1 ? Math.min(2,2/denominator) : 1;
+    return {x:point.x+x*0.5*offset*factor,y:point.y+y*0.5*offset*factor};
+  });
+}
+
+let transitRouteLayer=null, transitRouteRedraw=null;
+function drawTransitRoutes(lines){
+  if(transitRouteLayer)transitRouteLayer.remove();
+  if(transitRouteRedraw)map.off('zoomend',transitRouteRedraw);
+  transitRouteLayer=L.layerGroup().addTo(map);
+  const corridors=prepareTransitCorridors(lines);
+  transitRouteRedraw=()=>{
+    transitRouteLayer.clearLayers();
+    const zoom=map.getZoom(),spacing=5;
+    for(const corridor of corridors){
+      const projected=corridor.path.map(latlng=>map.project(latlng,zoom));
+      corridor.lanes.forEach((line,index)=>{
+        const offset=(index-(corridor.lanes.length-1)/2)*spacing;
+        const path=offsetTransitPath(projected,offset).map(point=>map.unproject(L.point(point.x,point.y),zoom));
+        L.polyline(path,{color:line.color,weight:4,opacity:1,lineCap:'round',lineJoin:'round',dashArray:line.dashArray})
+          .bindTooltip(line.label+(line.serviceVariant ? ` · ${line.serviceVariant} service segment` : ''),{sticky:true}).addTo(transitRouteLayer);
+      });
+    }
+  };
+  transitRouteRedraw();
+  map.on('zoomend',transitRouteRedraw);
 }
 
 function hydrateMBTAFromStatic(data, legStatus){
@@ -367,32 +512,18 @@ function hydrateMBTAFromStatic(data, legStatus){
   commuterRailStopsList.length = 0;
 
   const lines = data.lines || [];
+  drawTransitRoutes(lines);
   const allStops = {};
   lines.forEach(line => {
-    const shapePath = line.shapePath || line.path || [];
-    const meta = GAME_LINES.find(gl => gl.id === line.id) || {
-      id: line.id,
-      label: line.label || line.id,
-      color: line.color || '#888',
-      weight: line.weight || 4,
-    };
-    if(shapePath.length > 1){
-      L.polyline(shapePath, {color:'#1a1a1a', weight:meta.weight+3, opacity:0.4, lineJoin:'round', lineCap:'round'}).addTo(map);
-      L.polyline(shapePath, {
-        color: meta.color,
-        weight: meta.weight,
-        opacity: 1,
-        dashArray: meta.id === 'Mattapan' ? '8 5' : null,
-        lineJoin:'round',
-        lineCap:'round',
-      }).bindTooltip(meta.label, {sticky:true}).addTo(map);
-    }
+    const {definition:meta,source}=transitSourceMetadata(line);
+    // Conditional variants add station membership only through a service snapshot.
+    if(source.includeStationMembership === false) return;
     (line.stops || []).forEach(stop => {
       if(!Number.isFinite(stop.lat) || !Number.isFinite(stop.lng)) return;
       const sid = stop.id;
       if(!allStops[sid]) allStops[sid] = {name:stop.name, lat:stop.lat, lng:stop.lng, lines:[], color:meta.color};
       if(!allStops[sid].lines.includes(meta.id)) allStops[sid].lines.push(meta.id);
-      if(!stopLineMap[sid]) stopLineMap[sid] = {name:stop.name, lat:stop.lat, lng:stop.lng, lines:new Set()};
+      if(!stopLineMap[sid]) stopLineMap[sid] = {id:sid, name:stop.name, lat:stop.lat, lng:stop.lng, lines:new Set()};
       stopLineMap[sid].lines.add(meta.id);
     });
   });
@@ -401,9 +532,10 @@ function hydrateMBTAFromStatic(data, legStatus){
   (data.commuterRail || []).forEach(stop => {
     commuterRailStops.add(stop.id);
     if(stop.parentId) commuterRailStops.add(stop.parentId);
-    if(stop.name && Number.isFinite(stop.lat) && Number.isFinite(stop.lng) && !seenCR.has(stop.name)){
-      seenCR.add(stop.name);
-      commuterRailStopsList.push({id: stop.id, name: stop.name, lat: stop.lat, lng: stop.lng});
+    const identity = stop.id || `${stop.agency || ''}:${stop.lat},${stop.lng}`;
+    if(stop.name && Number.isFinite(stop.lat) && Number.isFinite(stop.lng) && !seenCR.has(identity)){
+      seenCR.add(identity);
+      commuterRailStopsList.push({id: stop.id, agency:stop.agency, name: stop.name, lat: stop.lat, lng: stop.lng});
     }
   });
 
@@ -448,7 +580,7 @@ function drawStopMarkers(allStops){
       .bindPopup(popupHTML, {offset:[0,-2], maxWidth:240})
       .on('click', function(){
         if(_pickingHiderStation){
-          setHiderStation({name, lat, lng, lines:[...new Set(lines)]});
+          setHiderStation({id:sid, name, lat, lng, lines:[...new Set(lines)]});
           return;
         }
         const activeStep = pickStep >= 0 && pickStep < pickStepDefs.length ? pickStepDefs[pickStep] : null;
@@ -470,15 +602,22 @@ function finalizeMBTALoad(legStatus){
     setTimeout(() => { legStatus.style.display='none'; }, 3500);
   }
 
-  mbdataReady = true;
+  mbdataReady = stopCount > 0;
+  if(mbdataReady && ACTIVE_CITY.id === 'chicago'){
+    // Frame CTA stops, not the larger envelope used to collect reference data.
+    const bounds = L.latLngBounds(Object.values(stopLineMap).map(stop => [stop.lat, stop.lng]));
+    const desktop = window.innerWidth > 768;
+    map.fitBounds(bounds, {paddingTopLeft:[32,56], paddingBottomRight:[desktop ? 392 : 32,48], animate:false});
+  }
   const dot = document.getElementById('setup-dot');
   const txt = document.getElementById('setup-status-text');
   const btn = document.getElementById('btn-start');
-  if (dot) dot.classList.add('ready');
+  if (dot) dot.classList.toggle('ready', mbdataReady);
   if (txt) txt.textContent = stopCount > 0
     ? `${stopCount} stops loaded — ready!`
     : `⚠ Stops failed to load — check network`;
-  if (btn) btn.disabled = false;
+  if (btn) btn.disabled = !mbdataReady;
+  if(typeof onGameSessionReady === 'function') onGameSessionReady();
 }
 
 async function loadLandmassData(){

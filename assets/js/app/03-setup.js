@@ -6,18 +6,26 @@ function selectRadius(el){
   el.classList.add('selected');
   hideRadiusMi = parseFloat(el.dataset.mi);
   _hideRadiusZoneCache = { miles: null, stopCount: 0, zone: null };
-  if(typeof resetStopRegionCache === 'function') resetStopRegionCache();
+  _stopBaseRegionCache = { miles: null, stopCount: 0, entries: null };
 }
 
 function startGame(){
+  if(!IS_GAME_SESSION){
+    GameSession.open(CITY_PROFILES[selectedCityId], {mode:gameMode,radius:hideRadiusMi});
+    return;
+  }
+  if(!mbdataReady || !Object.keys(stopLineMap).length){ toast(`Wait for ${ACTIVE_CITY.networkLabel} station data before starting.`); return; }
+  SessionLoading.show(ACTIVE_CITY, 'Preparing station catchments…');
   // Build union of all station buffers at chosen radius
   toast('Computing valid zone…');
   setTimeout(()=>{
     applyHideRadius();
+    SessionLoading.ready();
     // Dismiss overlay
     const ov = document.getElementById('setup-overlay');
     ov.classList.add('hidden');
     setTimeout(()=>{ ov.style.display='none'; }, 420);
+    saveGame();
     applyGameMode();
     if(gameMode === 'hider' || gameMode === 'dev'){
       promptHiderStationPick();
@@ -29,6 +37,7 @@ function startGame(){
 }
 
 function promptHiderStationPick(){
+  cancelPointPicking();
   _pickingHiderStation = true;
   document.getElementById('panel').classList.add('collapsed');
   showBanner('🫣 TAP YOUR STATION on the map to set your hiding location');
@@ -36,25 +45,75 @@ function promptHiderStationPick(){
 
 let _hideRadiusZoneCache = { miles: null, stopCount: 0, zone: null };
 let _pendingYellowRegionFeature = null;
-let _yellowMultiSelectActive = false;
-let _yellowSelectedFeatures = [];
 
-function canSelectYellowRegions(){
+function getHardZoneForRender(){
+  if(stopRegionState?.hardUnion) return stopRegionState.hardUnion;
+  if(typeof hardZone !== 'undefined' && hardZone) return hardZone;
+  if(typeof validZone !== 'undefined' && validZone) return validZone;
+  return null;
+}
+
+function getSoftZoneForRender(){
+  if(stopRegionState?.yellowUnion) return stopRegionState.yellowUnion;
+  if(typeof softZone !== 'undefined' && softZone) return softZone;
+  return null;
+}
+
+function getGreenFeaturesForRender(hard, soft){
+  if(stopRegionState?.greenFeatures) return stopRegionState.greenFeatures;
+  if(!hard) return [];
+  try{
+    const green = soft ? turf.difference(hard, soft) : hard;
+    return geometryToPolygonFeatures(green, {regionKind:'green'});
+  }catch(e){
+    return geometryToPolygonFeatures(hard, {regionKind:'green'});
+  }
+}
+
+function getYellowFeaturesForRender(hard, soft){
+  if(stopRegionState?.yellowFeatures) return stopRegionState.yellowFeatures;
+  if(!hard || !soft) return [];
+  try{
+    const yellow = turf.intersect(hard, soft);
+    return geometryToPolygonFeatures(yellow, {regionKind:'yellow', menuLabel:'Exclude region'});
+  }catch(e){
+    return [];
+  }
+}
+
+function buildRedMaskFeature(maskBase, hardZone){
+  if(!maskBase || !hardZone) return null;
+  return exactDiff(maskBase, hardZone);
+}
+
+function canOpenYellowRegionMenu(){
   const setupOverlay = document.getElementById('setup-overlay');
   if(setupOverlay && !setupOverlay.classList.contains('hidden')) return false;
+  if(gameMode === 'hider') return false;
   if(_pickingHiderStation) return false;
   if(typeof _hiderPickingLocation !== 'undefined' && _hiderPickingLocation) return false;
   if(qtype === 'custom_boundary' && qparams._drawingBoundary) return false;
   if(pickStep >= 0 && pickStep < pickStepDefs.length) return false;
-  return !!stopRegionState?.yellowFeatures?.length;
+  return !!stopRegionState?.yellowFeatures?.some(feature=>!feature.properties?.catchmentPartial);
 }
 
 function findYellowRegionFeatureAtLatLng(latlng){
-  if(!canSelectYellowRegions()) return null;
+  if(!canOpenYellowRegionMenu()) return null;
   const pt = turf.point([latlng.lng, latlng.lat]);
-  return (stopRegionState?.yellowFeatures || []).find(feature => {
-    try{ return turf.booleanPointInPolygon(pt, feature); }
-    catch(e){ return false; }
+  if(stopRegionState?.greenFeatures?.some(feature => {
+    try{
+      return turf.booleanPointInPolygon(pt, feature);
+    }catch(e){
+      return false;
+    }
+  })) return null;
+  return stopRegionState.yellowFeatures.find(feature => {
+    if(feature.properties?.catchmentPartial) return false;
+    try{
+      return turf.booleanPointInPolygon(pt, feature);
+    }catch(e){
+      return false;
+    }
   }) || null;
 }
 
@@ -63,262 +122,45 @@ function dismissYellowRegionMenu(){
   if(map) map.closePopup();
 }
 
-function yellowFeatureKey(feature){
-  return JSON.stringify(feature?.geometry || feature);
-}
-
-function yellowFeatureDescriptor(feature){
-  const stopId = feature?.properties?.stopId || null;
-  if(!stopId) return null;
-  const key = yellowFeatureKey(feature);
-  const sameStop = (stopRegionState?.yellowFeatures || []).filter(item => item?.properties?.stopId === stopId);
-  const index = sameStop.findIndex(item => yellowFeatureKey(item) === key);
-  return {stop_id:stopId, region_index:index >= 0 ? index : 0};
-}
-
-function isYellowFeatureSelected(feature){
-  const key = yellowFeatureKey(feature);
-  return _yellowSelectedFeatures.some(item => yellowFeatureKey(item) === key);
-}
-
-function updateYellowSelectionOverlay(){
-  if(tentaclePreviewLayer) tentaclePreviewLayer.clearLayers();
-  if(yellowSelectLayer) yellowSelectLayer.clearLayers();
-
-  const yellowFeatures = stopRegionState?.yellowFeatures || [];
-  if(_yellowMultiSelectActive && yellowSelectLayer && yellowFeatures.length){
-    yellowSelectLayer.addData(turf.featureCollection(yellowFeatures));
-    if(yellowSelectLayer.bringToFront) yellowSelectLayer.bringToFront();
-  }
-
-  if(!tentaclePreviewLayer || !_yellowSelectedFeatures.length) return;
-  tentaclePreviewLayer.addData({
-    type:'FeatureCollection',
-    features:_yellowSelectedFeatures.map(feature => ({
-      ...cloneGeo(feature),
-      properties:{
-        ...(feature.properties || {}),
-        color:'#ffcf5a',
-        strokeColor:'#ffcf5a',
-        fillColor:'#ffcf5a',
-        fillOpacity:0.38,
-        weight:3,
-        opacity:1,
-      },
-    })),
-  });
-}
-
-function getYellowRegionCount(){
-  return stopRegionState?.yellowFeatures?.length || 0;
-}
-
-function updateYellowReviewBar(){
-  const bar = document.getElementById('yellow-review-bar');
-  if(!bar) return;
-  const count = getYellowRegionCount();
-  if(!count){
-    bar.classList.remove('visible');
-    bar.innerHTML = '';
-    if(_yellowMultiSelectActive) cancelYellowMultiSelect();
-    return;
-  }
-  const selected = _yellowSelectedFeatures.length;
-  if(_yellowMultiSelectActive){
-    bar.innerHTML = `
-      <span class="yr-count">${selected || 0} selected</span>
-      <button class="yr-btn primary" type="button" onclick="finishYellowMultiSelect('green')" ${selected ? '' : 'disabled'}>Make green</button>
-      <button class="yr-btn danger" type="button" onclick="finishYellowMultiSelect('red')" ${selected ? '' : 'disabled'}>Make red</button>
-      <button class="yr-btn" type="button" onclick="selectAllYellowRegions()">Select all</button>
-      <button class="yr-btn" type="button" onclick="cancelYellowMultiSelect()">Cancel</button>
-    `;
-  }else{
-    bar.innerHTML = `
-      <span class="yr-count">${count} future possible</span>
-      <button class="yr-btn primary" type="button" onclick="startYellowMultiSelect()">Select</button>
-      <button class="yr-btn" type="button" onclick="keepAllYellowRegions()">All green</button>
-      <button class="yr-btn danger" type="button" onclick="hardenAllYellowRegions()">All red</button>
-    `;
-  }
-  bar.classList.add('visible');
-}
-
-function buildYellowHardenBoundary(features){
-  let union = null;
-  features.forEach(feature => { union = unionGeo(union, feature); });
-  return union;
-}
-
-function hardenYellowFeatures(features){
-  const chosen = (features || []).filter(Boolean);
-  if(!chosen.length) return;
-  const boundary = buildYellowHardenBoundary(chosen);
-  if(!boundary){ toast('Could not read selected yellow region'); return; }
-  const count = chosen.length;
-  const prevZone = validZone ? cloneGeo(validZone) : null;
-  const prevStopRegionState = stopRegionState ? cloneForStorage(stopRegionState) : null;
-  const selectedYellow = chosen.map(yellowFeatureDescriptor).filter(Boolean);
-  constraints.push({
-    type:'_yellow_harden',
-    boundary_geojson: boundary,
-    selected_yellow:selectedYellow,
-    _label: count === 1 ? 'Yellow region made red' : `${count} yellow regions made red`,
-  });
-  if(syncZoneStateFromConstraints()){
-    _yellowMultiSelectActive = false;
-    _yellowSelectedFeatures = [];
-    updateYellowSelectionOverlay();
-    renderZone();
-    renderLog();
-    saveGame();
-    toast(count === 1 ? 'Yellow region made red' : `${count} yellow regions made red`);
-  }else{
-    constraints.pop();
-    validZone = prevZone;
-    stopRegionState = prevStopRegionState;
-    toast('Could not make yellow region red');
-  }
-}
-
-function keepYellowFeatures(features){
-  const chosen = (features || []).filter(Boolean);
-  if(!chosen.length) return;
-  const boundary = buildYellowHardenBoundary(chosen);
-  if(!boundary){ toast('Could not read selected yellow region'); return; }
-  const count = chosen.length;
-  const prevZone = validZone ? cloneGeo(validZone) : null;
-  const prevStopRegionState = stopRegionState ? cloneForStorage(stopRegionState) : null;
-  const selectedYellow = chosen.map(yellowFeatureDescriptor).filter(Boolean);
-  constraints.push({
-    type:'_yellow_keep',
-    boundary_geojson: boundary,
-    selected_yellow:selectedYellow,
-    _label: count === 1 ? 'Future-possible region made green' : `${count} future-possible regions made green`,
-  });
-  if(syncZoneStateFromConstraints()){
-    _yellowMultiSelectActive = false;
-    _yellowSelectedFeatures = [];
-    updateYellowSelectionOverlay();
-    renderZone();
-    renderLog();
-    saveGame();
-    toast(count === 1 ? 'Future-possible region made green' : `${count} future-possible regions made green`);
-  }else{
-    constraints.pop();
-    validZone = prevZone;
-    stopRegionState = prevStopRegionState;
-    toast('Could not make future-possible region green');
-  }
-}
-
-function hardenPendingYellowRegion(){
-  if(!_pendingYellowRegionFeature) return;
-  const feature = cloneGeo(_pendingYellowRegionFeature);
-  dismissYellowRegionMenu();
-  hardenYellowFeatures([feature]);
-}
-
-function keepPendingYellowRegion(){
-  if(!_pendingYellowRegionFeature) return;
-  const feature = cloneGeo(_pendingYellowRegionFeature);
-  dismissYellowRegionMenu();
-  keepYellowFeatures([feature]);
-}
-
-function startYellowMultiSelect(){
-  if(!canSelectYellowRegions()) return;
-  _yellowMultiSelectActive = true;
-  _yellowSelectedFeatures = _pendingYellowRegionFeature ? [cloneGeo(_pendingYellowRegionFeature)] : [];
-  _pendingYellowRegionFeature = null;
-  dismissYellowRegionMenu();
-  updateYellowSelectionOverlay();
-  updateYellowReviewBar();
-}
-
-function toggleYellowRegionSelection(feature){
-  const key = yellowFeatureKey(feature);
-  const existing = _yellowSelectedFeatures.findIndex(item => yellowFeatureKey(item) === key);
-  if(existing >= 0 && _yellowSelectedFeatures.length > 1) _yellowSelectedFeatures.splice(existing, 1);
-  else if(existing < 0){
-    _yellowSelectedFeatures.push(cloneGeo(feature));
-  }
-  updateYellowSelectionOverlay();
-  updateYellowReviewBar();
-}
-
-function finishYellowMultiSelect(action='red'){
-  const selected = _yellowSelectedFeatures.map(cloneGeo);
-  hideBanner();
-  dismissYellowRegionMenu();
-  if(action === 'green') keepYellowFeatures(selected);
-  else hardenYellowFeatures(selected);
-}
-
-function cancelYellowMultiSelect(){
-  _yellowMultiSelectActive = false;
-  _yellowSelectedFeatures = [];
-  updateYellowSelectionOverlay();
-  hideBanner();
-  dismissYellowRegionMenu();
-  updateYellowReviewBar();
-}
-
-function selectAllYellowRegions(){
-  if(!_yellowMultiSelectActive) return;
-  _yellowSelectedFeatures = (stopRegionState?.yellowFeatures || []).map(cloneGeo);
-  updateYellowSelectionOverlay();
-  updateYellowReviewBar();
-}
-
-function hardenAllYellowRegions(){
-  const features = stopRegionState?.yellowFeatures || [];
-  if(!features.length) return;
-  const ok = window.confirm(`Make all ${features.length} future-possible region${features.length === 1 ? '' : 's'} red?`);
-  if(!ok) return;
-  hardenYellowFeatures(features);
-}
-
-function keepAllYellowRegions(){
-  const features = stopRegionState?.yellowFeatures || [];
-  if(!features.length) return;
-  const ok = window.confirm(`Make all ${features.length} future-possible region${features.length === 1 ? '' : 's'} green?`);
-  if(!ok) return;
-  keepYellowFeatures(features);
-}
-
 function openYellowRegionMenu(latlng, feature){
   if(!map || !feature) return;
   _pendingYellowRegionFeature = cloneGeo(feature);
-  L.popup({closeButton:true, autoPan:true, offset:[0, -4]})
+  const actionLabel = feature.properties?.menuLabel || 'Exclude region';
+  const popup = L.popup({closeButton:true, autoPan:true, offset:[0, -4]})
     .setLatLng(latlng)
     .setContent(`
       <div class="stop-popup">
-        <div class="stop-popup-name">Yellow Region</div>
+        <div class="stop-popup-name">Temporary Region</div>
         <div style="font-size:9px;color:var(--dim);line-height:1.55">
-          This area is ruled out right now, but the stop is still future possible. You can make it red permanently.
+          This yellow area is only ruled out for the moment. Exclude it permanently and add that choice to the log?
         </div>
-        <button class="btn btn-sec yellow-region-menu-btn" type="button" onclick="keepPendingYellowRegion()">Make this green</button>
-        <button class="btn btn-red yellow-region-menu-btn" type="button" onclick="hardenPendingYellowRegion()">Make this red</button>
-        <button class="btn btn-ghost yellow-region-menu-btn" type="button" onclick="startYellowMultiSelect()">Select on map</button>
+        <button class="btn btn-red yellow-region-menu-btn" type="button" onclick="excludePendingYellowRegion()">${actionLabel}</button>
       </div>
-    `)
-    .openOn(map);
+    `);
+  popup.on('remove', ()=>{ _pendingYellowRegionFeature = null; });
+  popup.openOn(map);
 }
 
 function handleYellowRegionTap(latlng){
   const feature = findYellowRegionFeatureAtLatLng(latlng);
   if(!feature) return false;
-  if(_yellowMultiSelectActive){
-    toggleYellowRegionSelection(feature);
-    return true;
-  }
   openYellowRegionMenu(latlng, feature);
   return true;
 }
 
-function handleYellowSelectionFeatureClick(feature){
-  if(!_yellowMultiSelectActive) return;
-  toggleYellowRegionSelection(feature);
+function excludePendingYellowRegion(){
+  if(!_pendingYellowRegionFeature) return;
+  const feature = cloneGeo(_pendingYellowRegionFeature);
+  const nextConstraint = normalizeConstraintEntry({
+    type:'custom_boundary',
+    boundary_geojson: feature,
+    mode:'exclude',
+    _label:'Exclude region',
+  });
+  dismissYellowRegionMenu();
+  if(!applyConstraintIncrementally(nextConstraint)) return;
+  switchTab('log');
+  toast('Region excluded');
 }
 
 function buildHideRadiusZone(){
@@ -371,9 +213,11 @@ function applyHideRadius(){
   constraints = [{
     type:'_setup',
     answer:'applied',
+    hide_radius_miles:hideRadiusMi,
     _label:`Hide radius: ${hideRadiusMi < 1 ? (hideRadiusMi*5280).toFixed(0)+' ft' : hideRadiusMi+' mi'} from any station`
   }];
-  syncZoneStateFromConstraints();
+  stopRegionState = deriveStopRegionState(validZone, constraints);
+  softZone = stopRegionState?.yellowUnion || null;
   renderZone();
   renderLog();
   const km2 = (turf.area(validZone)/1e6).toFixed(1);
@@ -386,25 +230,48 @@ function applyHideRadius(){
 // ══════════════════════════════════════════════════════
 function renderZone(){
   maskLayer.clearLayers();
-  if(softLayer) softLayer.clearLayers();
+  softLayer.clearLayers();
   borderLayer.clearLayers();
   dismissYellowRegionMenu();
-  if(!validZone) return;
-  const hard = stopRegionState?.hardUnion || validZone;
-  const greenDisplay = stopRegionState ? stopRegionState.greenUnion : hard;
-  const yellowDisplay = stopRegionState?.yellowUnion || null;
-  const maskBase = INIT_POLY;
+  const hard = getHardZoneForRender();
+  const soft = getSoftZoneForRender();
+  const maskBase = buildHideRadiusZone() || INIT_POLY;
+  if(!hard) return;
+  const greenFeatures = getGreenFeaturesForRender(hard, soft);
+  const yellowFeatures = getYellowFeaturesForRender(hard, soft);
 
-  try{ const mask=exactDiff(maskBase, hard); if(mask) maskLayer.addData(mask); }catch(e){}
-  if(yellowDisplay && softLayer) softLayer.addData(yellowDisplay);
-  if(greenDisplay) borderLayer.addData(greenDisplay);
-  updateYellowSelectionOverlay();
+  // Red mask = everything outside the hard zone
+  try{
+    const mask = buildRedMaskFeature(maskBase, stopRegionState?.survivingCatchments || hard);
+    if(mask) maskLayer.addData(mask);
+  }catch(e){}
+
+  if(yellowFeatures.length){
+    softLayer.addData(turf.featureCollection(yellowFeatures));
+  } else if(!stopRegionState && soft){
+    try{
+      const yellow = turf.intersect(hard, soft);
+      if(yellow) softLayer.addData(yellow);
+    }catch(e){}
+  }
+
+  // Green = remaining hard zone after removing temporary exclusions
+  if(greenFeatures.length){
+    borderLayer.addData(turf.featureCollection(greenFeatures));
+  }else if(!stopRegionState){
+    try{
+      const green = soft ? turf.difference(hard, soft) : hard;
+      if(green) borderLayer.addData(green);
+      else if(!soft && !yellowFeatures.length) borderLayer.addData(hard);
+    }catch(e){
+      if(!soft && !yellowFeatures.length) borderLayer.addData(hard);
+    }
+  }
   updateStat();
-  updateYellowReviewBar();
 }
 
 function updateStat(){
-  const hard = stopRegionState?.hardUnion || validZone;
+  const hard = stopRegionState?.hardUnion || getHardZoneForRender();
   const km2=hard?(turf.area(hard)/1e6).toFixed(1):'0';
   document.getElementById('zone-stat').textContent=`${km2} km²`;
   document.getElementById('zone-area').textContent=`${km2} km² in play`;
@@ -412,8 +279,11 @@ function updateStat(){
 
 function resetZone(){
   applyHideRadius();
-  clearSave();
-  cancelYellowMultiSelect();
+  outgoingQuestions = {};
+  clearTimeout(_saveGameTimer);
+  _saveGameTimer = null;
+  localStorage.removeItem(SAVE_KEY);
+  saveGame();
   toast('Zone reset to hide-radius area');
 }
 
@@ -422,7 +292,9 @@ function resetZone(){
 // ══════════════════════════════════════════════════════
 function applyPickedPoint(lat, lng, zIndexOffset=2000){
   if(pickStep < 0 || pickStep >= pickStepDefs.length) return false;
-  qparams[pickStepDefs[pickStep].key] = {lat, lng};
+  const key = pickStepDefs[pickStep].key;
+  invalidatePickedLocation(key);
+  qparams[key] = {lat, lng};
   const cols = ['#e84040', '#f0a030', '#a060ff', '#20c8b0'];
   const m = L.marker([lat, lng], {icon: seekerPin(cols[pickStep % cols.length]), zIndexOffset}).addTo(map);
   seekerPinMarkers.push(m);
@@ -459,10 +331,13 @@ function onMapClick(e){
     updatePreview();
     return;
   }
+  if(pickStep>=0&&pickStep<pickStepDefs.length){
+    const {lat,lng}=e.latlng;
+    applyPickedPoint(lat, lng);
+    return;
+  }
   if(handleYellowRegionTap(e.latlng)) return;
-  if(pickStep<0||pickStep>=pickStepDefs.length) return;
-  const {lat,lng}=e.latlng;
-  applyPickedPoint(lat, lng);
+  dismissYellowRegionMenu();
 }
 
 // ══════════════════════════════════════════════════════
@@ -470,9 +345,15 @@ function onMapClick(e){
 // ══════════════════════════════════════════════════════
 function showBanner(msg){document.getElementById('banner-msg').textContent=msg;document.getElementById('pick-banner').classList.add('visible');}
 function hideBanner(){document.getElementById('pick-banner').classList.remove('visible');}
-function dismissBanner(){
+function cancelPointPicking(){
   pickStep=-1;
-  if(qtype==='custom_boundary') qparams._drawingBoundary = false;
+  if(qparams) qparams._drawingBoundary = false;
+  if(typeof _hiderPickingLocation !== 'undefined') _hiderPickingLocation = false;
+  _pickingHiderStation = false;
+  if(typeof invalidateHiderRequest === 'function') invalidateHiderRequest();
+}
+function dismissBanner(){
+  cancelPointPicking();
   hideBanner();
   if(qtype==='custom_boundary' && typeof renderBoundaryBody === 'function') renderBoundaryBody();
   else renderBuildBody();
@@ -482,31 +363,19 @@ function useMyLocation(key, stepIndex){
   if(!navigator.geolocation){ toast('Geolocation not available on this device'); return; }
   const btn = document.getElementById(`gps-btn-${stepIndex}`);
   if(btn){ btn.classList.add('locating'); btn.textContent = '⏳ Locating…'; }
+  const params = qparams;
+  const requestedStep = pickStep;
+  const isCurrent = () => params === qparams && pickStep === requestedStep && pickStepDefs[pickStep]?.key === key;
   navigator.geolocation.getCurrentPosition(
     (pos)=>{
       const lat = pos.coords.latitude, lng = pos.coords.longitude;
-      const m = L.marker([lat,lng],{icon:seekerPin('#20c8b0'),zIndexOffset:3000}).addTo(map);
-      seekerPinMarkers.push(m);
+      if(!isCurrent()) return;
+      applyPickedPoint(lat, lng, 3000);
       map.setView([lat,lng], Math.max(map.getZoom(), 14));
-      // Set param and advance step — same logic as onMapClick
-      qparams[key] = {lat, lng};
-      pickStep++;
-      if(btn){ btn.classList.remove('locating'); btn.classList.add('located'); btn.textContent = '✓ Located'; }
-      if(pickStep >= pickStepDefs.length){
-        hideBanner();
-        document.getElementById('panel').classList.remove('collapsed');
-        const activeType = getActiveBuildQType();
-        if(QDEFS[activeType].isReady(qparams)) generateJSON();
-      } else {
-        showBanner(pickStepDefs[pickStep].label);
-      }
-      renderBuildBody();
-      updatePreview();
-      if(typeof maybeAutoResolveBuildQuestion === 'function') maybeAutoResolveBuildQuestion();
-      if(qtype === 'thermo') tryGenerate();
       toast(`📡 Got your location (±${Math.round(pos.coords.accuracy)}m)`);
     },
     (err)=>{
+      if(!isCurrent()) return;
       if(btn){ btn.classList.remove('locating'); btn.textContent = '📡 Use My Location'; }
       const msg = err.code === 1 ? 'Location permission denied' : err.code === 2 ? 'Location unavailable' : 'Location request timed out';
       toast(msg);
@@ -519,6 +388,7 @@ function useMyLocation(key, stepIndex){
 //  BUILD UI
 // ══════════════════════════════════════════════════════
 function selectQType(type){
+  cancelPointPicking();
   qtype=type;
   qparams={radius_miles:1, travel_miles:0.5};
   currentBuiltQuestion = null;
