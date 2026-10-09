@@ -1,12 +1,13 @@
 # Sites multiplayer handoff
 
-Updated: 2026-10-09. This is the current continuation guide; older implementation notes are historical where they disagree with it.
+Updated: 2026-10-09, after the merge into main. Read [the root handoff](../handoff.md) first for repository state; this document details the next multiplayer phase. Older implementation notes are historical where they disagree with these handoffs.
 
 ## Start here: correct checkout
 
 - Active code: `/Users/ethan/Documents/Jetlag`
 - Branch: `main` (Chicago integration merged on 2026-10-09)
-- Verified implementation baseline: `1df6c83` (`Migrate legacy saved border questions before resuming`). Documentation commits may follow it.
+- Verified implementation baseline: `d97ec9a` (`Merge Chicago city profiles and shared gameplay into main`), with 254 passing Node tests. Documentation commits may follow it.
+- The merge is local and has not been pushed to GitHub as of this handoff.
 - The original recovery branch and Chicago integration worktree are retained for history. Continue new development from `main`; the integration worktree is now a pre-merge reference.
 - Inspect current status and applicable repository instructions before editing. Existing worker branches/worktrees are retained; do not assume their work is newer than the integration branch.
 - No Sites project has been created or published for this adaptation in this conversation. This document records the agreed direction and proposed implementation, not completed multiplayer functionality.
@@ -106,7 +107,7 @@ User-requested direction, not a finalized mockup:
 
 ## Verification and acceptance
 
-Last completed implementation suite: **251 tests passed at `1df6c83`**. This is a recorded result, not a claim of a fresh test run whenever this document is read. Browser checks confirmed Boston's Malden border midpoint now reports 0.00 miles (previously 1.32), negative hider radar radius is rejected, and a legacy elevation question without an explicit mode loads correctly. There has been no full real-world outing or deployed multiplayer test.
+Last completed implementation suite: **254 tests passed on the merged implementation committed as `d97ec9a`**. This is a recorded result, not a claim of a fresh test run whenever this document is read. Pre-merge browser checks confirmed Boston's Malden border midpoint now reports 0.00 miles (previously 1.32), negative hider radar radius is rejected, and a legacy elevation question without an explicit mode loads correctly. The merged result passed automated tests; no new complete browser audit was performed after merging. There has been no full real-world outing or deployed multiplayer test.
 
 ```sh
 cd /Users/ethan/Documents/Jetlag

@@ -1,252 +1,95 @@
-> **Current handoff (2026-10-09):** Read [Sites multiplayer handoff](docs/sites-multiplayer-handoff.md) first. The implementation now supports Boston and Chicago; the Boston-only status below is historical and is not the current task list.
+# Jet Lag — current project handoff
 
-# Jet Lag MBTA Hide & Seek — Current Handoff
+Updated **2026-10-09**. Start here, then read the [Sites multiplayer plan](docs/sites-multiplayer-handoff.md) for the next development phase. This replaces the obsolete Boston-only handoff; its historical contents remain available in Git.
 
-## Overview
+## Repository state
 
-This repository contains a static browser app for a Boston MBTA version of Jet Lag hide-and-seek.
+- Canonical checkout: `/Users/ethan/Documents/Jetlag`
+- Active branch: `main`
+- Implementation baseline: **`d97ec9a` — Merge Chicago city profiles and shared gameplay into main**. Subsequent documentation commits do not change that tested implementation baseline.
+- Chicago and the shared gameplay fixes are merged locally. The merge has **not been pushed to GitHub** as of this handoff.
+- The recovery branch, integration branch and worker worktrees are retained for history. `/Users/ethan/.codex/worktrees/chicago-integration/Jetlag` is a pre-merge reference, not the checkout for continued development.
+- The pre-merge pointer-only edit to this file was preserved in a stash named `Preserve pre-merge handoff pointer 2026-10-09`. It is superseded by this document; do not blindly reapply it.
+- The working tree was clean before this documentation update. Check current status rather than relying on older handoffs' lists of uncommitted files.
 
-- `index.html` is the document shell
-- `assets/css/app.css` contains styles
-- `assets/js/app/` contains the application JS split by responsibility
-- `data/` contains precomputed runtime datasets
-- `scripts/` contains generators for those datasets
+## What exists
 
-The app is build-free at runtime. It must be served over HTTP (not opened directly as a `file://` URL) because all data files are loaded via `fetch()`. Use `py -m http.server 8080` or `npx serve .` for local development.
+A static, build-free browser game supporting **Boston/MBTA and Chicago/CTA** with shared city profiles, category definitions and question mechanics. It uses vanilla JavaScript, Leaflet, Turf and a shared OpenFreeMap/MapLibre basemap. Serve it over HTTP because datasets load through `fetch()`.
 
-## Current Repository State
+Implemented flows include city selection with draggable transit-map cards, seeker/hider/dev modes, hiding-radius setup, question building and previews, manual JSON question/answer exchange, local save/resume, question history, log import/export, custom boundaries and hider location-based answers.
 
-### Committed state
+Radar, Thermometer, Measure, Tentacles, Matching and Nearest use the shared machinery. **Photo submission remains broken/deferred by explicit user choice**; do not count it as a functioning submission flow.
 
-Latest commit on `main`: `3386c6d` — `Update project handoff`
+Most game geography is stored in `data/` for Boston and `data/chicago/` for Chicago. Source snapshots and generator scripts are retained. Basemap assets and some Boston geographic/elevation lookups still require online services; this is not a completely offline app.
 
-### Uncommitted working tree
+## Code entry points
 
-Three files are modified:
+| Area | Files / mechanisms |
+| --- | --- |
+| Shell and layout | `index.html`, `assets/css/app.css` |
+| City configuration and launcher | `assets/js/app/00-cities.js`, `00-city-picker.js` |
+| Rules, storage, migrations | `01-core.js`: `QUESTION_CONTRACTS`, `deriveZoneStateFromConstraints`, `ensureQuestionDataReady`, saved-context migration |
+| Map and setup | `02-map.js`, `03-setup.js` |
+| Question builder and measurements | `04-build.js`: shared picking lifecycle, `resolveMeasurement`, preview/application |
+| Hider workflow | `05-hider.js`: shared hydration, answering and GPS request recovery |
+| Seeker ingestion/history | `06-seeker.js`: validation, hydration, answers, log import and replay |
+| Chicago resolvers and service | `04-city-questions.js`, `chicago-service.js` |
+| Geographic data generation | `scripts/`, `scripts/lib/`, `data/` |
+| Regression coverage | `tests/` |
 
-- `scripts/generate-landmasses.py` — fully rewritten (see below)
-- `data/landmasses.json` — regenerated from the new script
-- `assets/js/app/02-map.js` — one-line fix: `loadLandmassData()` now calls `renderBuildBody()` after the async load completes so the ⏳ loading badge clears automatically
+JavaScript files currently share globals and depend on script ordering. Reuse existing rules when adding server support; do not create parallel client/server implementations that drift.
 
-These changes are not yet committed.
+## Gameplay rules to preserve
 
-## Tech Stack
+- A hider may move inside one fixed station catchment. Each ordinary location observation independently tests the entire catchment. Partial exclusions from different times must not accumulate into permanent station elimination.
+- A station is eliminated if any one observation excludes its entire eligible catchment. Among surviving catchments, the latest location observation determines the green/orange split. Orange means currently excluded positions in a still-possible hiding station; red means outside all surviving catchments.
+- Line questions test station identity, not the hider's current coordinates. Manual custom boundaries apply fixed geometry constraints. Photo has no spatial effect.
+- Physical lines and branches are distinct. Branches of one physical line coalesce visually; different lines sharing track render alongside one another.
+- Category IDs drive behavior; labels are presentation. Question contracts own transport/editor fields, defaults, validation, required data and migrations. Legacy hard/soft flags are compatibility-only.
+- City/dataset versions and CTA service evidence stay pinned to the question. Never reinterpret old answers using a newly active timetable or different geography without an explicit migration.
 
-- Vanilla HTML / CSS / JS
-- Leaflet 1.9.4
-- Turf.js in the browser
-- Python 3 + `shapely` for landmass generation
-- Node for the other generators and local syntax checking
+## Merge results and compatibility
 
-## Runtime Data Model
+The merge retains main's Boston landmass and POI updates, ZIP normalization, municipality-aware neighborhood lookup and water-edge measurements, together with Chicago's shared engine. Both cities measure administrative borders against line segments. Boston water uses the shared conservative linear filter, not water centroids.
 
-Runtime files in `data/`:
+- Older unversioned Boston water-edge packets remain accepted. Versioned centroid-distance packets require rebuilding.
+- Legacy border context is rebuilt on import/resume. Recorded answers remain unchanged and are flagged for review because the old distance calculation may have produced an incorrect answer; historical hider coordinates are unavailable.
+- Main's compact v2 logs retain nested hiding radius, reconstructed custom-boundary polygons and hydrated matching geography.
+- Materialized old make-red overrides migrate to fixed exclusions. Old make-green overrides and geometry-free indexed temporary-region selections explicitly block import/resume instead of silently disappearing. The old multi-select temporary-region UI is superseded by the current catchment mechanics.
+- Missing data, invalid Tentacles answers and stale asynchronous results must not be treated as successfully applied clues. Failed GPS lookups restore manual/retry controls.
 
-- `mbta-data.json` — full rapid transit line shapes and stops; commuter rail stop list
-- `pois.json` — measure / nearest / tentacle POI categories; coastline points; Amtrak line geometry
-- `boundaries.json` — counties; cities / towns; limited postcode coverage
-- `landmasses.json` — gameplay landmass polygons and stop-to-region assignment
+## Run and verify
 
-Ignored local-only files:
-
-- `data/_cache/` — generation-only checkpoint data, should not be committed
-- `node_modules/`
-- `scripts/__pycache__/`
-
-## What Works
-
-### Core gameplay
-
-- setup flow with hide radius
-- seeker / hider / dev modes
-- map rendering with MBTA network and stop icons
-- zone masking and shrinking
-- save / resume
-- question log
-- hider station selection and auto-answer flows
-
-### Question types
-
-- Radar
-- Thermometer
-- Measure
-- Tentacles
-- Matching (including Landmass — wired and loading correctly)
-- Nearest
-- Photo
-
-### Offline-first data paths
-
-- MBTA network loads from `data/mbta-data.json`
-- POI-backed questions load from `data/pois.json`
-- county / city matching loads from `data/boundaries.json`
-- landmass data loads from `data/landmasses.json`
-
-### Generator scripts
-
-- `scripts/generate-mbta-data.js`
-- `scripts/generate-pois.js`
-- `scripts/generate-boundaries.js`
-- `scripts/generate-landmasses.py`
-
-There is also a shared shoreline helper used by the JS coastline path:
-
-- `scripts/lib/shoreline.js`
-
-## Landmass Status
-
-### What was done this session
-
-The old landmass generator (hydrology-based, fetching coastline and water ways from Overpass and subtracting them) was thrown out and replaced with a rules-driven approach:
-
-1. Load city polygons from `boundaries.json`
-2. Union city polygons per gameplay region
-3. Assign stops by point-in-polygon
-4. Apply a hardcoded `STOP_OVERRIDES` table for stops whose city doesn't match their intended region
-
-The new generator is `scripts/generate-landmasses.py`. The config lives at the top of the file and is easy to edit.
-
-### Desired gameplay regions
-
-The four intended regions are:
-
-| ID | Name | Cities | Key overrides |
-|---|---|---|---|
-| 0 | Cambridge / Somerville / Charlestown | Cambridge, Somerville | Community College, Sullivan Square, Medford/Tufts, Ball Square |
-| 1 | Everett / East Boston / Revere / Malden | Malden, Medford, Revere | Suffolk Downs, Orient Heights, Wood Island, Airport, Maverick → 1; Community College, Sullivan Square, Medford/Tufts → 0 |
-| 2 | Boston / Brookline / Newton | Boston, Brookline, Newton, Milton | — |
-| 3 | Quincy / Braintree | Quincy, Braintree | — |
-
-### Current stop assignments
-
-Region 0 (16 stops): Alewife, Assembly, Ball Square, Central, Community College, Davis, East Somerville, Gilman Square, Harvard, Kendall/MIT, Lechmere, Magoun Square, Medford/Tufts, Porter, Sullivan Square, Union Square
-
-Region 1 (11 stops): Airport, Beachmont, Malden Center, Maverick, Oak Grove, Orient Heights, Revere Beach, Suffolk Downs, Wellington, Wonderland, Wood Island
-
-Region 2 (93 stops): all core Boston/Brookline/Newton network
-
-Region 3 (5 stops): Braintree, North Quincy, Quincy Adams, Quincy Center, Wollaston
-
-### Known remaining problem
-
-The stop assignments are correct but the **display polygons are wrong**.
-
-The region geometry for region 0 is the union of the Cambridge and Somerville city polygons from `boundaries.json`. Charlestown is not a separate city in that dataset — it is part of the Boston city polygon. So the displayed region 0 polygon does not include Charlestown geographically, even though Community College and Sullivan Square are assigned to it.
-
-Concretely: if a seeker clicks near Community College, the app finds the nearest stop (Community College, region 0), then draws the Cambridge/Somerville polygon as the highlighted region. That polygon does not visually cover Charlestown. The answer logic is correct; the visual is wrong.
-
-The same structural issue affects region 1: the displayed polygon is the union of Malden + Medford + Revere city polygons. It correctly covers the Orange Line north of the Mystic and most of the Blue Line corridor, but it does not include the East Boston portion of Boston geographically — only the stop assignments put those stops in region 1.
-
-### Why this is hard to fix cleanly
-
-`boundaries.json` does not have neighborhood-level polygons for Boston. The Boston entry is one large city polygon covering all Boston neighborhoods including Charlestown, East Boston, Dorchester, Roxbury, etc. There is no Charlestown polygon or East Boston polygon to union into the correct region.
-
-### Recommended next step
-
-The display polygons need to be defined explicitly, not inferred from city unions. Two options:
-
-**Option A — Hand-define region polygons as GeoJSON**
-
-Draw four polygons in geojson.io (or similar) that cover the intended regions. Store them in the generator config. Use them as the display geometry directly; still use point-in-polygon + stop overrides for stop assignment.
-
-This is the most straightforward path. The polygons do not need to be precise administrative boundaries — they just need to cover the right stops for visual purposes.
-
-**Option B — Clip Boston polygon by river geometry**
-
-Fetch the Mystic River and Inner Harbor geometries and use them to cut the Boston city polygon into Charlestown, East Boston, and remaining Boston sub-polygons. Then reassign those sub-polygons to the correct regions.
-
-This is more automated but reintroduces the complexity of the old hydrology approach, just more targeted.
-
-Option A is recommended. The regions are stable and the polygon shapes are simple enough to draw by hand in under 10 minutes.
-
-## Boundary Status
-
-`boundaries.json` is partially successful.
-
-### Good
-
-- counties are generated and usable
-- cities / towns are generated and usable
-- these are enough for most matching and admin-boundary display flows
-
-### Not good enough yet
-
-- neighborhood coverage is effectively missing
-- postcode / ZIP coverage is thin and not trustworthy enough
-
-## POI Status
-
-`pois.json` is generated and currently includes:
-
-- parks, golf courses, libraries, hospitals, medical sites, museums, movie theaters
-- zoo / aquarium, foreign consulates, amusement parks
-- Dunkin', Starbucks, CVS, McDonald's, gas stations
-- bodies of water, coastline, Amtrak lines
-
-## Known Issues
-
-### 1. Landmass display polygons do not cover all assigned stops
-
-This is the current most important open issue. Described in detail above.
-
-### 2. Old in-browser landmass precompute code still exists
-
-`assets/js/app/04-build.js` still contains `precomputeLandmasses()`, which was the original live Overpass-based generator. It is dead code — nothing calls it. It should be removed to avoid confusion.
-
-### 3. Neighborhood matching is not solved
-
-The current boundary pipeline does not produce a reliable neighborhood dataset.
-
-### 4. ZIP / postcode matching is not solved
-
-The current postcode output is not strong enough to rely on.
-
-## Desired Feature Additions
-
-### Custom boundary drawing
-
-The app should support drawing a custom boundary or region and applying:
-
-- include only inside the custom boundary
-- exclude the custom boundary
-
-Useful both as a gameplay/dev tool and for expressing constraints not covered by canned question types.
-
-## Useful Commands
-
-Syntax checks:
-
-```bash
-node --check assets/js/app/01-core.js
-node --check assets/js/app/02-map.js
-node --check assets/js/app/04-build.js
-python3 -m py_compile scripts/generate-landmasses.py
+```sh
+cd /Users/ethan/Documents/Jetlag
+git status --short
+npm ci                 # if dependencies need installing
+npm test
+python3 -m http.server 8765 --bind 127.0.0.1
 ```
 
-Generator commands:
+Check for an existing server before starting another, and verify which checkout it serves: an older process may still serve the integration worktree. Dev URLs are `/?city=boston&play=1&mode=dev` and `/?city=chicago&play=1&mode=dev`.
 
-```bash
-node scripts/generate-mbta-data.js
-node scripts/generate-pois.js
-node scripts/generate-boundaries.js
-py -3 scripts/generate-landmasses.py   # note: python3 alias may not exist on Windows
-```
+The user's existing browser game has used `http://127.0.0.1:8765`; browser QA has used `http://localhost:8765` to isolate saved state. Do not overwrite the user's game during testing.
 
-Local development server (required — app does not work over file://):
+**Recorded verification:** 254 Node tests passed on the merged implementation committed as `d97ec9a`. Three merge regressions cover legacy logs/manual overrides and Boston water-edge behavior. Pre-merge browser checks confirmed corrected Boston border distance, invalid-radius rejection and legacy elevation hydration; the merged result was checked by automated tests, not a new complete browser/field audit. No deployed multiplayer or real-world outing has been validated.
 
-```bash
-py -m http.server 8080
-# open http://localhost:8080/
-```
+## Next phase: Sites multiplayer
 
-Package script:
+Follow the [detailed Sites handoff](docs/sites-multiplayer-handoff.md). The user wants:
 
-```bash
-npm run generate:landmasses
-```
+1. Backend games with unique private invitation codes and shareable links so friends can join without public game discovery.
+2. Shared questions, answers, history and durable state, eliminating routine JSON copy/paste.
+3. Server-enforced player roles and privacy: seekers must not receive private hider station/location data.
+4. After shared transport works, a cleaner seeker menu with clear current-question status and better question/history UI.
+5. Photo handling during the backend/shared-game phase, rather than repairing the old manual submission UI now.
 
-## Bottom Line
+No Sites project has been created or published in this work. The detailed plan distinguishes explicit requirements from implementation suggestions, including invitation security, state revisions, idempotency, storage and two-device acceptance tests. Use the current installed Sites skills when implementation begins; this documentation update does not itself authorize deployment.
 
-The landmass question is wired and loading correctly. Stop assignments match the intended gameplay regions. The remaining problem is purely visual: the displayed region polygons are city unions that don't cover Charlestown or East Boston because those are sub-areas of the Boston city polygon, not separate cities in `boundaries.json`.
+## Remaining limitations and references
 
-The next person should implement Option A above: hand-define four simple display polygons in the generator config and use those instead of city unions. Stop assignment logic (point-in-polygon + overrides) can stay as-is or be simplified further once the display polygons are correct.
+- Live authenticated CTA behavior remains unverified in this work. The user had another agent investigating credentials; consult that work before duplicating it. Timetable fallback does not establish real-time special service. The initial saved calendar expires after November 30, 2026; verify the actual release before publishing.
+- Chicago ZIP geography uses Census ZCTAs. POI coverage, elevation and conservative filtering have documented approximations. Boston point elevation may use the external USGS endpoint.
+- Tests do not establish mobile-network performance, complete geographic accuracy, or multiplayer authorization correctness.
+- Data provenance: [transit](docs/chicago-transit.md), [geography](docs/chicago-geography.md), [POIs](docs/chicago-pois.md), [Amtrak](docs/chicago-amtrak.md), [elevation](docs/chicago-elevation.md), [distance filtering](docs/linear-distance-filter.md).
+- [Chicago implementation notes](docs/chicago-implementation.md) describe earlier milestones. This handoff and the current source take precedence over historical status statements.
