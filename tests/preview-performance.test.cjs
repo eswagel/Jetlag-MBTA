@@ -9,7 +9,7 @@ const turf = {...t, union:(a,b)=>t.union(t.featureCollection([a,b])),
 function game(city='chicago') {
   const ctx = vm.createContext({turf, console, URLSearchParams,
     window:{location:{search:`?city=${city}`}},localStorage:{getItem:()=>null}});
-  for (const file of ['00-cities.js','01-core.js','03-setup.js']) {
+  for (const file of ['00-cities.js','01-core.js','03-setup.js','04-build.js']) {
     vm.runInContext(fs.readFileSync(`assets/js/app/${file}`,'utf8'),ctx);
   }
   return {ctx,run:source=>vm.runInContext(source,ctx)};
@@ -58,4 +58,28 @@ test('real CTA red and green previews preserve the previous exact station and re
       sameRegion(actual[id].yellowRegion,expected[id].yellowRegion);
     }
   }
+});
+
+for(const city of ['boston','chicago']) test(`${city}: repeated Radar color switches stay fast and leave the real game unchanged`,{timeout:30000},t=>{
+  const {ctx,run}=game(city);ctx.transit=JSON.parse(fs.readFileSync(city==='boston'?'data/mbta-data.json':'data/chicago/transit.json','utf8'));
+  run(`for(const line of transit.lines) for(const stop of line.stops){
+    const station=stopLineMap[stop.id] ||= {...stop,lines:new Set()};station.lines.add(line.id);
+  } hideRadiusMi=.25;validZone=buildHideRadiusZone();var beforeZone=JSON.stringify(validZone);
+  var rendered=[],notices=[];toast=message=>notices.push(message);
+  var elements=new Map();document={querySelectorAll:()=>[],getElementById(id){
+    if(!elements.has(id))elements.set(id,{classList:{add(){},remove(){}},innerHTML:''});return elements.get(id);
+  }};
+  renderZonePreviewState=state=>rendered.push(state);updatePreview=()=>{};
+  qtype='radar';qparams={center:${city==='boston'?'{lat:42.35,lng:-71.06}':'{lat:41.88,lng:-87.63}'},radius_miles:1};
+  currentBuiltQuestion={id:'switch-test',type:'radar',...qparams};`);
+  const timings=[];
+  for(const answer of ['yes','no','yes','no']) {
+    const start=performance.now();run(`previewAnswer('${answer}')`);const elapsed=performance.now()-start;
+    assert.equal(run('_simulActive'),answer);assert.ok(elapsed<6000,`${answer} took ${elapsed}ms`);timings.push(Math.round(elapsed));
+  }
+  assert.equal(run('rendered.length'),4);assert.equal(run('notices.length'),0);
+  assert.equal(run('constraints.length'),0);assert.equal(run('JSON.stringify(validZone)===beforeZone'),true);
+  sameRegion(run('rendered[0].hardZone'),run('rendered[2].hardZone'));
+  sameRegion(run('rendered[1].hardZone'),run('rendered[3].hardZone'));
+  t.diagnostic(`yes/no/yes/no: ${timings.join('/')}ms`);
 });

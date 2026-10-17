@@ -32,7 +32,7 @@ for (const city of ['boston', 'chicago']) {
     assert.match(elements.get('simul-btns').innerHTML, /previewAnswer\('yes'\)/);
     assert.match(elements.get('simul-btns').innerHTML, /previewAnswer\('no'\)/);
     // Re-rendering the editor clears its callback table; answer buttons must still work.
-    vm.runInContext('_clearClicks(); _c(() => { throw new Error("stale editor callback"); })', context);
+    vm.runInContext('renderBuildBody(); _c(() => { throw new Error("stale editor callback"); })', context);
     const handlers = [...elements.get('direct-apply-btns').innerHTML.matchAll(/onclick="([^"]+)"/g)].map(match => match[1].replaceAll('&quot;', '"').replaceAll('&#39;', "'"));
     vm.runInContext('var applied = []; applyBuiltAnswer = answer => applied.push(answer)', context);
     for (const handler of handlers) vm.runInContext(handler, context);
