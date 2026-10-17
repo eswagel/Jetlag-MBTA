@@ -2023,17 +2023,6 @@ function renderDirectApplyBtns(json){
   const container = document.getElementById('direct-apply-btns');
   if(!container) return;
   const question = getQuestionWithLocalContext(json);
-  if(isSoftMatchingQuestion(question)){
-    container.innerHTML = `
-      <button class="simul-btn" style="--simul-col:#f0a030" onclick="${_c(()=>applyBuiltAnswer('Yes'))}">
-        <span class="s-icon">✅</span>Same · Apply Locally
-      </button>
-      <button class="simul-btn" style="--simul-col:#f0a030" onclick="${_c(()=>applyBuiltAnswer('No'))}">
-        <span class="s-icon">❌</span>Different · Apply Locally
-      </button>
-    `;
-    return;
-  }
   if(question?.type === 'tentacles'){
     const active = isTentacleSelectionActive(question);
     container.innerHTML = active
@@ -2052,7 +2041,7 @@ function renderDirectApplyBtns(json){
     return;
   }
   container.innerHTML = opts.map(o =>
-    `<button class="simul-btn" style="--simul-col:${o.color}" onclick="${_c(()=>applyBuiltAnswer(o.val))}">
+    `<button class="simul-btn" style="--simul-col:${o.color}" onclick="applyBuiltAnswer(${escapePreviewOptionLabel(JSON.stringify(o.val))})">
       <span class="s-icon">${o.icon}</span>${o.label}
     </button>`
   ).join('');
