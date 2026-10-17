@@ -179,13 +179,7 @@ function buildHideRadiusZone(){
   }
 
   // Build union of all circles for zone clipping
-  let union = makeCircle(stops[0], hideRadiusMi, 'miles');
-  for(let i=1; i<stops.length; i++){
-    try{
-      const c = makeCircle(stops[i], hideRadiusMi, 'miles');
-      union = turf.union(union, c) || union;
-    }catch(e){}
-  }
+  const union = unionCatchmentRegions(stops.map(stop => makeCircle(stop, hideRadiusMi, 'miles')));
 
   // Intersect with full bounding area
   const zone = safeIsect(INIT_POLY, union);

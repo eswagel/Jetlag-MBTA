@@ -23,7 +23,7 @@ test(city+': surviving overlapping catchment prevents premature red elimination'
 });
 
 test(city+': surviving catchment union cache follows base identity and surviving station IDs',()=>{
- const c=context(city);vm.runInContext(`var bases=[{id:'a',stop:{},baseRegion:turf.bboxPolygon([0,0,2,2])},{id:'b',stop:{},baseRegion:turf.bboxPolygon([3,0,4,1])}];buildStopBaseRegionEntries=()=>bases;var calls=0;var originalUnion=safeUnion;safeUnion=(a,b)=>{calls++;return originalUnion(a,b);};`,c);
+ const c=context(city);vm.runInContext(`var bases=[{id:'a',stop:{},baseRegion:turf.bboxPolygon([0,0,2,2])},{id:'b',stop:{},baseRegion:turf.bboxPolygon([3,0,4,1])}];buildStopBaseRegionEntries=()=>bases;var calls=0;var originalUnion=unionCatchmentRegions;unionCatchmentRegions=regions=>{calls++;return originalUnion(regions);};`,c);
  const first=vm.runInContext('observe(turf.bboxPolygon([0,0,1,2]))',c);
  assert.equal(vm.runInContext('calls',c),1);
  const moved=vm.runInContext('observe(turf.bboxPolygon([0,0,.5,2]))',c);

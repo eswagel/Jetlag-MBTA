@@ -145,6 +145,38 @@ function safeUnion(a, b){
   }
 }
 
+// A balanced reduction avoids repeatedly overlaying one ever-growing city polygon.
+function unionCatchmentRegions(regions){
+  let level = regions.filter(region => region && !isEmptyPolygonFeature(region));
+  while(level.length > 1){
+    const next = [];
+    for(let i=0; i<level.length; i+=2){
+      next.push(i+1 < level.length ? safeUnion(level[i], level[i+1]) : level[i]);
+    }
+    level = next;
+  }
+  return level[0] || null;
+}
+
+// Index per reduction so edited geometry never leaves a stale global index.
+function indexPolygonRegion(region){
+  const coordinates = region.geometry.type === 'Polygon'
+    ? [region.geometry.coordinates] : region.geometry.coordinates;
+  return {region, polygons:coordinates.map(rings => ({coordinates:rings,
+    bounds:turf.bbox(turf.polygon(rings))}))};
+}
+
+// Skip only disjoint components; retain holes and exact boundary intersections.
+function intersectIndexedRegion(region, index){
+  const bounds = turf.bbox(region);
+  const candidates = index.polygons.filter(({bounds:b}) =>
+    bounds[0] <= b[2] && bounds[2] >= b[0] && bounds[1] <= b[3] && bounds[3] >= b[1]);
+  if(!candidates.length) return null;
+  const nearby = candidates.length === index.polygons.length
+    ? index.region : turf.multiPolygon(candidates.map(polygon => polygon.coordinates));
+  return exactIsect(region, nearby);
+}
+
 function geometryToPolygonFeatures(feature, baseProps={}){
   if(!feature) return [];
   const wrapped = feature.type === 'Feature'
@@ -252,6 +284,8 @@ function deriveStopRegionState(baseZone, list){
   const baseEntries = buildStopBaseRegionEntries();
   if(!baseEntries.length) return null;
   const {fixedZone, observations, stationQuestions} = compileConstraintPlan(baseZone, list);
+  const fixedIndex = indexPolygonRegion(fixedZone);
+  const observationIndexes = observations.map(indexPolygonRegion);
   const byStop = {}, greenFeatures = [], yellowFeatures = [], survivingEntries = [];
   for(const {id, stop, baseRegion} of baseEntries){
     const eliminated = () => {
@@ -262,12 +296,12 @@ function deriveStopRegionState(baseZone, list){
     if(stationQuestions.some(q => !QDEFS[q.type].matchesStation({...stop, id}, q))){
       eliminated(); continue;
     }
-    const hardRegion = exactIsect(fixedZone, baseRegion);
+    const hardRegion = intersectIndexedRegion(baseRegion, fixedIndex);
     if(!hardRegion){ eliminated(); continue; }
     let greenRegion = hardRegion;
     let possible = true;
-    for(const observation of observations){
-      const compatible = exactIsect(hardRegion, observation);
+    for(const observation of observationIndexes){
+      const compatible = intersectIndexedRegion(hardRegion, observation);
       if(!compatible){ possible = false; break; }
       greenRegion = compatible;
     }
@@ -283,8 +317,7 @@ function deriveStopRegionState(baseZone, list){
   const survivingIds = JSON.stringify(survivingEntries.map(entry => entry.id));
   if(!_survivingCatchmentCache || _survivingCatchmentCache.baseEntries !== baseEntries ||
       _survivingCatchmentCache.survivingIds !== survivingIds){
-    let union = null;
-    for(const entry of survivingEntries) union = safeUnion(union, entry.baseRegion);
+    const union = unionCatchmentRegions(survivingEntries.map(entry => entry.baseRegion));
     _survivingCatchmentCache = {baseEntries, survivingIds, union:union || emptyPolygonFeature()};
   }
   const hardUnion = exactIsect(fixedZone, _survivingCatchmentCache.union) || emptyPolygonFeature();
