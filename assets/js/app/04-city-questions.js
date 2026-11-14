@@ -10,6 +10,10 @@ function validateQuestionForCity(question){
   if(unavailable) throw new Error(unavailable);
   validateAdaptiveLinearQuestion(question);
   validateQuestionServiceSnapshot(question);
+  if(question?.type === 'matching' && (question.category_id || question.category) === 'line' &&
+     question.line_id && !GAME_LINES.some(line => line.id === question.line_id)){
+    throw new Error('That line is disabled for this game.');
+  }
 }
 
 function isLinearMeasure(label){

@@ -10,9 +10,9 @@ const turf = {...turf7,
   difference:(a,b)=>turf7.difference(turf7.featureCollection([a,b])),
   intersect:(a,b)=>turf7.intersect(turf7.featureCollection([a,b])),
 };
-function game(city='chicago'){
+function game(city='chicago', lines=''){
   const ctx = vm.createContext({console, turf, URLSearchParams, URL, setTimeout, clearTimeout,
-    window:{location:{search:`?city=${city}`}}, localStorage:{getItem:()=>null},
+    window:{location:{search:`?city=${city}${lines ? '&lines='+lines : ''}`}}, localStorage:{getItem:()=>null},
     document:{getElementById:()=>null}, navigator:{},
   });
   for(const file of ['chicago-service.js','00-cities.js','linear-distance-filter.js','01-core.js','02-map.js','03-setup.js','04-build.js','05-hider.js','06-seeker.js','04-city-questions.js']){
@@ -94,4 +94,28 @@ test('Boston preserves main water-edge distance with shared linear filtering',as
  g.run(`preloadedData.pois={bodiesOfWaterLines:[{name:'Edge',geometry:{type:'LineString',coordinates:[[-71,42],[-71,43]]}}]};loadPoiData=async()=>preloadedData.pois;`);
  const resolved=await g.run(`resolveMeasurement('water',{lat:42.5,lng:-71})`);assert(resolved.value.dist<.001);assert.equal(g.run(`measureFilterConfig('water').mode`),'adaptive-linear');
  assert.doesNotThrow(()=>g.run(`validateAdaptiveLinearQuestion({type:'measure',category:'A Body of Water'})`));
+});
+test('custom line logs and questions require the same selection on the other device',async()=>{
+  const custom=game('boston','Red-Ashmont'); setup(custom);
+  const standard=game('boston'); setup(standard);
+  custom.run(`
+    navigator.clipboard={writeText:async text=>{ exported=text; }};
+    var exported, toast=()=>{};
+    exportQuestionLog();
+  `);
+  const exported=JSON.parse(custom.run('exported'));
+  assert.deepEqual(exported.enabled_line_ids,['Red-Ashmont']);
+  custom.ctx.payload=exported;
+  assert.equal((await custom.run('prepareQuestionLog(payload)')).radius,.25);
+  standard.ctx.payload=exported;
+  const before=standard.run('JSON.stringify({hideRadiusMi,constraints,validZone})');
+  await assert.rejects(standard.run('prepareQuestionLog(payload)'),/Transit line selections differ/);
+  assert.equal(standard.run('JSON.stringify({hideRadiusMi,constraints,validZone})'),before);
+  custom.ctx.question={id:'custom',type:'radar',center:{lat:42.36,lng:-71.06},radius_miles:1};
+  const packet=custom.run('buildQuestionPacket(question)');
+  assert.deepEqual(Array.from(packet.enabled_line_ids),['Red-Ashmont']);
+  custom.ctx.packet=packet;
+  standard.ctx.packet=packet;
+  assert.equal((await custom.run('hydrateOutgoingQuestion(packet)')).id,'custom');
+  await assert.rejects(standard.run('hydrateOutgoingQuestion(packet)'),/Transit line selections differ/);
 });

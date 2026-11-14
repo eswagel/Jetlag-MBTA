@@ -24,7 +24,7 @@
   <link href="https://fonts.googleapis.com/css2?family=Space+Mono:wght@400;700&family=IBM+Plex+Mono:ital,wght@0,300;0,400;0,500;1,300&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
   <link rel="stylesheet" href="https://unpkg.com/maplibre-gl@5.24.0/dist/maplibre-gl.css">
-  <link rel="stylesheet" href="assets/css/app.css?v=question-fixes-3">
+  <link rel="stylesheet" href="assets/css/app.css?v=transit-line-settings-1">
 </head>
 <body>
 <div id="game-loading" role="status" aria-live="polite">
@@ -90,18 +90,27 @@
       <div class="radius-opt" data-mi="1.0" onclick="selectRadius(this)">
         <div class="radius-radio"></div>
         <div class="radius-label">
-          <div class="radius-name">Anywhere near rail</div>
+          <div class="radius-name">Anywhere near a station</div>
           <div class="radius-desc">Within 1 mile of any station</div>
         </div>
         <div class="radius-badge">1 mile</div>
       </div>
     </div>
 
+    <details class="setup-advanced">
+      <summary>Advanced Settings</summary>
+      <fieldset class="setup-lines">
+        <legend>Transit lines in play</legend>
+        <div class="setup-line-options" id="setup-line-options"></div>
+        <p class="setup-lines-note">Hiders and seekers should select the same lines.</p>
+      </fieldset>
+    </details>
+    <p id="setup-line-error" role="status"></p>
     <div id="setup-status">
       <div class="status-dot" id="setup-dot"></div>
       <span id="setup-status-text">Loading T network data…</span>
     </div>
-    <button id="btn-start" disabled onclick="startGame()">Start Game →</button>
+    <button id="btn-start" disabled onclick="startGame(getSetupLineIds())">Start Game →</button>
   </div>
 </div>
 
@@ -352,17 +361,18 @@
   <script src="https://cdnjs.cloudflare.com/ajax/libs/Turf.js/6.5.0/turf.min.js"></script>
   <script src="https://unpkg.com/maplibre-gl@5.24.0/dist/maplibre-gl.js"></script>
   <script src="https://unpkg.com/@maplibre/maplibre-gl-leaflet@0.1.4/leaflet-maplibre-gl.js"></script>
-<script src="assets/js/app/00-cities.js?v=question-fixes-3"></script>
-<script src="assets/js/app/00-city-picker.js?v=question-fixes-3"></script>
+<script src="assets/js/app/00-cities.js?v=transit-line-settings-1"></script>
+<script src="assets/js/app/00-city-picker.js?v=transit-line-settings-1"></script>
 <script src="assets/js/app/chicago-service.js?v=question-fixes-3"></script>
 <script src="assets/js/app/linear-distance-filter.js?v=question-fixes-3"></script>
-<script src="assets/js/app/01-core.js?v=fast-answer-preview-5"></script>
-<script src="assets/js/app/02-map.js?v=question-fixes-3"></script>
-<script src="assets/js/app/03-setup.js?v=fast-answer-preview-5"></script>
+<script src="assets/js/app/01-core.js?v=transit-line-settings-1"></script>
+<script src="assets/js/app/02-map.js?v=transit-line-settings-1"></script>
+<script src="assets/js/app/03-setup.js?v=transit-line-settings-1"></script>
+<script src="assets/js/app/setup-line-options.js?v=transit-line-settings-1"></script>
 <script src="assets/js/app/04-build.js?v=seeker-answer-controls-4"></script>
 <script src="assets/js/app/05-hider.js?v=question-fixes-3"></script>
-<script src="assets/js/app/06-seeker.js?v=question-fixes-3"></script>
-<script src="assets/js/app/04-city-questions.js?v=question-fixes-3"></script>
+<script src="assets/js/app/06-seeker.js?v=transit-line-settings-1"></script>
+<script src="assets/js/app/04-city-questions.js?v=transit-lines-1"></script>
 <script src="assets/js/app/07-bootstrap.js?v=question-fixes-3"></script>
 </body>
 </html>

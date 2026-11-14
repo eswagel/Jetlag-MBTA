@@ -19,6 +19,15 @@ const GAME_LINES = [
   { id:'Mattapan',      label:'Mattapan Line',   color:'#DA291C', weight:4, routeId:'Mattapan' },
 ];
 
+const SILVER_LINES = [
+  {id:'Silver-SL1', label:'Silver Line · SL1', color:'#7C878E', weight:4, routeId:'741'},
+  {id:'Silver-SL2', label:'Silver Line · SL2', color:'#7C878E', weight:4, routeId:'742'},
+  {id:'Silver-SL3', label:'Silver Line · SL3', color:'#7C878E', weight:4, routeId:'743'},
+  {id:'Silver-SL4', label:'Silver Line · SL4', color:'#7C878E', weight:4, routeId:'751'},
+  {id:'Silver-SL5', label:'Silver Line · SL5', color:'#7C878E', weight:4, routeId:'749'},
+  {id:'Silver-SLW', label:'Silver Line · SLW', color:'#7C878E', weight:4, routeId:'746'},
+];
+
 const ASHMONT_ONLY = new Set(['place-shmnl','place-fldcr','place-smmnl','place-asmnl']);
 const BRAINTREE_ONLY = new Set(['place-nqncy','place-wlsta','place-qnctr','place-qamnl','place-brntn']);
 
@@ -66,6 +75,15 @@ async function fetchJSON(url){
 
 async function fetchLineShape(line){
   const shapeData = await fetchJSON(`${BASE}/shapes?filter[route]=${line.routeId}&fields[shape]=polyline`);
+
+  if(line.id.startsWith('Silver-')){
+    // Each Silver service can take different streets in each direction.
+    // The API includes shared trunk service under several route IDs.
+    return (shapeData.data || [])
+      .sort((a, b) => a.id.localeCompare(b.id))
+      .map(shape => decodePolyline(shape.attributes.polyline))
+      .filter(coords => coords.length > 1);
+  }
 
   if(line.branchKeyword){
     const keyword = line.branchKeyword.toLowerCase();
@@ -135,35 +153,40 @@ async function fetchCommuterRail(){
     );
 }
 
-async function main(){
-  console.log('Fetching MBTA network data...');
+async function fetchLines(definitions){
   const lines = [];
-  for(const line of GAME_LINES){
+  for(const line of definitions){
     console.log(`  ${line.id}`);
-    const [shapePath, stops] = await Promise.all([
+    const [shape, stops] = await Promise.all([
       fetchLineShape(line),
       fetchLineStops(line),
     ]);
-    lines.push({
-      id: line.id,
-      label: line.label,
-      color: line.color,
-      weight: line.weight,
-      routeId: line.routeId,
-      branchKeyword: line.branchKeyword || null,
-      shapePath,
-      stops,
-    });
+    if(!shape.length || !stops.length) throw new Error(`Incomplete MBTA data for ${line.id}`);
+    const geometry = line.id.startsWith('Silver-')
+      ? {shapePath: shape[0], shapePaths: shape}
+      : {shapePath: shape};
+    lines.push({...line, branchKeyword:line.branchKeyword || null, ...geometry, stops});
   }
+  return lines;
+}
 
-  console.log('Fetching commuter rail stops...');
-  const commuterRail = await fetchCommuterRail();
+async function main(){
+  const silverOnly = process.argv.includes('--silver-only');
+  console.log(silverOnly ? 'Fetching Silver Line data...' : 'Fetching MBTA network data...');
+  const existing = silverOnly ? JSON.parse(await fs.readFile(OUTPUT, 'utf8')) : null;
+  const lines = await fetchLines(silverOnly ? SILVER_LINES : [...GAME_LINES, ...SILVER_LINES]);
+  const silverLineSource = {url:BASE, fetchedAt:new Date().toISOString()};
 
-  const payload = {
-    generatedAt: new Date().toISOString(),
+  const payload = existing ? {
+    ...existing,
+    lines: [...existing.lines.filter(line => !line.id.startsWith('Silver-')), ...lines],
+    silverLineSource,
+  } : {
+    generatedAt: silverLineSource.fetchedAt,
     bbox: {south: T_BBOX.minLat, north: T_BBOX.maxLat, west: T_BBOX.minLng, east: T_BBOX.maxLng},
     lines,
-    commuterRail,
+    commuterRail: await fetchCommuterRail(),
+    silverLineSource,
   };
 
   await fs.mkdir(path.dirname(OUTPUT), {recursive:true});

@@ -13,7 +13,8 @@ class CityTransitPreview {
     // An allowlist excludes streets, buildings, labels and unrelated railways.
     style.layers = style.layers.filter(layer => layer.type === 'background' ||
       ['water', 'waterway', 'landcover', 'park'].includes(layer['source-layer']));
-    const corridors = prepareTransitCorridors(network.lines, profile.lines);
+    const definitions = profile.lines.filter(line => line.enabledByDefault !== false);
+    const corridors = prepareTransitCorridors(selectTransitSources(network.lines, definitions), definitions);
     const features = corridors.flatMap(corridor => corridor.lanes.map((line,index) => ({
       type:'Feature', properties:{color:line.color || '#658094', dashed:!!line.dashArray,
         offset:(index-(corridor.lanes.length-1)/2)*2.5},
@@ -36,7 +37,7 @@ class CityTransitPreview {
     let previewMap;
     let timeout;
     try {
-      const [base, response] = await Promise.all([CityTransitPreview.baseStyle(), fetch(this.profile.dataFiles.mbta)]);
+      const [base, response] = await Promise.all([CityTransitPreview.baseStyle(), fetch(this.profile.dataFiles.mbta, {cache:'no-store'})]);
       if (!response.ok) throw new Error('Transit preview unavailable');
       const style = CityTransitPreview.buildStyle(base, await response.json(), this.profile);
       const coordinates = style.sources['city-transit'].data.features.flatMap(feature => feature.geometry.coordinates);
@@ -210,13 +211,17 @@ class SessionLoading {
 // document/state lifetime, so its city-specific saves and question definitions
 // cannot leak into the next city. No game map is created until Start Game.
 class GameSession {
-  static open(profile, {mode, radius}) {
+  static open(profile, {mode, radius, lineIds = defaultEnabledLineIds(profile.lines)}) {
     SessionLoading.show(profile);
     const url = new URL(window.location.href);
     url.searchParams.set('city',profile.id);
     url.searchParams.set('play','1');
     url.searchParams.set('mode',mode);
     url.searchParams.set('radius',String(radius));
+    url.searchParams.delete('lines');
+    if(lineIds.join(',') !== defaultEnabledLineIds(profile.lines).join(',')){
+      url.searchParams.set('lines',lineIds.join(','));
+    }
     const frame = document.createElement('iframe');
     frame.id = 'game-session';
     frame.title = `${profile.name} game`;

@@ -10,8 +10,14 @@ const BOSTON_LINES = [
   { id:'Green-D',       label:'Green Line · D',     color:'#00843D', weight:4, routeId:'Green-D'  },
   { id:'Green-E',       label:'Green Line · E',     color:'#00843D', weight:4, routeId:'Green-E'  },
   { id:'Mattapan',      label:'Mattapan Line',       color:'#DA291C', weight:4, routeId:'Mattapan', dashArray:'8 5' },
+  { id:'Silver-SL1', label:'Silver Line · SL1', color:'#7C878E', weight:4, routeId:'741', enabledByDefault:false },
+  { id:'Silver-SL2', label:'Silver Line · SL2', color:'#7C878E', weight:4, routeId:'742', enabledByDefault:false },
+  { id:'Silver-SL3', label:'Silver Line · SL3', color:'#7C878E', weight:4, routeId:'743', enabledByDefault:false },
+  { id:'Silver-SL4', label:'Silver Line · SL4', color:'#7C878E', weight:4, routeId:'751', enabledByDefault:false },
+  { id:'Silver-SL5', label:'Silver Line · SL5', color:'#7C878E', weight:4, routeId:'749', enabledByDefault:false },
+  { id:'Silver-SLW', label:'Silver Line · SLW', color:'#7C878E', weight:4, routeId:'746', enabledByDefault:false },
 ].map(line => {
-  const physicalLineId = line.id.startsWith('Green-') ? 'Green' : line.id.startsWith('Red-') ? 'Red' : line.id;
+  const physicalLineId = line.id.split('-')[0];
   return {...line, physicalLineId, branchId:line.id === physicalLineId ? null : line.id.slice(physicalLineId.length + 1), displayLabel:`${physicalLineId} Line`};
 });
 const CHICAGO_LINES = [
@@ -153,7 +159,7 @@ function cityMetadata(){
   return {city_id:ACTIVE_CITY.id, dataset_version:ACTIVE_CITY.datasetVersion};
 }
 function stampCityPayload(payload){
-  return {...payload, ...cityMetadata()};
+  return {...payload, ...gameMetadata()};
 }
 function cityCompatibilityError(payload){
   if(!payload || typeof payload !== 'object') return 'Invalid game data.';
@@ -180,7 +186,8 @@ function renderSetupProfile(profile){
   note.textContent = profile.previewNote || '';
   document.getElementById('setup-eyebrow').textContent = `Jet Lag: The Game · ${profile.name}`;
   document.getElementById('setup-network').textContent = profile.networkLabel;
-  document.getElementById('setup-description').textContent = `The hider picks a secret location on the ${profile.networkLabel} rail network, including suburban stations. Seekers eliminate zones by asking questions.`;
+  document.getElementById('setup-description').textContent = `The hider picks a secret location near a station on the ${profile.networkLabel} network. Seekers eliminate zones by asking questions.`;
+  if(!IS_GAME_SESSION) renderSetupLineOptions(profile);
 }
 function renderCityProfile(){
   renderSetupProfile(ACTIVE_CITY);
@@ -190,7 +197,7 @@ function renderCityProfile(){
   const legend = document.getElementById('legend');
   legend.querySelectorAll('.leg-row:not(#leg-status)').forEach(el=>el.remove());
   const status = document.getElementById('leg-status');
-  const physicalLines = new Map(ACTIVE_CITY.lines.map(line=>[line.physicalLineId || line.id,line]));
+  const physicalLines = new Map(GAME_LINES.map(line=>[line.physicalLineId || line.id,line]));
   physicalLines.forEach(line=>{
     const row = document.createElement('div');
     row.className = 'leg-row';

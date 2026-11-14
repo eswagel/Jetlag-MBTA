@@ -311,7 +311,7 @@ async function hydrateOutgoingQuestionContent(payload){
 }
 
 async function hydrateOutgoingQuestion(payload){
-  const error = cityCompatibilityError(payload);
+  const error = gameCompatibilityError(payload);
   if(error) throw new Error(error);
   await ensureQuestionDataReady(payload);
   validateQuestionForCity(payload);
@@ -589,7 +589,7 @@ async function applyAnswerFromRaw(raw, onSuccess){
   let payload;
   try{ payload = JSON.parse(raw); }
   catch(e){ toast('Invalid JSON - check format'); return; }
-  const compatibilityError = cityCompatibilityError(payload);
+  const compatibilityError = gameCompatibilityError(payload);
   if(compatibilityError){ toast(compatibilityError); return; }
   const candidate = resolveAnsweredQuestion(payload);
   if(!candidate){
@@ -698,7 +698,7 @@ function exportQuestionLog(){
   const payload = {
     kind:'jetlag_question_log',
     version:4,
-    ...cityMetadata(),
+    ...gameMetadata(),
     hide_radius_miles:hideRadiusMi,
     exported_at:new Date().toISOString(),
     constraints: cloneForStorage(constraints),
@@ -731,7 +731,7 @@ function importedLogRadius(parsed, entries){
 }
 
 async function prepareQuestionLog(parsed){
-  const compatibilityError = cityCompatibilityError(parsed);
+  const compatibilityError = gameCompatibilityError(parsed);
   if(compatibilityError) throw new Error(compatibilityError);
   if(parsed?.version > 4) throw new Error('Question log uses a newer format');
   const entries = Array.isArray(parsed) ? parsed : parsed?.constraints;
@@ -742,8 +742,8 @@ async function prepareQuestionLog(parsed){
   const hydrated = [];
   for(const [index,rawEntry] of entries.entries()){
     const entry=migrateLegacyManualConstraint(rawEntry);
-    if(entry.city_id || entry.dataset_version){
-      const error = cityCompatibilityError(entry);
+    if(entry.city_id || entry.dataset_version || entry.enabled_line_ids !== undefined){
+      const error = gameCompatibilityError({...gameMetadata(), ...entry});
       if(error) throw new Error(error);
     }
     if(['_setup','_veto','_randomize_card'].includes(entry.type)){
@@ -762,7 +762,7 @@ async function prepareQuestionLog(parsed){
     }
     if(entry.answer == null) throw new Error('Question log contains an unanswered question');
     validateQuestionInputs(entry);
-    const original = {...cityMetadata(), ...entry, id:entry.id || `legacy_log_${index}`};
+    const original = {...gameMetadata(), ...entry, id:entry.id || `legacy_log_${index}`};
     delete original.answer;
     // Hydration loads and checks referenced local datasets before any game mutation.
     const question = await hydrateOutgoingQuestion(original);

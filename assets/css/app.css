@@ -533,6 +533,76 @@
       color: var(--gold); letter-spacing: 0.05em; white-space: nowrap;
     }
 
+    .setup-advanced {
+      margin-bottom: 14px;
+      background: var(--panel2);
+      border: 1px solid var(--border);
+      border-radius: 11px;
+    }
+    .setup-advanced summary {
+      min-height: 44px;
+      padding: 12px 14px;
+      border-radius: 11px;
+      cursor: pointer;
+      font-size: 12px;
+      font-weight: 700;
+    }
+    .setup-lines {
+      border: 0;
+      min-inline-size: 0;
+      margin: 0 14px 14px;
+      padding: 0;
+    }
+    .setup-lines legend,
+    .setup-lines-note {
+      font-size: 11px;
+      color: #9baabd;
+    }
+    .setup-lines legend {
+      margin-bottom: 6px;
+    }
+    .setup-lines-note {
+      margin-top: 8px;
+      line-height: 1.5;
+    }
+    .setup-line-options {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(min(100%, 126px), 1fr));
+      gap: 4px 8px;
+    }
+    .setup-line-option {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      min-height: 44px;
+      padding: 6px;
+      border-radius: 6px;
+      cursor: pointer;
+      font-size: 11px;
+    }
+    .setup-line-option:hover { background: var(--panel); }
+    .setup-line-option input {
+      flex: 0 0 15px;
+      inline-size: 15px;
+      block-size: 15px;
+      accent-color: var(--blue);
+    }
+    .setup-line-swatch {
+      flex: 0 0 10px;
+      block-size: 4px;
+      border-radius: 2px;
+    }
+    .setup-advanced summary:focus-visible,
+    .setup-line-option:focus-within {
+      outline: 2px solid var(--blue);
+      outline-offset: 1px;
+    }
+    #setup-line-error {
+      color: var(--gold);
+      font-size: 11px;
+    }
+    #setup-line-error:not(:empty) { margin: 0 0 10px; }
+
     #setup-status {
       font-size: 9px; color: var(--dim); margin-bottom: 14px;
       font-family: 'IBM Plex Mono', monospace;

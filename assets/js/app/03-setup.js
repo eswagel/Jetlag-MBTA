@@ -9,9 +9,14 @@ function selectRadius(el){
   _stopBaseRegionCache = { miles: null, stopCount: 0, entries: null };
 }
 
-function startGame(){
+function startGame(selectedLineIds){
   if(!IS_GAME_SESSION){
-    GameSession.open(CITY_PROFILES[selectedCityId], {mode:gameMode,radius:hideRadiusMi});
+    const profile = CITY_PROFILES[selectedCityId];
+    const lineIds = selectedLineIds === undefined
+      ? defaultEnabledLineIds(profile.lines)
+      : normalizeEnabledLineIds(profile.lines, selectedLineIds);
+    if(!lineIds?.length){ toast('Select at least one transit line.'); return; }
+    GameSession.open(profile, {mode:gameMode,radius:hideRadiusMi,lineIds});
     return;
   }
   if(!mbdataReady || !Object.keys(stopLineMap).length){ toast(`Wait for ${ACTIVE_CITY.networkLabel} station data before starting.`); return; }

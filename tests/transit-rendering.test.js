@@ -20,6 +20,13 @@ test('different lines sharing tracks become separate lanes',()=>{
  const points=[{x:0,y:0},{x:100,y:0}],a=c.offsetTransitPath(points,-2.5),b=c.offsetTransitPath(points,2.5);
  assert.equal(Math.abs(a[0].y-b[0].y),5);assert.equal(Math.abs(a[1].y-b[1].y),5);
 });
+test('Silver route renders both direction paths without connecting separate shapes',()=>{
+ const c=engine('boston'), primary=[[42.35,-71.05],[42.35,-71.04]], other=[[42.36,-71.04],[42.36,-71.05]];
+ const corridors=c.prepareTransitCorridors([{id:'Silver-SL1',shapePath:primary,shapePaths:[primary,other]}]);
+ assert.equal(corridors.length,2);
+ assert.ok(corridors.every(c=>c.lanes.length===1&&c.lanes[0].physicalLineId==='Silver'));
+ assert.deepEqual(Array.from(corridors,c=>Array.from(new Set(c.path.map(p=>p[0])))),[[42.35],[42.36]]);
+});
 test('Purple is one question identity, solid local trunk and dashed express extension',()=>{
  const c=engine();assert.equal(vm.runInContext('GAME_LINES.filter(l=>l.physicalLineId==="Purple").length',c),1);
  const r=c.prepareTransitCorridors([route('Purple',[[42.07,-87.69],[42.02,-87.67]]),route('Purple-Express',[[42.07,-87.69],[42.02,-87.67],[41.9,-87.65]])]);

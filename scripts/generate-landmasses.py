@@ -31,6 +31,11 @@ OVERLAP_WEIGHT = 1.0
 STOP_WEIGHT = 0.35
 MAINLAND_ID = 3
 MAINLAND_NAME = "Mainland Boston"
+# These neighboring towns are reachable from Silver Line stops. Attach their
+# land after refining the original regions so new shared municipal borders
+# cannot merge components and change the established landmass assignments.
+SILVER_TOWNS = ("Chelsea", "Everett", "Winthrop")
+SILVER_TOWNS_REGION_ID = 0
 EXPECTED_SOURCE_REGIONS = [
     {"id": 0, "name": "Across the Mystic"},
     {"id": 1, "name": "Across the Charles"},
@@ -233,6 +238,18 @@ def refine_regions_from_land(prior_regions, playable_land, stops, prior_assignme
     return refined, mainland_geom
 
 
+def extend_silver_landmass(regions, city_polygons):
+    towns = [city_polygons[name] for name in SILVER_TOWNS if name in city_polygons]
+    if not towns:
+        return
+    covered = unary_union([region["geometry"] for region in regions])
+    extension = unary_union(towns).difference(covered)
+    for region in regions:
+        if region["id"] == SILVER_TOWNS_REGION_ID:
+            region["geometry"] = clean_polygonal(region["geometry"].union(extension))
+            break
+
+
 def assign_stops_to_regions(stops, explicit_regions):
     assignments = {}
     for stop in stops:
@@ -281,7 +298,8 @@ def main():
     prior_assignments = {stop["id"]: assign_prior_region_id(stop, prior_regions) for stop in stops}
 
     print("Building coastline/river-aware playable land from municipal polygons...")
-    playable_land, city_names = build_playable_land(stops, city_polygons)
+    base_cities = {name: geom for name, geom in city_polygons.items() if name not in SILVER_TOWNS}
+    playable_land, city_names = build_playable_land(stops, base_cities)
     print(f"  Playable land derived from cities: {', '.join(city_names)}")
 
     print("Refining hand-drawn priors onto automatic land components...")
@@ -296,6 +314,7 @@ def main():
             "geometry": mainland_geom,
         }
     ]
+    extend_silver_landmass(regions, city_polygons)
 
     print("Assigning stops against refined geometries...")
     assignments = assign_stops_to_regions(stops, refined_explicit_regions)

@@ -1,5 +1,36 @@
-// Line definitions come from the active city profile.
-const GAME_LINES = ACTIVE_CITY.lines;
+// The launcher and the game document use the same profile order and defaults.
+function defaultEnabledLineIds(lines){
+  return lines.filter(line => line.enabledByDefault !== false).map(line => line.id);
+}
+
+function normalizeEnabledLineIds(lines, selectedIds){
+  if(!Array.isArray(selectedIds) || !selectedIds.length) return null;
+  const ids = new Set(selectedIds);
+  const ordered = lines.filter(line => ids.has(line.id)).map(line => line.id);
+  return ordered.length === ids.size ? ordered : null;
+}
+
+const defaultLineIds = defaultEnabledLineIds(ACTIVE_CITY.lines);
+const requestedLineIds = new URLSearchParams(window.location.search).get('lines');
+const enabledLineIds = normalizeEnabledLineIds(ACTIVE_CITY.lines, requestedLineIds?.split(',')) || defaultLineIds;
+const hasCustomLines = enabledLineIds.join(',') !== defaultLineIds.join(',');
+const GAME_LINES = ACTIVE_CITY.lines.filter(line => enabledLineIds.includes(line.id));
+
+function gameMetadata(){
+  return {...cityMetadata(), ...(hasCustomLines ? {enabled_line_ids: enabledLineIds.slice()} : {})};
+}
+
+function gameCompatibilityError(payload){
+  const cityError = cityCompatibilityError(payload);
+  if(cityError) return cityError;
+  const ids = payload.enabled_line_ids === undefined
+    ? defaultLineIds
+    : normalizeEnabledLineIds(ACTIVE_CITY.lines, payload.enabled_line_ids);
+  if(!ids || ids.join(',') !== enabledLineIds.join(',')){
+    return 'Transit line selections differ. Start the game with the same lines in Advanced Settings.';
+  }
+  return null;
+}
 
 // stopId → { name, lat, lng, lines: Set<lineId> }
 const stopLineMap = {};
@@ -89,8 +120,9 @@ function applyGameMode(){
     document.getElementById('tab-hider').classList.remove('hider-mode-fullscreen');
   }
 }
-const SAVE_KEY = `jetlag_${ACTIVE_CITY.id}_save`;
-const LEGACY_SAVE_KEY = ACTIVE_CITY.id === 'boston' ? 'jetlag_mbta_save' : null;
+const customLineSaveSuffix = hasCustomLines ? `:${enabledLineIds.join(',')}` : '';
+const SAVE_KEY = `jetlag_${ACTIVE_CITY.id}_save${customLineSaveSuffix}`;
+const LEGACY_SAVE_KEY = ACTIVE_CITY.id === 'boston' && !hasCustomLines ? 'jetlag_mbta_save' : null;
 
 function cloneForStorage(value){
   return JSON.parse(JSON.stringify(value, (k,v)=>{
@@ -444,7 +476,7 @@ function saveGame(){
   try{
     const save = {
       v: 3,
-      ...cityMetadata(),
+      ...gameMetadata(),
       transit_feed_version: preloadedData.mbta?.feedVersion || null,
       ts: Date.now(),
       gameMode,
@@ -475,7 +507,7 @@ function loadSave(){
     const raw = localStorage.getItem(SAVE_KEY) || (LEGACY_SAVE_KEY && localStorage.getItem(LEGACY_SAVE_KEY));
     if(!raw) return null;
     const save = JSON.parse(raw);
-    if(!save.v || !save.constraints || !save.validZone || cityCompatibilityError(save)) return null;
+    if(!save.v || !save.constraints || !save.validZone || gameCompatibilityError(save)) return null;
     return save;
   }catch(e){ return null; }
 }

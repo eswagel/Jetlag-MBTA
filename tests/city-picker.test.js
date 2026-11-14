@@ -23,3 +23,18 @@ test('a new city preview uses its own geometry and colors and excludes all stree
  assert.equal(base.layers.length,7);
  assert.equal(base.sources['city-transit'],undefined);
 });
+test('preview includes default routes and their display variants',()=>{
+ const base={sources:{},layers:[]};
+ const profile={lines:[
+   {id:'standard',color:'#123456',displaySources:[{id:'standard'},{id:'express',dashArray:'8 5'}]},
+   {id:'optional',color:'#654321',enabledByDefault:false},
+ ]};
+ const network={lines:[
+   {id:'standard',shapePath:[[10,20],[10,21]]},
+   {id:'express',shapePath:[[10,21],[10,22]]},
+   {id:'optional',shapePath:[[10,20],[11,22]]},
+ ]};
+ const features=build(base,network,profile).sources['city-transit'].data.features;
+ assert.deepEqual(Array.from(features, f=>f.properties.color),['#123456','#123456']);
+ assert.deepEqual(Array.from(features, f=>f.properties.dashed),[false,true]);
+});

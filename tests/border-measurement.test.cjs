@@ -12,13 +12,13 @@ function game(city){
  run('preloadedData.boundaries=boundaries;loadBoundaryData=async()=>boundaries');
  return {ctx,run};
 }
-for(const [id,center,oldDistance] of [
- ['city_border',{lat:42.44177465,lng:-71.05437745},1.320037385],
- ['county_border',{lat:42.6365975,lng:-71.2134274},2.311787792],
+for(const [id,center] of [
+ ['city_border',{lat:42.44177465,lng:-71.05437745}],
+ ['county_border',{lat:42.6365975,lng:-71.2134274}],
 ])test(`Boston ${id}: actual saved border midpoint uses segments, not vertices`,async()=>{
  const g=game('boston');g.ctx.center=center;g.ctx.id=id;
  const old=await g.run('Math.min(...getPreloadedBorderPoints(categorySpec("measure",id).boundaryKey).map(p=>turfDist(center,p)))');
- assert.ok(Math.abs(old-oldDistance)<0.00001,'fixture exposes the original vertex-distance error');
+ assert.ok(old>1,`fixture must be over a mile from any stored vertex, got ${old}`);
  const result=await g.run('resolveMeasurement(id,center)');
  assert.ok(result.value.dist<0.001,`border midpoint should be approximately zero miles away, got ${result.value.dist}`);
  assert.ok(result.linearFeatures.length>0);

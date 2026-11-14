@@ -314,50 +314,50 @@ async function fetchLiveMBTASnapshot(legStatus){
   };
 }
 
+// Every selected line must contribute at least one playable station. Display-only
+// variants belong to their main line but do not count towards data readiness.
+function snapshotHasSelectedLines(data){
+  if(!Array.isArray(data?.lines)) return false;
+  const playableIds = new Set(data.lines
+    .filter(line => line.stops?.some(stop => stop.id && Number.isFinite(stop.lat) && Number.isFinite(stop.lng)))
+    .map(line => line.id));
+  return GAME_LINES.every(line => playableIds.has(line.id));
+}
+
 async function loadMBTAData(){
   const legStatus = document.getElementById('leg-status');
-  if(ACTIVE_CITY.id !== 'boston'){
-    const data = await fetchOptionalJSON(DATA_FILES.mbta, `${ACTIVE_CITY.networkLabel} snapshot`);
-    if(data?.lines?.some(line => line.stops?.length) && !cityCompatibilityError(data)){
-      preloadedData.mbta = data;
-      hydrateMBTAFromStatic(data, legStatus);
-      await loadLandmassData();
-    }else{
-      if(legStatus) legStatus.textContent = `⚠ ${ACTIVE_CITY.networkLabel} data unavailable`;
-      const status = document.getElementById('setup-status-text');
-      if(status) status.textContent = `${ACTIVE_CITY.name} station data is unavailable or incompatible. Reload after the dataset is installed.`;
-      document.getElementById('btn-start').disabled = true;
-      mbdataReady = false;
-      if(typeof SessionLoading !== 'undefined') SessionLoading.fail(`${ACTIVE_CITY.name} station data is unavailable. Please reload to try again.`);
+  const isBoston = ACTIVE_CITY.id === 'boston';
+  // Optional MBTA routes use verified station IDs and directional paths from the snapshot.
+  if(isBoston && GAME_LINES.every(line => line.enabledByDefault !== false)){
+    try{
+      const liveData = await fetchLiveMBTASnapshot(legStatus);
+      if(snapshotHasSelectedLines(liveData)){
+        preloadedData.mbta = liveData;
+        hydrateMBTAFromStatic(liveData, legStatus);
+        await loadLandmassData();
+        return;
+      }
+    }catch(e){
+      console.warn('Live MBTA load failed, falling back to local snapshot:', e);
     }
-    return;
   }
 
-  try{
-    const liveData = await fetchLiveMBTASnapshot(legStatus);
-    if(liveData?.lines?.length){
-      preloadedData.mbta = liveData;
-      hydrateMBTAFromStatic(liveData, legStatus);
-      await loadLandmassData();
-      return;
-    }
-  }catch(e){
-    console.warn('Live MBTA load failed, falling back to local snapshot:', e);
-  }
-
-  const staticData = preloadedData.mbta || await fetchOptionalJSON(DATA_FILES.mbta, 'MBTA snapshot');
-  if(staticData?.lines?.length){
+  const staticData = preloadedData.mbta || await fetchOptionalJSON(DATA_FILES.mbta, `${ACTIVE_CITY.networkLabel} snapshot`);
+  if(snapshotHasSelectedLines(staticData) && !cityCompatibilityError(staticData)){
     preloadedData.mbta = staticData;
     hydrateMBTAFromStatic(staticData, legStatus);
     await loadLandmassData();
     return;
   }
 
-  console.warn('MBTA live load and local snapshot load both failed');
-  if(legStatus) legStatus.textContent = '⚠ 0 stops — check MBTA data';
-  const txt = document.getElementById('setup-status-text');
-  if(txt) txt.textContent = '⚠ MBTA data failed to load';
-  if(typeof SessionLoading !== 'undefined') SessionLoading.fail('Station data could not be loaded. Please reload to try again.');
+  const message = `${ACTIVE_CITY.name} station data is unavailable for the selected lines. Please reload to try again.`;
+  if(legStatus) legStatus.textContent = `⚠ ${ACTIVE_CITY.networkLabel} data unavailable`;
+  const status = document.getElementById('setup-status-text');
+  if(status) status.textContent = message;
+  const button = document.getElementById('btn-start');
+  if(button) button.disabled = true;
+  mbdataReady = false;
+  if(typeof SessionLoading !== 'undefined') SessionLoading.fail(message);
 }
 
 function transitSourceMetadata(line, definitions=GAME_LINES){
@@ -372,7 +372,8 @@ function transitSourceMetadata(line, definitions=GAME_LINES){
 // geometry contributes one physical line per edge; different lines get lanes.
 // Snap tolerance absorbs GTFS sampling/parallel-track differences, not stations.
 function prepareTransitCorridors(lines, definitions=GAME_LINES){
-  const latitudes=lines.flatMap(line=>(line.shapePath || line.path || []).map(point=>point[0])).filter(Number.isFinite);
+  const pathsForLine = line => line.shapePaths || [line.shapePath || line.path || []];
+  const latitudes=lines.flatMap(line=>pathsForLine(line).flatMap(path=>path.map(point=>point[0]))).filter(Number.isFinite);
   const referenceLatitude=latitudes.length ? latitudes.reduce((sum,lat)=>sum+lat,0)/latitudes.length : 0;
   const scaleX = 111320 * Math.max(0.01,Math.cos(referenceLatitude * Math.PI / 180)), scaleY = 111320;
   const tolerance = 18, cellSize = 40;
@@ -406,9 +407,11 @@ function prepareTransitCorridors(lines, definitions=GAME_LINES){
     const physicalLineId=definition.physicalLineId || definition.id;
     const meta={...definition,physicalLineId,label:definition.displayLabel || definition.label || definition.id};
     metas.set(physicalLineId,meta);
-    const path=(line.shapePath || line.path || []).filter(p=>p?.length>=2 && p.every(Number.isFinite)).map(nodeFor);
-    for(let i=1;i<path.length;i++){
-      if(path[i-1].id !== path[i].id) segments.push({a:path[i-1],b:path[i],physicalLineId,dashArray:source.dashArray || definition.dashArray || null,serviceVariant:source.serviceVariant || null});
+    for(const coordinates of pathsForLine(line)){
+      const path=coordinates.filter(p=>p?.length>=2 && p.every(Number.isFinite)).map(nodeFor);
+      for(let i=1;i<path.length;i++){
+        if(path[i-1].id !== path[i].id) segments.push({a:path[i-1],b:path[i],physicalLineId,dashArray:source.dashArray || definition.dashArray || null,serviceVariant:source.serviceVariant || null});
+      }
     }
   }
   const edges=new Map();
@@ -506,12 +509,17 @@ function drawTransitRoutes(lines){
   map.on('zoomend',transitRouteRedraw);
 }
 
+function selectTransitSources(lines, definitions){
+  const sourceIds = new Set(definitions.flatMap(line => [line.id, ...(line.displaySources || []).map(source => source.id)]));
+  return lines.filter(line => sourceIds.has(line.id));
+}
+
 function hydrateMBTAFromStatic(data, legStatus){
   Object.keys(stopLineMap).forEach(k => delete stopLineMap[k]);
   commuterRailStops.clear();
   commuterRailStopsList.length = 0;
 
-  const lines = data.lines || [];
+  const lines = selectTransitSources(data.lines || [], GAME_LINES);
   drawTransitRoutes(lines);
   const allStops = {};
   lines.forEach(line => {
